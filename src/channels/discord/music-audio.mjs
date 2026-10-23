@@ -8,7 +8,12 @@ import { runMusicProcess, abortError } from './music-process.mjs';
 const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/package.json'));
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav', '.webm', '.mp4']);
 const hash = value => createHash('sha256').update(value).digest('hex');
-export const MUSIC_LOUDNESS = Object.freeze({ integrated: -16, truePeak: -1.5, lra: 11, sampleRate: 48000 });
+export const MUSIC_LOUDNESS = Object.freeze({ integrated: -20, truePeak: -3, lra: 11, sampleRate: 48000 });
+export const MUSIC_CACHE_VERSION = 2;
+
+export function loudnessAnalysisFilter() {
+  return `loudnorm=I=${MUSIC_LOUDNESS.integrated}:TP=${MUSIC_LOUDNESS.truePeak}:LRA=${MUSIC_LOUDNESS.lra}:print_format=json`;
+}
 
 function firstFile(candidates, fallback) {
   return candidates.find(value => value && existsSync(value)) ?? fallback;
@@ -65,8 +70,12 @@ export function loudnessStats(stderr) {
 
 export function normalizationFilter(data) {
   if (!data) return 'anull';
-  return `loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=${Number(data.input_i)}:measured_TP=${Number(data.input_tp)}` +
-    `:measured_LRA=${Number(data.input_lra)}:measured_thresh=${Number(data.input_thresh)}:offset=${Number(data.target_offset)}:linear=true`;
+  const integrated = Number(data.input_i), peak = Number(data.input_tp);
+  if (!Number.isFinite(integrated) || !Number.isFinite(peak)) throw new Error('音量分析回傳無效數據');
+  // Apply one constant gain to the whole song. Capping by measured true peak
+  // avoids loudnorm's dynamic fallback and preserves the original dynamics.
+  const gainDb = Math.min(MUSIC_LOUDNESS.integrated - integrated, MUSIC_LOUDNESS.truePeak - peak);
+  return `volume=${gainDb.toFixed(6)}dB`;
 }
 
 export function completeDuration(expected, actual) {
@@ -193,7 +202,7 @@ export class MusicAudioPipeline {
       const item = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8'));
       const input = join(dir, 'audio.ogg');
       const file = await stat(input);
-      if (item.version !== 1 || file.size < 1024 || Date.now() - file.mtimeMs > 24 * 3600_000 || !completeDuration(item.expectedDuration, item.duration)) return null;
+      if (item.version !== MUSIC_CACHE_VERSION || file.size < 1024 || Date.now() - file.mtimeMs > 24 * 3600_000 || !completeDuration(item.expectedDuration, item.duration)) return null;
       return { ...item, input, cacheHit: true };
     } catch { return null; }
   }
@@ -227,7 +236,7 @@ export class MusicAudioPipeline {
     if (!completeDuration(expected, duration)) throw new Error(`音訊不完整：預期 ${expected.toFixed(1)} 秒，實際 ${duration.toFixed(1)} 秒`);
     if (duration > this.#maxSeconds || !(duration > 0)) throw new Error(`歌曲長度須在 ${this.#maxSeconds / 60} 分鐘以內`);
     const { stderr } = await this.#run(this.#tools.ffmpeg, ['-nostdin', '-hide_banner', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
-      '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json', '-f', 'null', '-'], { cwd: dir, signal, timeoutMs: 180_000 });
+      '-af', loudnessAnalysisFilter(), '-f', 'null', '-'], { cwd: dir, signal, timeoutMs: 180_000 });
     const loudness = loudnessStats(stderr);
     const rendered = join(dir, 'normalized.ogg');
     await this.#run(this.#tools.ffmpeg, ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
@@ -238,7 +247,7 @@ export class MusicAudioPipeline {
     const out = join(this.#root, 'audio', key);
     await mkdir(out, { recursive: true });
     await rename(rendered, join(out, 'audio.ogg'));
-    const metadata = { version: 1, id: source.id, title, url: source.url ?? '', duration: actual, expectedDuration: expected || duration,
+    const metadata = { version: MUSIC_CACHE_VERSION, id: source.id, title, url: source.url ?? '', duration: actual, expectedDuration: expected || duration,
       selection: source.selection, loudness: MUSIC_LOUDNESS, cacheHit: false };
     const pending = join(out, `${randomUUID()}.json`);
     await writeFile(pending, JSON.stringify(metadata)); await rename(pending, join(out, 'meta.json'));
@@ -276,7 +285,7 @@ export class MusicAudioPipeline {
           this.#resolved.set(queryKey, source);
           if (this.#resolved.size > 128) this.#resolved.delete(this.#resolved.keys().next().value);
         }
-        const key = hash(JSON.stringify([1, source.kind, source.id, MUSIC_LOUDNESS]));
+        const key = hash(JSON.stringify([MUSIC_CACHE_VERSION, source.kind, source.id, MUSIC_LOUDNESS]));
         const cached = await this.#cached(key);
         if (cached) return { ...cached, selection: source.selection };
         const rendered = await this.#shared(this.#audioJobs, key, jobSignal, async renderSignal => {

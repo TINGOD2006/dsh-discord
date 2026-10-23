@@ -1049,6 +1049,7 @@ export class DiscordRuntime {
           resume: (args) => this.#music?.resume(args),
           queue: (args) => this.#music?.queue(args),
           nowplaying: (args) => this.#music?.nowplaying(args),
+          status: (args) => this.#music?.status(args),
           volume: (args) => this.#music?.volume(args),
           leave: (args) => this.#music?.leave(args),
         } : null,

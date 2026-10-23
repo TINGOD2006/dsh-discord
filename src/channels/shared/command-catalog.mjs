@@ -112,6 +112,7 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
   defineCatalogCommand('music', '音樂專用控制指令', [
     '/music skip /music stop  跳歌或停止音樂；原 /skip /stop 仍控制 AI 任務',
     '/music pause /music resume /music queue /music nowplaying /music volume 0–100 /music leave',
+    '/music status  查看 UDP 往返、封包緩衝與播放健康狀態',
   ]),
   defineCatalogCommand('join', '让机器人进入你所在的语音频道', [
     '/join  让机器人进入你所在的语音频道（需要 Connect + Speak 权限）',

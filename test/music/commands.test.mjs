@@ -26,6 +26,15 @@ test('native music subcommands retain their arguments while legacy command text 
   const native = applicationCommandPayloads().find(c => c.name === 'music');
   assert(native.options.some(option => option.name === 'skip'));
   assert(native.options.some(option => option.name === 'stop'));
+  assert(native.options.some(option => option.name === 'status'));
+  assert.deepEqual(parseMusicCommand('/music status'),{name:'status',argument:''});
+});
+
+test('music network status stays in the music namespace and forwards its caller',async()=>{
+  let caller;
+  const result=await runMusicCommand('/music status',{}, {}, 'key',{conversationId:'channel',senderId:'sender',
+    music:{status:async request=>{caller=request;return{message:'UDP status'};}}});
+  assert.equal(result.message,'UDP status');assert.deepEqual(caller,{channelId:'channel',senderId:'sender'});
 });
 
 test('music dispatcher forwards channel and sender to controls without touching the chat harness', async () => {
@@ -37,12 +46,20 @@ test('music dispatcher forwards channel and sender to controls without touching 
   assert.deepEqual(calls, [{channelId: 'channel', senderId: 'sender'}, {channelId: 'channel', senderId: 'sender'}]);
 });
 
-test('native music acknowledgement is sent before command execution', async () => {
+for (const command of [
+  { data: { name: 'music', options: [{ type: 1, name: 'stop' }] }, text: '/music stop' },
+  { data: { name: 'play', options: [{ type: 3, name: 'query', value: 'song' }] }, text: '/play song' },
+  { data: { name: 'stop' }, text: '/stop' },
+]) test(`native ${command.text} acknowledgement and answer are public before and after execution`, async () => {
   const order=[];
   await handleApplicationCommand({type: 2, id: 'interaction', token: 'fixture', channel_id: 'channel', guild_id: 'guild', member:{user:{id:'sender'}},
-    data:{name:'music',options:[{type:1,name:'stop'}]}}, {
-    applicationId:'app',api:{createInteractionResponse:async()=>{order.push('ack');},updateInteractionOriginal:async()=>{order.push('reply');}},
-    bridge:{runNativeCommand:async(text,args)=>{assert.equal(text,'/music stop');assert.equal(args.senderId,'sender');order.push('execute');return 'ok';}},
+    data:command.data}, {
+    applicationId:'app',api:{createInteractionResponse:async(id,token,payload)=>{
+      assert.equal(payload.type,5);assert.equal((payload.data?.flags??0)&64,0);order.push('ack');
+    },updateInteractionOriginal:async(app,token,payload)=>{
+      assert.equal(payload.content,'ok');assert.deepEqual(payload.allowed_mentions,{parse:[]});order.push('reply');
+    }},
+    bridge:{runNativeCommand:async(text,args)=>{assert.equal(text,command.text);assert.equal(args.senderId,'sender');order.push('execute');return 'ok';}},
   });
   assert.deepEqual(order,['ack','execute','reply']);
 });

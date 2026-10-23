@@ -1,10 +1,13 @@
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { MusicAudioPipeline, musicTools } from './music-audio.mjs';
+import { MusicAudioPipeline, musicTools, MUSIC_LOUDNESS } from './music-audio.mjs';
 import { createDshMusicSelector } from './music-dsh.mjs';
+import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from './music-transport.mjs';
+import { startMusicHealth } from './music-health.mjs';
 
 export const MUSIC_AUDIO_URL = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|webm)(\?|#|$)/i;
 export const MUSIC_MAX_QUEUE = 25;
+export const MUSIC_DEFAULT_VOLUME = 0.6;
 export const DEFAULT_YTDLP_CANDIDATES = Object.freeze([process.env.DSK_DISCORD_YTDLP, musicTools().ytDlp]);
 export function defaultYtDlpPath(candidates = DEFAULT_YTDLP_CANDIDATES) { return candidates.find(value => value && existsSync(value)) ?? 'yt-dlp'; }
 export function isPlayableUrl(value) { try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; } }
@@ -14,10 +17,13 @@ export function needsExtractor(value) { return isPlayableUrl(value) && /(^|\.)(y
 export class MusicManager {
   #token; #logger; #runtime; #pipeline; #notify; #client; #login; #library;
   #guilds = new Map(); #cooldowns = new Map(); #destroyed = false; #idleMs; #cooldownMs; #loginTimeoutMs;
-  constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000 } = {}) {
+  #bufferedFactory; #recoverVoice; #healthIntervalMs;
+  constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000,
+    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000 } = {}) {
     this.#token = token; this.#logger = logger; this.#runtime = runtime; this.#notify = notify;
     this.#idleMs = idleMs; this.#cooldownMs = cooldownMs;
     this.#loginTimeoutMs = loginTimeoutMs;
+    this.#bufferedFactory = bufferedFactory; this.#recoverVoice = recoverVoice; this.#healthIntervalMs = healthIntervalMs;
     const tools = musicTools(); if (ytDlpPath) tools.ytDlp = ytDlpPath;
     this.#pipeline = pipeline ?? new MusicAudioPipeline({ tools, logger, selectCandidate: createDshMusicSelector(harness, { logger }) });
   }
@@ -66,7 +72,8 @@ export class MusicManager {
   }
   #room(id) {
     if (!this.#guilds.has(id)) this.#guilds.set(id, { id, tracks: [], current: null, player: null, connection: null, channelId: null,
-      textChannelId: null, resource: null, state: 'idle', volume: 1, leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false });
+      textChannelId: null, resource: null, transport: null, health: null, bitrate: 128000, recoveryController: null,
+      state: 'idle', volume: MUSIC_DEFAULT_VOLUME, leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false });
     return this.#guilds.get(id);
   }
   async #context(channelId, senderId, { voice = true } = {}) {
@@ -84,10 +91,12 @@ export class MusicManager {
     if (room.connection && room.channelId === voiceChannelId && room.connection.state.status !== libs.VoiceConnectionStatus.Destroyed) {
       await libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000); return;
     }
+    room.recoveryController?.abort();
     if (room.connection) { try { room.connection.destroy(); } catch {} }
     const voiceChannel = guild.channels?.cache.get(voiceChannelId) ?? await guild.channels?.fetch?.(voiceChannelId).catch(() => null);
     const permissions = voiceChannel?.permissionsFor?.(guild.members?.me);
     if (permissions && (!permissions.has('Connect') || !permissions.has('Speak'))) throw new Error('機器人需要該語音頻道的 Connect 與 Speak 權限');
+    room.bitrate = voiceBitrate(voiceChannel?.bitrate);
     const connection = libs.joinVoiceChannel({ channelId: voiceChannelId, guildId: guild.id, group: `dsh-music-${client.user?.id ?? 'bot'}`,
       adapterCreator: guild.voiceAdapterCreator, selfDeaf: true, selfMute: false });
     room.connection = connection; room.channelId = voiceChannelId;
@@ -99,20 +108,29 @@ export class MusicManager {
   async #recover(room, connection) {
     if (room.leaving || room.recovering || room.connection !== connection) return;
     room.recovering = true; const libs = await this.#libs();
+    const controller = new AbortController(); room.recoveryController = controller;
+    const wasPlaying = room.state === 'playing', trackId = room.current?.id;
+    if (wasPlaying) { room.player?.pause(); room.state = 'reconnecting'; room.transport?.resetTiming?.(); }
     try {
-      try { await Promise.race([libs.entersState(connection, libs.VoiceConnectionStatus.Signalling, 5000), libs.entersState(connection, libs.VoiceConnectionStatus.Connecting, 5000)]); }
-      catch { connection.rejoin?.(); }
-      await libs.entersState(connection, libs.VoiceConnectionStatus.Ready, 15000);
-      if (!room.leaving && room.connection === connection && room.player) connection.subscribe(room.player);
+      const result = await this.#recoverVoice(connection, libs, { signal: controller.signal,
+        onAttempt: attempt => this.#log('info', 'music.reconnect.attempt', { attempt }) });
+      if (room.leaving || room.connection !== connection || controller.signal.aborted) return;
+      if (room.player) connection.subscribe(room.player);
+      if (wasPlaying && room.current?.id === trackId && room.state === 'reconnecting') {
+        room.transport?.resetTiming?.(); room.player?.unpause(); room.state = 'playing';
+      }
+      this.#log('info', 'music.reconnect.recovered', result);
     } catch (error) {
-      if (room.leaving || room.connection !== connection) return;
+      if (room.leaving || room.connection !== connection || controller.signal.aborted) return;
       this.#log('warn', 'music.reconnect.failed', error); this.#clear(room); try { connection.destroy(); } catch {}
       room.connection = null; room.channelId = null;
       await this.#say(room.textChannelId, '音樂語音連線中斷，已清除佇列；請使用 /play 重新連線。');
-    } finally { room.recovering = false; }
+    } finally { if (room.recoveryController === controller) room.recoveryController = null; room.recovering = false; }
   }
   #cancel(track) { if (!track) return; track.controller.abort(); track.source?.release?.(); track.source = null; }
   #clear(room) {
+    room.recoveryController?.abort(); room.transport?.destroy(); room.transport = null;
+    room.health?.destroy(); room.health = null;
     room.version++; for (const track of room.tracks.splice(0)) this.#cancel(track);
     const old = room.current; room.current = null; room.resource = null; room.state = 'idle'; this.#cancel(old);
     try { room.player?.stop(true); } catch {}
@@ -139,6 +157,7 @@ export class MusicManager {
   #prefetch(room) { const next = room.tracks[0]; if (next && !room.leaving) this.#prepare(room, next); }
   #finished(room, id) {
     if (room.current?.id !== id) return;
+    room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
     const track = room.current; room.current = null; room.resource = null; room.state = 'idle'; this.#cancel(track); this.#pump(room);
   }
   #pump(room) {
@@ -155,7 +174,7 @@ export class MusicManager {
       const source = await this.#prepare(room, track);
       if (track.controller.signal.aborted || room.current !== track || room.leaving || version !== room.version) return;
       if (!room.player) {
-        const player = libs.createAudioPlayer({ behaviors: { noSubscriber: libs.NoSubscriberBehavior?.Pause } }); room.player = player;
+        const player = libs.createAudioPlayer({ behaviors: { noSubscriber: libs.NoSubscriberBehavior?.Pause, maxMissedFrames: 10 } }); room.player = player;
         player.on('stateChange', (old, state) => { if (state.status === libs.AudioPlayerStatus.Idle) this.#finished(room, old.resource?.metadata?.trackId); });
         player.on('error', error => {
           this.#log('warn', 'music.player.error', error);
@@ -165,9 +184,13 @@ export class MusicManager {
       }
       await libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000);
       if (track.controller.signal.aborted || room.current !== track || room.leaving) return;
-      const resource = libs.createAudioResource(source.input, { inputType: libs.StreamType?.OggOpus, inlineVolume: true,
-        metadata: { title: source.title, trackId: track.id, url: source.url, lufs: -16 } });
-      resource.volume?.setVolume(room.volume); room.resource = resource; room.state = 'playing';
+      const transport = await this.#bufferedFactory(libs, source.input, { volume: room.volume, bitrate: room.bitrate,
+        metadata: { title: source.title, trackId: track.id, url: source.url, lufs: MUSIC_LOUDNESS.integrated }, signal: track.controller.signal });
+      if (track.controller.signal.aborted || room.current !== track || room.leaving) { transport.destroy(); return; }
+      const resource = transport.resource;
+      room.transport = transport; room.resource = resource; room.state = 'playing';
+      room.health?.destroy();
+      room.health = startMusicHealth(room, (...args) => this.#log(...args), { intervalMs: this.#healthIntervalMs });
       room.connection.subscribe(room.player); room.player.play(resource);
       this.#log('info', 'music.playing', { guildId: room.id, title: source.title, selection: source.selection, cacheHit: source.cacheHit });
       void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${source.selection === 'search-fallback' ? '\nDSH 選歌暫不可用，使用搜尋首選。' : ''}`);
@@ -197,11 +220,12 @@ export class MusicManager {
     const { room } = await this.#context(channelId, senderId);
     if (!room.current && !room.tracks.length && !room.startTask) return { message: '目前沒有播放中的歌曲' };
     const track = room.current ?? room.tracks.shift(); room.current = null; room.resource = null; room.state = 'idle'; room.version++;
+    room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
     this.#cancel(track); room.player?.stop(true); this.#pump(room); return { message: '已跳過，正在準備下一首' };
   }
   async stop({ channelId, senderId }) { const { room } = await this.#context(channelId, senderId); this.#clear(room); this.#idle(room); return { message: '已停止音樂並清空佇列' }; }
-  async pause({ channelId, senderId }) { const { room } = await this.#context(channelId, senderId); if (room.state !== 'playing') return { message: '目前沒有可暫停的歌曲' }; room.player?.pause(); room.state = 'paused'; return { message: '音樂已暫停' }; }
-  async resume({ channelId, senderId }) { const { room } = await this.#context(channelId, senderId); if (room.state !== 'paused') return { message: '目前沒有暫停中的歌曲' }; room.player?.unpause(); room.state = 'playing'; return { message: '繼續播放音樂' }; }
+  async pause({ channelId, senderId }) { const { room } = await this.#context(channelId, senderId); if (room.state !== 'playing') return { message: '目前沒有可暫停的歌曲' }; room.player?.pause(); room.transport?.resetTiming?.(); room.state = 'paused'; return { message: '音樂已暫停' }; }
+  async resume({ channelId, senderId }) { const { room } = await this.#context(channelId, senderId); if (room.state !== 'paused') return { message: '目前沒有暫停中的歌曲' }; room.transport?.resetTiming?.(); room.player?.unpause(); room.state = 'playing'; return { message: '繼續播放音樂' }; }
   async queue({ channelId, senderId }) {
     const { room } = await this.#context(channelId, senderId, { voice: false });
     const lines = room.current ? [`${room.state === 'preparing' ? '準備中' : room.state === 'paused' ? '已暫停' : '正在播放'}：${room.current.title ?? room.current.query}`] : [];
@@ -209,6 +233,13 @@ export class MusicManager {
     if (room.tracks.length > 20) lines.push(`另外還有 ${room.tracks.length - 20} 首`); return { message: lines.join('\n') || '音樂佇列目前是空的' };
   }
   async nowplaying({ channelId, senderId }) { const { room } = await this.#context(channelId, senderId, { voice: false }); return { message: room.current ? `${room.state === 'preparing' ? '準備中' : '目前歌曲'}：${room.current.title ?? room.current.query}\n${room.current.source?.url ?? ''}` : '目前沒有播放中的歌曲' }; }
+  async status({ channelId, senderId }) {
+    const { room } = await this.#context(channelId, senderId, { voice: false });
+    let ping; try { ping = room.connection?.ping; } catch {}
+    const frames = room.transport?.snapshot(); const health = room.health?.snapshot();
+    const number = value => Number.isFinite(value) ? Math.round(value) : '尚無資料';
+    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${room.bitrate / 1000} kbps；封包緩衝：${frames?.bufferedMs ?? 0} ms\n來源缺包：${frames?.sourceStarved ?? 0}；主程序最大延遲：${number(health?.eventLoopMaxMs)} ms\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。` };
+  }
   async volume({ channelId, senderId, percent }) {
     const { room } = await this.#context(channelId, senderId); if (!Number.isInteger(percent) || percent < 0 || percent > 100) return { message: '用法：/music volume 0–100' };
     room.volume = percent / 100; room.resource?.volume?.setVolume(room.volume); return { message: `音樂音量已設為 ${percent}%` };

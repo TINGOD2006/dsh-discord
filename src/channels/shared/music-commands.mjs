@@ -24,7 +24,7 @@ export function parseMusicCommand(text) {
   let name = match[1].toLowerCase();
   let argument = String(text).trim().slice(match[0].length).trim();
   if (name === 'music') {
-    const command = /^(play|join|skip|stop|pause|resume|queue|nowplaying|volume|leave)(?=$|\s)/i.exec(argument);
+    const command = /^(play|join|skip|stop|pause|resume|queue|nowplaying|status|volume|leave)(?=$|\s)/i.exec(argument);
     if (!command) return { name: 'help', argument: '' };
     name = command[1].toLowerCase();
     argument = argument.slice(command[0].length).trim();
@@ -67,6 +67,8 @@ export async function runMusicCommand(
         return await music.stop(request);
       case 'nowplaying':
         return await music.nowplaying(request);
+      case 'status':
+        return await music.status(request);
       case 'volume':
         return await music.volume({ ...request, percent: /^\d{1,3}$/.test(parsed.argument) ? Number(parsed.argument) : NaN });
       case 'pause':
@@ -78,7 +80,7 @@ export async function runMusicCommand(
       case 'leave':
         return await music.leave(request);
       case 'help':
-        return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music volume 0–100、/music leave\n/stop 與 /skip 仍然控制 AI 任務。' };
+        return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/stop 與 /skip 仍然控制 AI 任務。' };
       default:
         return null;
     }

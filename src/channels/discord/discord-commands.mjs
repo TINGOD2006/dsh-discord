@@ -200,6 +200,7 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
       { type: SUB_COMMAND, name: 'resume', description: 'Resume music' },
       { type: SUB_COMMAND, name: 'queue', description: 'Show the music queue' },
       { type: SUB_COMMAND, name: 'nowplaying', description: 'Show the current song' },
+      { type: SUB_COMMAND, name: 'status', description: 'Show voice UDP delay, packet buffer and playback health' },
       { type: SUB_COMMAND, name: 'volume', description: 'Set playback volume', options: [
         { type: INTEGER_OPTION, name: 'percent', description: 'Volume from 0 to 100', required: true, min_value: 0, max_value: 100 },
       ] },
@@ -306,8 +307,8 @@ export function interactionConversationId(interaction) {
  *
  * Deferring first is what keeps the 3-second acknowledgement window safe: the
  * digest query and the stop RPC are not bounded by it, and a visible "thinking"
- * placeholder is better than a failed interaction. The answer is ephemeral so
- * owner-only output never lands in the channel.
+ * placeholder is better than a failed interaction. Acknowledgements and answers
+ * are public in the invoking channel; execution still follows the access policy.
  */
 export async function handleApplicationCommand(interaction, {
   api, bridge, accessPolicy, applicationId, logger,
@@ -331,6 +332,7 @@ export async function handleApplicationCommand(interaction, {
 
   const respond = (content) => api.updateInteractionOriginal(applicationId, interaction.token, {
     content,
+    allowed_mentions: { parse: [] },
   }).catch((error) => {
     logger?.error?.('[dsh-im:discord] interaction follow-up failed:', {
       interactionId: String(interaction.id),
@@ -341,7 +343,7 @@ export async function handleApplicationCommand(interaction, {
   try {
     await api.createInteractionResponse(interaction.id, interaction.token, {
       type: INTERACTION_RESPONSE_DEFERRED,
-      data: { flags: MESSAGE_FLAG_EPHEMERAL },
+      data: { flags: 0 },
     });
   } catch (error) {
     logger?.error?.('[dsh-im:discord] interaction acknowledgement failed:', {

@@ -1,21 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { MusicManager } from '../../src/channels/discord/music.mjs';
+import { MusicManager, MUSIC_DEFAULT_VOLUME } from '../../src/channels/discord/music.mjs';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,1));
 async function until(fn){for(let n=0;n<200;n++){if(fn())return;await tick();}throw new Error('state did not settle');}
-function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000}={}) {
+function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice}={}) {
   const played=[],connections=[],notices=[],released=[];
   const guild={id:'guild',voiceStates:{cache:new Map([['user',{channelId:'voice'}],['other',{channelId:'elsewhere'}]])},voiceAdapterCreator:{},channels:{cache:new Map()}};
   class Client extends EventEmitter {channels={cache:new Map([['text',{guild}]])};user={id:'bot'};async login(){return login?.();}isReady(){return true;}destroy(){}}
-  class Player extends EventEmitter {state={status:'idle'};play(resource){const old=this.state;this.state={status:'playing',resource};played.push(resource);this.emit('stateChange',old,this.state);}stop(){const old=this.state;this.state={status:'idle'};this.emit('stateChange',old,this.state);}pause(){return true;}unpause(){return true;}}
+  class Player extends EventEmitter {state={status:'idle'};play(resource){const old=this.state;this.state={status:'playing',resource};played.push(resource);this.emit('stateChange',old,this.state);}stop(){const old=this.state;this.state={status:'idle'};this.emit('stateChange',old,this.state);}pause(){this.paused=true;return true;}unpause(){this.paused=false;return true;}}
   const runtime={Client,GatewayIntentBits:{Guilds:1,GuildVoiceStates:128},StreamType:{OggOpus:'ogg'},AudioPlayerStatus:{Idle:'idle'},VoiceConnectionStatus:{Ready:'ready',Destroyed:'destroyed',Disconnected:'disconnected',Signalling:'signalling',Connecting:'connecting'},NoSubscriberBehavior:{Pause:'pause'},
     entersState:async(connection)=>{if(ready)await ready();return connection;},
     joinVoiceChannel:()=>{const connection=new EventEmitter();Object.assign(connection,{state:{status:'ready'},subscribe(player){this.subscribed=player;},destroy(){this.state.status='destroyed';},rejoin(){return true;}});connections.push(connection);return connection;},
-    createAudioPlayer:()=>new Player(),createAudioResource:(input,options)=>({input,...options,volume:{setVolume(value){this.value=value;}}}),
+    createAudioPlayer:()=>new Player(),createAudioResource:(input,options)=>({input,...options,encoder:{setBitrate(value){this.bitrate=value;}},volume:{setVolume(value){this.value=value;}}}),
   };
   const pipeline={prepare:prepare??(async(query)=>({input:'normalized-'+query+'.ogg',title:query,url:'https://www.youtube.com/watch?v=jNQXAC9IVRw',release:()=>released.push(query)})),destroy:async()=>{}};
-  const manager=new MusicManager({token:'fixture-only',runtime,pipeline,cooldownMs:0,idleMs,loginTimeoutMs,notify:async(...args)=>notices.push(args)});
+  const bufferedFactory=async(libs,input,options)=>{const resource=libs.createAudioResource(input,{metadata:options.metadata});resource.encoder.setBitrate(options.bitrate);resource.volume.setVolume(options.volume);return{resource,destroy(){},resetTiming(){},snapshot:()=>({framesRead:1,sourceStarved:0,maxReadGapMs:20,bufferedMs:400,bitrate:options.bitrate})}};
+  const manager=new MusicManager({bufferedFactory,...(recoverVoice?{recoverVoice}:{}),token:'fixture-only',runtime,pipeline,cooldownMs:0,idleMs,loginTimeoutMs,notify:async(...args)=>notices.push(args)});
   const request={channelId:'text',senderId:'user'};
   return {manager,request,played,connections,notices,released,guild};
 }
@@ -24,7 +25,9 @@ test('normalization finishes and voice Ready is reached before any playback',asy
   let normalize;const f=fixture({prepare:()=>new Promise(resolve=>{normalize=resolve;})});
   try{await f.manager.play({...f.request,query:'song'});await until(()=>normalize);assert.equal(f.played.length,0);
     normalize({input:'normalized.ogg',title:'song',release(){}});await until(()=>f.played.length===1);
-    assert.equal(f.played[0].metadata.lufs,-16);assert.equal(f.played[0].input,'normalized.ogg');assert.equal(f.connections[0].subscribed!=null,true);
+    assert.equal(f.played[0].metadata.lufs,-20);assert.equal(f.played[0].input,'normalized.ogg');assert.equal(f.connections[0].subscribed!=null,true);
+    assert.equal(f.played[0].volume.value,MUSIC_DEFAULT_VOLUME);assert.equal(MUSIC_DEFAULT_VOLUME,0.6);
+    assert.equal(f.played[0].encoder.bitrate,128000);
   }finally{await f.manager.destroy();}
 });
 
@@ -77,5 +80,22 @@ test('Idle advances once and a late error from the old track cannot stop the nex
 test('a stalled Discord login cannot leave a music command thinking forever',async()=>{
   const f=fixture({login:()=>new Promise(()=>{}),loginTimeoutMs:20});const started=Date.now();
   try{await assert.rejects(f.manager.play({...f.request,query:'song'}),/連線逾時/);assert(Date.now()-started<1000);assert.equal(f.played.length,0);}
+  finally{await f.manager.destroy();}
+});
+
+test('transport reconnect pauses and resumes the same track without clearing its queue',async()=>{
+  let finish;const f=fixture({recoverVoice:()=>new Promise(resolve=>{finish=resolve;})});
+  try{
+    await f.manager.play({...f.request,query:'first'});await f.manager.play({...f.request,query:'second'});await until(()=>f.played.length===1);
+    const player=f.connections[0].subscribed,resource=f.played[0];
+    f.connections[0].emit('disconnected');await until(()=>finish);assert.equal(player.paused,true);
+    finish({attempts:1});await until(()=>player.paused===false);
+    assert.equal(f.played.length,1);assert.equal(f.played[0],resource);assert.match((await f.manager.queue(f.request)).message,/second/);
+  }finally{await f.manager.destroy();}
+});
+
+test('voice channel bandwidth caps the music encoder bitrate',async()=>{
+  const f=fixture();f.guild.channels.cache.set('voice',{bitrate:64000});
+  try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,64000);}
   finally{await f.manager.destroy();}
 });

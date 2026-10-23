@@ -35,3 +35,17 @@ test('a missing log alerts once and recovery can establish a fresh baseline',asy
     const recovered=await monitorMusic(options);assert.equal(recovered.observedGuildsSinceReload,1);assert.equal(recovered.status,undefined);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('voice health statistics stay private and regular samples do not produce notifications',()=>{
+  const text=line('log','music.transport.stats {"udpPingMs":42,"wsPingMs":25,"sourceStarved":0,"privateToken":"never-print"}','info');
+  const result=consumeMusicLog(text,null,Date.parse(ts));
+  assert.equal(result.report.transport.udpPingMs,42);assert.equal(result.report.transport.rtpPacketLoss,null);
+  assert.equal(result.report.notifications.length,0);assert(!JSON.stringify(result.report).includes('never-print'));
+  const warning=consumeMusicLog(text+line('log','music.transport.degraded {"udpPingMs":600,"sourceStarved":3}','warn'),result.state,Date.parse(ts));
+  assert.equal(warning.report.notifications[0].code,'transport-quality');
+});
+
+test('a text playback notice failure is not reported as a UDP or audio failure',()=>{
+  const event=classifyMusicLog({ts,event:'log',level:'warn',message:'music.notice.failed Discord POST returned invalid JSON'});
+  assert.equal(event.cause,'music-notification');
+});

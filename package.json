@@ -34,6 +34,7 @@
     "src",
     "scripts/build-local.mjs",
     "scripts/smoke-music-audio.mjs",
+    "scripts/smoke-music-transport.mjs",
     "scripts/monitor-music.mjs",
     "docs/discord-music.md",
     "docs/client-integration.md",

@@ -18,6 +18,8 @@ const CAUSES = {
   'interaction-response': 'Discord 互動確認或回覆失敗，指令可能停留在思考狀態',
   'gateway': 'Discord Gateway 連線或 Intents 設定需檢查',
   'music-runtime': '音樂執行階段發生錯誤，需查看本機顯示的錯誤',
+  'music-notification': '音樂提示訊息回覆失敗，不能據此判定語音串流或 UDP 中斷',
+  'transport-quality': '播放鏈路出現音訊供應缺口、主程序延遲或 UDP 往返抖動；需對照統計定位，不能直接判定網際網路丟包',
 };
 
 export function classifyMusicLog(row) {
@@ -28,6 +30,17 @@ export function classifyMusicLog(row) {
   const event = row.event === 'log' ? text.match(/\bmusic\.[a-z.-]+\b/i)?.[0]?.toLowerCase() ?? 'log' : row.event;
   // Output only enumerated fields; raw messages, queries, URLs and IDs never escape.
   const result = { at: row.ts, event };
+  if (['music.transport.stats', 'music.transport.degraded', 'music.transport.recovered', 'music.reconnect.recovered'].includes(event)) {
+    let detail = {};
+    try { detail = JSON.parse(text.slice(text.lastIndexOf('{'))); } catch {}
+    const metrics = {};
+    for (const key of ['udpPingMs', 'wsPingMs', 'udpJitterMs', 'eventLoopMaxMs', 'framesRead', 'sourceStarved', 'maxReadGapMs', 'bufferedMs', 'bitrate']) {
+      metrics[key] = Number.isFinite(detail[key]) && detail[key] >= 0 ? detail[key] : null;
+    }
+    if (event === 'music.transport.degraded') return { ...result, kind: 'failure', cause: 'transport-quality', detail: CAUSES['transport-quality'], metrics };
+    if (event.endsWith('.recovered')) return { ...result, kind: 'recovery', metrics };
+    return { ...result, kind: 'transport', metrics };
+  }
   if (event === 'commands.global-cleared') return { ...result, kind: 'reload' };
   if (event === 'commands.synced') return { ...result, kind: 'commands', scopeKey: digest(String(data.guildId ?? 'unknown')) };
   if (event === 'interaction.handled' && COMMANDS.has(data.command)) return { ...result, kind: 'interaction', command: data.command };
@@ -38,6 +51,7 @@ export function classifyMusicLog(row) {
   const failure = ['warn', 'error'].includes(row.level);
   let cause;
   if (event === 'music.dsh.fallback') cause = 'selection-fallback';
+  else if (failure && event === 'music.notice.failed') cause = 'music-notification';
   else if (failure && /interaction (?:acknowledgement|follow-up|handling|command) failed/i.test(text)) cause = 'interaction-response';
   else if (failure && /command.*(?:registration|cleanup).*failed|commands\..*fail/i.test(text)) cause = 'command-registration';
   else if (failure && /discord-gateway|connection\.(?:restore|monitor)|\b(?:4004|4013|4014)\b/i.test(text)) cause = 'gateway';
@@ -74,6 +88,7 @@ export function consumeMusicLog(text, previous = null, now = Date.now()) {
       state.milestones = {};
       state.interactions = 0;
       state.submittedSources = 0;
+      state.lastTransport = null;
     } else if (event.kind === 'commands') {
       if (!state.guilds.includes(event.scopeKey)) state.guilds.push(event.scopeKey);
       state.lastCommandSyncAt = event.at;
@@ -97,10 +112,15 @@ export function consumeMusicLog(text, previous = null, now = Date.now()) {
         state.milestones.dsh = event.at;
         notifications.push({ type: 'progress', at: event.at, code: 'dsh-selection-observed', detail: '觀察到真實 DSH 選歌結果進入音樂播放流程' });
       }
+    } else if (event.kind === 'transport') {
+      state.lastTransport = { at: event.at, ...event.metrics, rtpPacketLoss: null };
+    } else if (event.kind === 'recovery') {
+      notifications.push({ type: 'recovery', at: event.at, code: event.event, detail: '語音連線或播放鏈路已恢復；仍需實際收聽確認', metrics: event.metrics });
     } else if (event.kind === 'failure') {
       const failure = state.errors[event.cause] ?? { count: 0 };
       failure.count++; failure.lastAt = event.at; state.errors[event.cause] = failure;
-      if (failure.count === 1 || failure.count === 3) notifications.push({ type: 'error', at: event.at, code: event.cause, count: failure.count, detail: event.detail });
+      if (failure.count === 1 || failure.count === 3) notifications.push({ type: 'error', at: event.at, code: event.cause, count: failure.count, detail: event.detail,
+        ...(event.metrics ? { metrics: event.metrics } : {}) });
     }
   }
   state.signature = signature;
@@ -115,6 +135,7 @@ export function consumeMusicLog(text, previous = null, now = Date.now()) {
     observedSubmittedSources: state.submittedSources,
     dshSelectionObserved: Boolean(state.milestones.dsh),
     audiblePlaybackConfirmed: false,
+    transport: state.lastTransport ?? null,
     pending: [
       ...(!state.guilds.length ? ['尚未觀察到這次重新載入後的伺服器指令同步'] : []),
       ...(!state.milestones.source ? ['尚未觀察到音訊提交播放器'] : []),
