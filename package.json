@@ -1,0 +1,107 @@
+{
+  "name": "dsh-discord",
+  "version": "1.0.0",
+  "icon": "./assets/logo-plugin-message-link-gradient.webp",
+  "description": "Discord integration for DeepSeek Harness (local fork of @xmanrui/dsh-im): an @mention is always answered in place instead of opening a new sub-thread, and replies in busy threads get a compact multi-person context digest.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "discord",
+    "chatbot",
+    "instant-messaging"
+  ],
+  "author": "local fork of xmanrui/dsh-im (MIT)",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dsh-discord": "bin/dsh-im.mjs"
+  },
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "assets",
+    "bin",
+    "cordis.patch.yml",
+    "lib",
+    "locale/*.json",
+    "plugin-src",
+    "src",
+    "scripts/build-local.mjs",
+    "docs/client-integration.md",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    },
+    "compatibility": {
+      "dsh": "0.2.1-rc.2",
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible",
+        "0.2.1-rc.2": "compatible"
+      },
+      "profiles": [
+        "web",
+        "desktop"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build-local.mjs",
+    "test": "node --test test/*.test.mjs test/channels/*/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "@matrix-org/olm": "3.2.15",
+    "@tencent-connect/qqbot-connector": "1.2.0",
+    "@tencent-connect/qqbot-nodejs": "1.0.4",
+    "@wecom/aibot-node-sdk": "1.0.7",
+    "dingtalk-stream": "2.1.4",
+    "discord.js": "^14.27.0",
+    "imapflow": "^2.0.5",
+    "mailparser": "^3.9.28",
+    "nodemailer": "^10.0.10",
+    "opusscript": "^0.0.8",
+    "qrcode": "1.5.4",
+    "undici": "7.29.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@larksuiteoapi/node-sdk": "1.73.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "esbuild": "0.25.9",
+    "https-proxy-agent": "5.0.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "semver": "7.8.5"
+  },
+  "directories": {
+    "doc": "docs",
+    "lib": "lib",
+    "test": "test"
+  },
+  "optionalDependencies": {
+    "sharp": "0.35.5"
+  }
+}
