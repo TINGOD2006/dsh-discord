@@ -1,6 +1,6 @@
 /**
- * Per-conversation turn scheduler: one voice at a time, but ordered by a table
- * instead of by arrival.
+ * Per-conversation turn scheduler: priority/fairness by default; Discord opts
+ * into strict FIFO without burst folding. Each conversation runs one turn at a time.
  *
  * The old queue was a promise chain: whoever arrived first ran first, and past
  * a handful of pending messages the rest were rejected with a "queue is full"
@@ -53,10 +53,12 @@ export class TurnScheduler {
   #states = new Map();
 
   #seq = 0;
+  #order;
 
-  constructor({ softLimit = 5, hardLimit = 12 } = {}) {
+  constructor({ softLimit = 5, hardLimit = 12, order = 'priority' } = {}) {
     this.#softLimit = Math.max(1, softLimit);
     this.#hardLimit = Math.max(this.#softLimit, hardLimit);
+    this.#order = order === 'fifo' ? 'fifo' : 'priority';
   }
 
   /** True while a turn is running or something is waiting behind it. */
@@ -132,6 +134,7 @@ export class TurnScheduler {
   }
 
   #foldTarget(state, item) {
+    if (this.#order === 'fifo') return null;
     if (state.pending.length < this.#softLimit) return null;
     if (typeof item.absorb !== 'function' || !item.text) return null;
     // Fold into the newest queued message of the same sender, so their burst
@@ -152,6 +155,7 @@ export class TurnScheduler {
    * monopolising the backlog; the aging term stops priority from being absolute.
    */
   #pick(state) {
+    if (this.#order === 'fifo') return state.pending[0] ?? null;
     const now = Date.now();
     const score = (item) => item.priority * AGING_WINDOW_MS
       + Math.min(AGING_MAX_MS, now - item.arrivedAt);

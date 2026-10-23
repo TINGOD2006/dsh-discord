@@ -63,6 +63,10 @@ Join a voice channel first, then use `/play` with a YouTube URL or song keywords
 
 **`/stop` and `/skip` remain AI task controls. Use the `/music` namespace for music.** Playback controls require the caller to be in the Bot's voice channel; queue and current-track queries do not.
 
+Music commands bypass chat coalescing, steering and pending chat interactions. Player mutations share one FIFO lane per guild across text channels. Authorized stop/leave commands cancel earlier unfinished admissions; delayed acknowledgements cannot make an older request run after a newer stop. See the [command ordering table](docs/discord-music.md#指令處理順序與隔離).
+
+Ordinary Discord mentions use per-conversation FIFO without automatic merging, owner/follow-up overtaking or automatic steering. Slow history/routing lookups cannot let later messages enter first. Explicit AI controls and music remain independent; other channels retain their existing scheduling policy.
+
 DSH selection has a ten-second deadline with a verified search-result fallback. Non-YouTube webpages, including Bilibili/b23 links, are used to extract a title for YouTube search; this is **not direct playback of Bilibili's original audio**. Local audio files and recognizable public audio URLs are also supported. Live streams, tracks over thirty minutes and detected preview truncations are rejected. Each guild has its own volume and up to 25 waiting tracks.
 
 ## Development and diagnostics
@@ -74,7 +78,7 @@ npm run test:music
 npm run monitor:music
 ```
 
-Additional build resolution roots can be supplied with `DSH_BUILD_NODE_MODULES`, separated by semicolons. Reload the plugin after rebuilding. The latest music regression run passed **44/44 tests**; this does not certify every inherited channel.
+Additional build resolution roots can be supplied with `DSH_BUILD_NODE_MODULES`, separated by semicolons. Reload the plugin after rebuilding. The latest music and chat-order regression run passed **70/70 tests**, including chat FIFO, interleaved chat/music, ordering, cancellation, reload and voice recovery; this does not certify every inherited channel.
 
 `node scripts/smoke-music-transport.mjs` checks the real codec/player clock with localhost UDP echo without contacting Discord. The separate audio smoke script downloads from YouTube; see the full guide before running it.
 

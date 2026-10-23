@@ -10,10 +10,12 @@ import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { evaluateInboundAccess } from '../shared/inbound-access.mjs';
 import { stripInternalLeaks } from '../shared/outbound-sanitize.mjs';
 import { digestForContext, normalizeDigestConfig } from '../shared/thread-digest.mjs';
-import { takeRecallGrant } from '../shared/owner-commands.mjs';
+import { takeRecallGrant, isOwnerCommand } from '../shared/owner-commands.mjs';
+import { isControlCommand } from '../shared/control-command.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { handleApplicationCommand, syncApplicationCommands } from './discord-commands.mjs';
 import { MusicManager } from './music.mjs';
+import { isMusicCommand } from '../shared/music-commands.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
 const DISCORD_GATEWAY_INTENTS = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15);
@@ -457,6 +459,7 @@ export function normalizeDiscordMessage(message, botId, {
     senderIsBot: message.author.bot === true,
     kind: direct ? 'direct' : 'group',
     conversationId: String(message.channel_id),
+    ...(message.guild_id ? { guildId: String(message.guild_id) } : {}),
     content: stripBotMention(message.content ?? '', botId),
     plainText: (!Array.isArray(message.attachments) || message.attachments.length === 0)
       && (!Array.isArray(message.sticker_items) || message.sticker_items.length === 0)
@@ -582,7 +585,7 @@ export async function resolveDiscordMessageRoute(message, botId, {
   // dsh-discord 修正：默认**不再**新开子讨论串，就在被 @ 的地方回答
   //（频道里 @ 就回频道；讨论串里 @ 就回该讨论串）。
   // 想恢复原厂行为（频道 @ → 新开 Thread）时设 DSK_DISCORD_THREAD_ON_MENTION=1。
-  if (process.env.DSK_DISCORD_THREAD_ON_MENTION !== '1') {
+  if (isMusicCommand(normalized.content) || process.env.DSK_DISCORD_THREAD_ON_MENTION !== '1') {
     return withConversationRoute(normalized, sourceChannel, botId);
   }
 
@@ -798,6 +801,7 @@ export class DiscordRuntime {
   #connectTimeoutMs;
   #createApi;
   #createWebSocket;
+  #createMusicManager;
   #random;
   #status = createDiscordRuntimeStatus();
   #api = null;
@@ -807,7 +811,7 @@ export class DiscordRuntime {
   // them, so without a note they are invisible in the session and a burst of
   // @chat buries what the player was told. Notes replay like chat lines.
   #musicNotes = new Map();
-  #musicLanes = new Map();
+  #interactions = new Set();
   #abortController = null;
   #socket = null;
   #gatewayUrl = null;
@@ -826,6 +830,7 @@ export class DiscordRuntime {
   #starting = null;
   #channels = new Map();
   #routing = new Map();
+  #messageAdmissions = new Map();
 
   constructor({
     config,
@@ -840,6 +845,7 @@ export class DiscordRuntime {
     connectTimeoutMs = 20_000,
     createApi = (options) => new DiscordApi(options),
     createWebSocket = (url) => new WebSocket(url),
+    createMusicManager = (options) => new MusicManager(options),
     random = Math.random,
   }) {
     if (!config || !token || !harness || !state) {
@@ -858,6 +864,7 @@ export class DiscordRuntime {
     this.#connectTimeoutMs = connectTimeoutMs;
     this.#createApi = createApi;
     this.#createWebSocket = createWebSocket;
+    this.#createMusicManager = createMusicManager;
     this.#random = random;
   }
 
@@ -940,17 +947,6 @@ export class DiscordRuntime {
     };
   }
 
-  // One music lane per channel: /play and /next on the same player run in the
-  // order they arrived instead of racing each other, while chat turns keep
-  // using the turn scheduler and never wait on the player.
-  #queueMusic(channelId, work) {
-    const key = String(channelId ?? '');
-    const prev = this.#musicLanes.get(key) ?? Promise.resolve();
-    const next = prev.catch(() => undefined).then(work);
-    this.#musicLanes.set(key, next.catch(() => undefined));
-    return next;
-  }
-
   #noteMusic(args, verb, result) {
     const channelId = String(args?.channelId ?? args?.conversationId ?? '');
     if (!channelId) return;
@@ -966,15 +962,14 @@ export class DiscordRuntime {
     this.#musicNotes.set(channelId, notes);
   }
 
-  #musicTool(verb, run) {
-    return (args) => {
-      const channelId = args?.channelId ?? args?.conversationId;
-      return this.#queueMusic(channelId, async () => {
-        const result = await run(args);
-        this.#noteMusic(args, verb, result);
-        return result;
-      });
-    };
+  #musicTools(music, signal) {
+    return { execute: async (verb, args) => {
+      signal.throwIfAborted();
+      // Capture this generation's manager; an old callback cannot use a new one.
+      const result = await music.execute(verb, { ...args, signal });
+      if (!signal.aborted) this.#noteMusic(args, `/music ${verb === 'next' ? 'skip' : verb}`, result);
+      return result;
+    } };
   }
 
   async #collectHistory(message, conversationKey) {
@@ -1102,7 +1097,7 @@ export class DiscordRuntime {
       this.#applicationId = String(application?.id ?? '').trim() || null;
       this.#gatewayUrl = gateway?.url;
       if (process.env.DSK_DISCORD_MUSIC !== '0') {
-        this.#music = new MusicManager({
+        this.#music = this.#createMusicManager({
           token: this.#token,
           harness: this.#harness,
           notify: (channelId, content) => api.createMessage({ channelId, content }),
@@ -1129,28 +1124,13 @@ export class DiscordRuntime {
         },
         // Music commands work on the voice connection, which lives in the
         // runtime's own voice client rather than in the bridge.
-        musicTools: this.#music ? {
-          play: this.#musicTool('/play', ({ channelId, conversationId, senderId, query }) => this.#music.play({
-            channelId: channelId ?? conversationId, senderId, query,
-          })),
-          join: this.#musicTool('/join', (args) => this.#music.join(args)),
-          next: this.#musicTool('/next', (args) => this.#music.next(args)),
-          stop: this.#musicTool('/stop', (args) => this.#music.stop(args)),
-          pause: this.#musicTool('/pause', (args) => this.#music.pause(args)),
-          resume: this.#musicTool('/resume', (args) => this.#music.resume(args)),
-          queue: this.#musicTool('/queue', (args) => this.#music.queue(args)),
-          nowplaying: this.#musicTool('/nowplaying', (args) => this.#music.nowplaying(args)),
-          status: this.#musicTool('/musicstatus', (args) => this.#music.status(args)),
-          volume: this.#musicTool('/volume', (args) => this.#music.volume(args)),
-          leave: this.#musicTool('/leave', (args) => this.#music.leave(args)),
-        } : null,
+        musicTools: this.#music ? this.#musicTools(this.#music, controller.signal) : null,
         ownerUserId: this.#config.ownerUserId,
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
-        // A group burst split across bubbles is one thought: fold same-sender
-        // posts arriving within three seconds into a single turn.
-        coalesceWindowMs: 3_000,
+        // Ordinary Discord turns retain receipt order, without merging or steering.
+        chatOrder: 'fifo',
         // Recent-history context: a channel conversation is not the bot's own
         // turn log, so messages the bot never saw arrive here as a rendered
         // <dsh_im_recent_chat> block ahead of the prompt.
@@ -1335,6 +1315,10 @@ export class DiscordRuntime {
     const api = this.#api;
     const bridge = this.#bridge;
     if (!api || !bridge || this.#stopped) return;
+    const interactionId = String(interaction?.id ?? '');
+    if (!interactionId || this.#interactions.has(interactionId)) return;
+    this.#interactions.add(interactionId);
+    while (this.#interactions.size > 2048) this.#interactions.delete(this.#interactions.values().next().value);
     if (!this.#applicationId) {
       this.#logger.error?.('[dsh-im:discord] ignoring an interaction: application id unknown');
       return;
@@ -1408,7 +1392,27 @@ export class DiscordRuntime {
     this.#channels.set(String(channel.id), channel);
   }
 
-  async #acceptMessage(message, bridge) {
+  #acceptMessage(message, bridge) {
+    if (this.#stopped || this.#bridge !== bridge) return Promise.resolve();
+    const normalized = normalizeDiscordMessage(message, this.#config.platformId);
+    // Music owns its own per-guild lane and cannot wait behind chat history/routing.
+    if (isMusicCommand(normalized?.content) || isControlCommand(normalized?.content) || isOwnerCommand(normalized?.content)) {
+      return this.#routeMessage(message, bridge).then(result => result?.completion);
+    }
+    const key = String(message?.channel_id ?? '');
+    const previous = this.#messageAdmissions.get(key) ?? Promise.resolve();
+    // Hold only admission, never the model's completion, so other commands and
+    // other conversations stay responsive during a long reply.
+    const admission = previous.catch(() => {}).then(() => this.#routeMessage(message, bridge));
+    const tail = admission.then(() => {}, () => {});
+    this.#messageAdmissions.set(key, tail);
+    void tail.then(() => { if (this.#messageAdmissions.get(key) === tail) this.#messageAdmissions.delete(key); });
+    return admission.then(result => result?.completion);
+  }
+
+  async #routeMessage(message, bridge) {
+    if (this.#stopped || this.#bridge !== bridge) return;
+    const signal = this.#abortController?.signal;
     const messageId = String(message?.id ?? '');
     if (!messageId || this.#state.hasSeen(messageId)) {
       if (messageId) this.#logger.event?.('message.ignored', { messageId, reason: 'already-seen' });
@@ -1427,9 +1431,19 @@ export class DiscordRuntime {
       images: preflight?.images?.length ?? 0,
       files: preflight?.files?.length ?? 0,
     });
+    if (preflight?.addressed === true && preflight.senderIsBot !== true && isMusicCommand(preflight.content)) {
+      // Explicit music needs no chat history or thread routing. Reserve it now;
+      // archival I/O is independent and cannot revive a play after a later stop.
+      const completion = bridge.accept(preflight, { busyMessageMode: 'queue' });
+      void captureGroupHistory(this.#groupHistory, preflight, groupHistoryEntry('discord', message, preflight, {
+        groupName: this.#channels.get(String(message.channel_id))?.name,
+      }), { logger: this.#logger }).catch(() => {});
+      return { completion };
+    }
     if (preflight) await captureGroupHistory(this.#groupHistory, preflight, groupHistoryEntry('discord', message, preflight, {
       groupName: this.#channels.get(String(message.channel_id))?.name,
     }), { logger: this.#logger });
+    signal?.throwIfAborted();
     let accessDecision;
     if (preflight?.kind === 'group' && preflight.addressed === true
       && preflight.senderIsBot !== true) {
@@ -1446,11 +1460,10 @@ export class DiscordRuntime {
         reason: accessDecision.reason ?? null,
         canExecuteCommands: accessDecision.canExecuteCommands === true,
       });
-      if (!accessDecision.allowed) {
+      if (!accessDecision.allowed && !isMusicCommand(preflight.content)) {
         // Let the shared bridge apply its normal silent/command-denial behavior,
         // but do so against the source channel before creating a Thread.
-        await bridge.accept(preflight, { accessDecision });
-        return;
+        return { completion: bridge.accept(preflight, { accessDecision }) };
       }
     }
     let route = this.#routing.get(messageId);
@@ -1459,11 +1472,11 @@ export class DiscordRuntime {
         this.#contextEnhancement,
         message.guild_id ? 'group' : 'direct',
       );
-      const busyMessageMode = this.#harness.currentBusyMessageMode?.() ?? 'queue';
+      const busyMessageMode = 'queue';
       const pendingRoute = resolveDiscordMessageRoute(message, this.#config.platformId, {
         api: this.#api,
         channel: this.#channels.get(String(message.channel_id)),
-        signal: this.#abortController?.signal,
+        signal,
         onChannel: (resolved) => this.#rememberChannel(resolved),
       });
       route = { pendingRoute, contextSnapshot, busyMessageMode };
@@ -1474,6 +1487,7 @@ export class DiscordRuntime {
     }
     try {
       const normalized = await route.pendingRoute;
+      signal?.throwIfAborted();
       this.#logger.event?.('route.resolved', {
         messageId,
         dropped: normalized == null,
@@ -1482,16 +1496,17 @@ export class DiscordRuntime {
       });
       if (normalized) {
         normalized.groupHistory = preflight?.groupHistory;
-        await bridge.accept(normalized, {
+        const completion = bridge.accept(normalized, {
           contextSnapshot: route.contextSnapshot,
           busyMessageMode: route.busyMessageMode,
           ...(accessDecision ? { accessDecision } : {}),
         });
-        this.#logger.event?.('message.accepted', {
+        const observed = completion.then(() => this.#logger.event?.('message.accepted', {
           messageId,
           replyChannelId: normalized?.conversationId ? String(normalized.conversationId) : null,
           busyMessageMode: route.busyMessageMode,
-        });
+        }));
+        return { completion: observed };
       }
     } catch (error) {
       this.#logger.event?.('message.failed', {
@@ -1575,8 +1590,10 @@ export class DiscordRuntime {
     this.#bridge = null;
     this.#music = null;
     this.#api = null;
-    void music?.destroy();
+    void music?.destroy().catch(error => this.#logger.warn?.('[dsh-im:discord] music shutdown failed:', error?.name ?? 'Error'));
+    this.#interactions.clear(); this.#musicNotes.clear();
     this.#routing.clear();
+    this.#messageAdmissions.clear();
     try {
       if (socket && socket.readyState < 2) socket.close(1000, 'Plugin stopped');
     } catch (error) {

@@ -46,6 +46,22 @@ test('music dispatcher forwards channel and sender to controls without touching 
   assert.deepEqual(calls, [{channelId: 'channel', senderId: 'sender'}, {channelId: 'channel', senderId: 'sender'}]);
 });
 
+test('music controls reject extra text instead of executing an accidental command', async () => {
+  let calls=0;
+  for (const text of ['/music stop extra', '/music skip\n/stop', '/pause song']) {
+    const result=await runMusicCommand(text,{}, {},'key',{conversationId:'channel',senderId:'sender',music:{execute:async()=>{calls++;}}});
+    assert.match(result.message,/不接受額外文字/);
+  }
+  assert.equal(calls,0);
+});
+
+test('registered command names are unique and AI/music parsers never claim the same root',()=>{
+  const commands=applicationCommandPayloads();const names=commands.map(command=>command.name);
+  assert.equal(new Set(names).size,names.length);
+  for(const name of names) assert.equal(isControlCommand('/'+name)&&isMusicCommand('/'+name),false,name);
+  assert.equal(commands.find(command=>command.name==='play').options[0].required,true);
+});
+
 for (const command of [
   { data: { name: 'music', options: [{ type: 1, name: 'stop' }] }, text: '/music stop' },
   { data: { name: 'play', options: [{ type: 3, name: 'query', value: 'song' }] }, text: '/play song' },

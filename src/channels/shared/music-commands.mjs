@@ -44,47 +44,61 @@ export async function runMusicCommand(
     conversationId = null,
     enhancement = null,
     senderId = null,
+    guildId = null,
+    hasImages = false,
+    hasFiles = false,
+    ready,
+    isDirect = false,
   } = {},
 ) {
   const parsed = parseMusicCommand(text);
   if (!parsed) return null;
   if (signal?.aborted) return null;
+  if (hasImages || hasFiles) return { message: '音樂指令請使用純文字網址或關鍵詞，移除附件後重試。' };
+  if (isDirect) return { message: '請在伺服器頻道使用音樂指令。' };
+  if (parsed.argument && !['play', 'volume', 'help'].includes(parsed.name)) {
+    return { message: '這個音樂控制指令不接受額外文字；請單獨使用 /music stop、/music skip 等指令。' };
+  }
   if (!music) return { message: t('音乐功能没开嘛。') };
   const source = typeof enhancement?.source === 'function' ? enhancement.source() : null;
   const channelId = conversationId ?? source?.chatId ?? null;
   if (!channelId) return { message: t('要在一个服务器频道里用嘛。') };
   const actorId = senderId ?? source?.senderId ?? null;
-  const request = { channelId, senderId: actorId };
+  const request = { channelId, senderId: actorId, ...(guildId ? { guildId } : {}) };
+  const invoke = (name, args = request) => typeof music.execute === 'function'
+    ? music.execute(name, { ...args, ...(signal ? { signal } : {}), ...(ready ? { ready } : {}) })
+    : Promise.resolve(ready).then(() => music[name](args));
   try {
     switch (parsed.name) {
       case 'play':
-        return await music.play({ ...request, query: parsed.argument });
+        return await invoke('play', { ...request, query: parsed.argument });
       case 'join':
-        return await music.join(request);
+        return await invoke('join');
       case 'next':
-        return await music.next(request);
+        return await invoke('next');
       case 'stop':
-        return await music.stop(request);
+        return await invoke('stop');
       case 'nowplaying':
-        return await music.nowplaying(request);
+        return await invoke('nowplaying');
       case 'status':
-        return await music.status(request);
+        return await invoke('status');
       case 'volume':
-        return await music.volume({ ...request, percent: /^\d{1,3}$/.test(parsed.argument) ? Number(parsed.argument) : NaN });
+        return await invoke('volume', { ...request, percent: /^\d{1,3}$/.test(parsed.argument) ? Number(parsed.argument) : NaN });
       case 'pause':
-        return await music.pause(request);
+        return await invoke('pause');
       case 'resume':
-        return await music.resume(request);
+        return await invoke('resume');
       case 'queue':
-        return await music.queue(request);
+        return await invoke('queue');
       case 'leave':
-        return await music.leave(request);
+        return await invoke('leave');
       case 'help':
         return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/stop 與 /skip 仍然控制 AI 任務。' };
       default:
         return null;
     }
   } catch (error) {
+    if (error?.name === 'AbortError') return { message: '音樂指令已取消，未重新加入已取消的歌曲。' };
     const reason = error instanceof Error ? error.message : String(error);
     return { message: t('放歌失败了：{reason}', { reason }) };
   }

@@ -226,8 +226,7 @@ export class TextHarnessBridge {
   #replyTimeoutMs;
   #signal;
   #keepaliveIntervalMs;
-  // Per-conversation turn table: priority-ordered, fair between senders, and
-  // folding a burst from one sender into a single turn instead of rejecting it.
+  // Default priority/fairness table; Discord can opt into unmerged FIFO turns.
   #scheduler = new TurnScheduler({ softLimit: MAX_QUEUED_MESSAGES, hardLimit: MAX_QUEUED_MESSAGES * 2 + 2 });
   // Crash-recovery for the turn table, started with the bridge; see
   // recoverPendingMessages().
@@ -254,6 +253,7 @@ export class TextHarnessBridge {
   #autoSteerSameSender = false;
   #autoSteerLimit = 0;
   #coalesceWindowMs = 0;
+  #fifo = false;
   // Owner-only commands: adapter-supplied handlers plus the saved owner id, so
   // a muted conversation still lets the owner reach `/unmute` while everything
   // else is dropped before it can reach the harness.
@@ -279,6 +279,7 @@ export class TextHarnessBridge {
     autoSteerSameSender = false,
     autoSteerLimit = 0,
     coalesceWindowMs = 0,
+    chatOrder = 'priority',
     ownerTools = null,
     musicTools = null,
     ownerUserId = '',
@@ -311,6 +312,11 @@ export class TextHarnessBridge {
     this.#coalesceWindowMs = Number.isSafeInteger(coalesceWindowMs) && coalesceWindowMs > 0
       ? Math.min(coalesceWindowMs, 3_000)
       : 0;
+    this.#fifo = chatOrder === 'fifo';
+    if (this.#fifo) {
+      this.#scheduler = new TurnScheduler({ order: 'fifo' });
+      this.#coalesceWindowMs = 0; this.#autoSteerSameSender = false;
+    }
     // Channel-supplied conversation context pipeline (collect/render/consume/deliver).
     // Channels own what context means and how it is framed; the bridge only runs
     // the steps at the right points of one turn, so every hook is optional and a
@@ -341,6 +347,7 @@ export class TextHarnessBridge {
     const conversationId = cleanText(message?.conversationId);
     const kind = message?.kind === 'group' ? 'group' : 'direct';
     const normalized = { ...message, kind, conversationId };
+    const discordMusic = this.#descriptor.key === 'discord' && isMusicCommand(controlTextOf(normalized));
     const messageId = cleanText(normalized.messageId);
     const senderId = cleanText(normalized.senderId);
     if (!messageId || !senderId || !conversationId || normalized.senderIsBot === true
@@ -355,10 +362,9 @@ export class TextHarnessBridge {
       this.#acceptedMessageIds.set(messageId, null);
       return this.#finishLocalMessage(normalized, messageId, null);
     }
-    // A muted conversation is silent by design: nothing reaches the harness and
-    // no reply goes out. The owner's own commands stay reachable so /unmute (or
-    // /mute to extend) still works from inside the quiet channel.
-    if (isConversationMuted(conversationId)) {
+    // Chat mute/block rules do not control the independent Discord voice player.
+    // The owner's chat commands stay reachable so /unmute still works.
+    if (!discordMusic && isConversationMuted(conversationId)) {
       const commandText = controlTextOf(normalized);
       const ownerReachable = senderId === this.#ownerUserId
         && (isOwnerCommand(commandText) || isControlCommand(commandText));
@@ -369,16 +375,14 @@ export class TextHarnessBridge {
         return this.#finishLocalMessage(normalized, messageId, null);
       }
     }
-    // A per-user pause silences just that sender in this conversation. It is a
-    // hard gate: even a mention that would otherwise be answered stays unanswered
-    // until the pause expires or the owner lifts it.
-    if (senderId !== this.#ownerUserId && isUserBlocked(conversationId, senderId)) {
+    // A per-user pause silences that sender's AI conversation until lifted.
+    if (!discordMusic && senderId !== this.#ownerUserId && isUserBlocked(conversationId, senderId)) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       this.#acceptedMessageIds.set(messageId, null);
       return this.#finishLocalMessage(normalized, messageId, null);
     }
-    if (this.#accessPolicy || accessDecision) {
+    if (!discordMusic && (this.#accessPolicy || accessDecision)) {
       const hasImages = hasInboundImages(normalized);
       const hasFiles = hasInboundFiles(normalized);
       const decision = accessDecision ?? evaluateInboundAccess(this.#accessPolicy, {
@@ -442,6 +446,11 @@ export class TextHarnessBridge {
     const key = `${normalized.kind}:${normalized.conversationId}`;
     const pending = this.#pendingInteractions.get(key);
     const text = controlTextOf(normalized);
+    // Explicit music requests never become batch input, approval replies, chat
+    // bursts, steering text or model prompts. Voice authorization stays with music.
+    if (isMusicCommand(text)) {
+      return this.#launchFastCommand(normalized, messageId, key, runMusicCommand, senderId);
+    }
     // The model gets one plain body; a wall of text costs context without
     // adding meaning a shorter cut cannot carry, so cut it and say so in-band.
     const body = typeof normalized.content === 'string' ? normalized.content : '';
@@ -530,19 +539,7 @@ export class TextHarnessBridge {
           ? runModelCommand
           : (isPresetCommand(text) ? runPresetCommand : null));
     if (commandRunner && (normalized.kind !== 'group' || normalized.addressed === true)) {
-      let task;
-      task = this.#processFastCommand(
-        normalized,
-        messageId,
-        key,
-        commandRunner,
-        senderId,
-      ).finally(() => {
-        this.#acceptedMessageIds.delete(messageId);
-        this.#commandTasks.delete(task);
-      });
-      this.#commandTasks.add(task);
-      return task;
+      return this.#launchFastCommand(normalized, messageId, key, commandRunner, senderId);
     }
     // An addressed plain-text request that is no approve/reject token while only
     // an approval waits is the sender moving on, not a decision: reject the
@@ -638,7 +635,7 @@ export class TextHarnessBridge {
       // keeping its steering, receipts, and routing serialization for what the lanes decline.
       exit: (exitOptions) => this.#busyMessages.dispatch({
         key, messageId, text: normalized.content,
-        commandText: text, mode: busyMessageMode,
+        commandText: text, mode: this.#fifo ? 'queue' : busyMessageMode,
         onFailure: (error) => this.#signal?.aborted || error?.code === 'turn-stopped'
           ? normalized.statusReaction?.clear() : normalized.statusReaction?.error(),
         eligible: () => normalized.plainText !== false
@@ -1053,14 +1050,30 @@ export class TextHarnessBridge {
     await this.#deferred.whenIdle();
   }
 
+  #launchFastCommand(message, messageId, key, runner, senderId) {
+    const task = this.#processFastCommand(message, messageId, key, runner, senderId).finally(() => {
+      this.#acceptedMessageIds.delete(messageId);
+      this.#commandTasks.delete(task);
+    });
+    this.#commandTasks.add(task);
+    return task;
+  }
+
   async #processFastCommand(message, messageId, key, runner, senderId) {
     if (this.#state.hasSeen(messageId)) return;
-    await this.#state.markSeen(messageId);
-    this.#status.messagesReceived += 1;
-    this.#status.lastMessageAt = new Date().toISOString();
     const target = message.replyTarget;
+    // A slow durable markSeen must not let a later native stop overtake an
+    // earlier text play and then have that old play start again afterwards.
+    const reservation = runner === runMusicCommand && message.kind === 'group'
+      && !hasInboundImages(message) && !hasInboundFiles(message)
+      ? this.reserveNativeCommand(controlTextOf(message), {
+        conversationId: message.conversationId, senderId, guildId: message.guildId,
+      }) : null;
     try {
-      const result = await runner(
+      await this.#state.markSeen(messageId);
+      this.#status.messagesReceived += 1;
+      this.#status.lastMessageAt = new Date().toISOString();
+      const result = reservation ? { message: await reservation.run() } : await runner(
         controlTextOf(message),
         this.#harness,
         this.#state,
@@ -1074,7 +1087,7 @@ export class TextHarnessBridge {
             || this.#approvals.hasPending(key),
           ownerTools: this.#ownerTools,
           music: this.#musicTools,
-          ...(runner === runMusicCommand ? { conversationId: message.conversationId, senderId } : {}),
+          ...(runner === runMusicCommand ? { conversationId: message.conversationId, senderId, guildId: message.guildId } : {}),
           control: { owner: this, key },
           deferredDelivery: this.#deferred,
           enhancement: captureContextEnhancementSource(
@@ -1105,6 +1118,7 @@ export class TextHarnessBridge {
       }
       this.#status.lastError = null;
     } catch (error) {
+      reservation?.cancel(error);
       if (error?.code === 'turn-stopped' || this.#signal?.aborted) {
         message.statusReaction?.clear();
         return;
@@ -1121,16 +1135,32 @@ export class TextHarnessBridge {
   }
 
   /**
+   * Reserve music admission before the transport acknowledgement completes.
+   * The manager receives the gate now, but cannot execute until run() opens it.
+   */
+  reserveNativeCommand(text, args) {
+    if (!isMusicCommand(text)) return null;
+    let open, fail;
+    const ready = new Promise((resolve, reject) => { open = resolve; fail = reject; });
+    ready.catch(() => {});
+    const result = this.runNativeCommand(text, { ...args, ready });
+    result.catch(() => {});
+    return { run: () => { open(); return result; }, cancel: error => { fail(error); } };
+  }
+
+  /**
    * Run one of the local slash-command runners for a native Discord
    * application-command interaction and return the reply text. The interaction
    * layer has already resolved the sender against the access policy; this only
    * reuses the text path's runners and owner tools so both surfaces behave the
    * same.
    */
-  async runNativeCommand(text, { conversationId, senderId = null } = {}) {
+  async runNativeCommand(text, { conversationId, senderId = null, conversationType = 'group', guildId = null, ready } = {}) {
+    this.#signal?.throwIfAborted();
     const command = controlTextOf({ content: text, kind: 'group', conversationId });
     if (!command) return null;
-    const key = conversationId;
+    const kind = conversationType === 'direct' ? 'direct' : 'group';
+    const key = `${kind}:${conversationId}`;
     const runner = isControlCommand(command) ? runControlCommand
       : isOwnerCommand(command) ? runOwnerCommand
         : isMusicCommand(command) ? runMusicCommand
@@ -1138,19 +1168,19 @@ export class TextHarnessBridge {
     if (!runner) return null;
     const result = await runner(command, this.#harness, this.#state, key, {
       signal: this.#signal,
-      isDirect: false,
+      isDirect: kind === 'direct',
       hasImages: false,
       hasFiles: false,
       pendingInteraction: this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       ownerTools: this.#ownerTools,
       music: this.#musicTools,
-      ...(runner === runMusicCommand ? { senderId } : {}),
+      ...(runner === runMusicCommand ? { senderId, guildId, ready } : {}),
       conversationId,
       control: { owner: this, key },
       deferredDelivery: this.#deferred,
       enhancement: captureContextEnhancementSource(
         this.#contextEnhancement,
-        'group',
+        kind,
         () => ({ channel: this.#descriptor.key, senderId, chatId: conversationId }),
       ),
     });

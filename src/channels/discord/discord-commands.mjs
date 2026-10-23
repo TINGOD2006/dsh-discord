@@ -1,7 +1,6 @@
 // Discord application commands (the native "/" menu with descriptions and
-// autocomplete) for the owner-only command set. Registration is one PUT per
-// scope: global commands propagate slowly, guild commands appear immediately,
-// so the adapter registers globally on ready and per guild when it knows one.
+// descriptions) for AI, management and music commands. Guild registration is
+// kept for immediate availability; the legacy global duplicate set is cleared.
 //
 // Everything here stays transport-only: the command text is rebuilt from the
 // interaction payload and handed to the same runners the text path uses, so the
@@ -83,13 +82,14 @@ const BLOCK_MINUTES_OPTION = Object.freeze({
   max_value: 10080,
 });
 
-/** Free-text music query: a URL, search words, or an attachment/file name. */
+/** Free-text music query; channel attachments are not resolved by name. */
 const QUERY_OPTION = Object.freeze({
   type: STRING_OPTION,
   name: 'query',
-  description: 'URL, search words, or a file name in this channel',
-  description_localizations: zh('链接、关键词，或频道里的文件名'),
-  required: false,
+  description: 'A song URL, search words, or a local audio path on the bot host',
+  description_localizations: zh('歌曲链接、关键词，或机器人主机上的音频路径'),
+  required: true,
+  min_length: 1,
   max_length: 500,
 });
 
@@ -182,8 +182,8 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
     type: APPLICATION_COMMAND,
     name: 'play',
     name_localizations: zh('播放'),
-    description: 'Join your voice channel and play a URL, search, or attached audio',
-    description_localizations: zh('加入你的语音频道，播放链接、搜索结果或附件音频'),
+    description: 'Join your voice channel and play a song URL or search result',
+    description_localizations: zh('加入你的语音频道，播放歌曲链接或搜索结果'),
     options: [QUERY_OPTION],
   },
   {
@@ -295,11 +295,10 @@ export function commandTextFromInteraction(interaction) {
   return [`/${data.name}`, ...values].join(' ');
 }
 
-/** The channel a command belongs to: a thread command targets its parent. */
+/** Commands belong to the channel where invoked, including threads and DMs. */
 export function interactionConversationId(interaction) {
   const channelId = String(interaction?.channel_id ?? '').trim();
-  const parentId = String(interaction?.channel?.parent_id ?? '').trim();
-  return parentId || channelId || null;
+  return channelId || String(interaction?.channel?.id ?? '').trim() || null;
 }
 
 /**
@@ -331,7 +330,7 @@ export async function handleApplicationCommand(interaction, {
   });
 
   const respond = (content) => api.updateInteractionOriginal(applicationId, interaction.token, {
-    content,
+    content: content.length <= 2000 ? content : `${content.slice(0, 1950)}\n（內容過長，已截短）`,
     allowed_mentions: { parse: [] },
   }).catch((error) => {
     logger?.error?.('[dsh-im:discord] interaction follow-up failed:', {
@@ -340,12 +339,19 @@ export async function handleApplicationCommand(interaction, {
     });
   });
 
+  const commandArgs = {
+    conversationId, senderId, conversationType: interaction.guild_id ? 'group' : 'direct',
+    ...(interaction.guild_id ? { guildId: String(interaction.guild_id) } : {}),
+  };
+  const reservation = isMusicCommand(text) ? bridge.reserveNativeCommand?.(text, commandArgs) : null;
+
   try {
     await api.createInteractionResponse(interaction.id, interaction.token, {
       type: INTERACTION_RESPONSE_DEFERRED,
       data: { flags: 0 },
     });
   } catch (error) {
+    reservation?.cancel(error);
     logger?.error?.('[dsh-im:discord] interaction acknowledgement failed:', {
       interactionId: String(interaction.id),
       message: error?.message ?? String(error),
@@ -364,12 +370,11 @@ export async function handleApplicationCommand(interaction, {
 
   let reply = null;
   try {
-    reply = await bridge.runNativeCommand(text, {
-      conversationId,
-      senderId,
-    });
+    reply = reservation ? await reservation.run() : await bridge.runNativeCommand(text, commandArgs);
   } catch (error) {
-    if (error?.code === 'turn-stopped') return true;
+    if (error?.code === 'turn-stopped' || error?.name === 'AbortError') {
+      await respond(t('指令已取消。')); return true;
+    }
     logger?.error?.('[dsh-im:discord] interaction command failed:', {
       command: text,
       message: error?.message ?? String(error),
