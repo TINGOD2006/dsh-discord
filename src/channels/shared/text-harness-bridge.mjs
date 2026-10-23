@@ -1,5 +1,25 @@
 import { BusyMessageDispatcher, canAutomaticallySteer } from './busy-message-dispatcher.mjs';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { extname } from 'node:path';
+
+const HISTORY_IMAGE_TYPES = Object.freeze({
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+});
+
+/** An image a replay block wants the model to see, read from the archive. */
+async function historyImagePart(path) {
+  const mediaType = HISTORY_IMAGE_TYPES[extname(path).toLowerCase()];
+  if (!mediaType) return null;
+  const bytes = await readFile(path);
+  if (bytes.length === 0 || bytes.length > 5 * 1024 * 1024) return null;
+  return { type: 'image', mediaType, data: bytes.toString('base64') };
+}
 
 import { createDeferredDeliveryCoordinator, deferredOutcomeText } from './deferred-delivery-coordinator.mjs';
 import { t } from './i18n.mjs';
@@ -1370,8 +1390,25 @@ export class TextHarnessBridge {
           });
           if (Array.isArray(collected) && collected.length > 0) {
             contextEntries = collected;
-            const block = this.#contextHooks.render?.(collected) ?? '';
+            const rendered = this.#contextHooks.render?.(collected) ?? '';
+            // Render may return text alone, or text plus the pictures a replayed
+            // message carried; without the parts a replayed screenshot is invisible.
+            const block = typeof rendered === 'string' ? rendered : rendered?.text ?? '';
+            const imagePaths = typeof rendered === 'object' && rendered
+              ? rendered.images ?? [] : [];
             if (block) content = `${block}\n\n${content ?? ''}`;
+            if (imagePaths.length > 0) {
+              const parts = [{ type: 'text', text: content ?? '' }];
+              for (const path of imagePaths.slice(0, 2)) {
+                try {
+                  const part = await historyImagePart(path);
+                  if (part) parts.push(part);
+                } catch (error) {
+                  this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] replayed image failed; continuing with text:`, error?.message ?? error);
+                }
+              }
+              if (parts.length > 1) content = parts;
+            }
           }
         } catch (error) {
           // Context is an enhancement: a collector failure must not lose the user's own turn.

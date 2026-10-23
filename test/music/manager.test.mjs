@@ -4,10 +4,10 @@ import { EventEmitter } from 'node:events';
 import { MusicManager } from '../../src/channels/discord/music.mjs';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,1));
 async function until(fn){for(let n=0;n<200;n++){if(fn())return;await tick();}throw new Error('state did not settle');}
-function fixture({prepare,ready, idleMs=10000}={}) {
+function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000}={}) {
   const played=[],connections=[],notices=[],released=[];
   const guild={id:'guild',voiceStates:{cache:new Map([['user',{channelId:'voice'}],['other',{channelId:'elsewhere'}]])},voiceAdapterCreator:{},channels:{cache:new Map()}};
-  class Client extends EventEmitter {channels={cache:new Map([['text',{guild}]])};user={id:'bot'};async login(){}isReady(){return true;}destroy(){}}
+  class Client extends EventEmitter {channels={cache:new Map([['text',{guild}]])};user={id:'bot'};async login(){return login?.();}isReady(){return true;}destroy(){}}
   class Player extends EventEmitter {state={status:'idle'};play(resource){const old=this.state;this.state={status:'playing',resource};played.push(resource);this.emit('stateChange',old,this.state);}stop(){const old=this.state;this.state={status:'idle'};this.emit('stateChange',old,this.state);}pause(){return true;}unpause(){return true;}}
   const runtime={Client,GatewayIntentBits:{Guilds:1,GuildVoiceStates:128},StreamType:{OggOpus:'ogg'},AudioPlayerStatus:{Idle:'idle'},VoiceConnectionStatus:{Ready:'ready',Destroyed:'destroyed',Disconnected:'disconnected',Signalling:'signalling',Connecting:'connecting'},NoSubscriberBehavior:{Pause:'pause'},
     entersState:async(connection)=>{if(ready)await ready();return connection;},
@@ -15,7 +15,7 @@ function fixture({prepare,ready, idleMs=10000}={}) {
     createAudioPlayer:()=>new Player(),createAudioResource:(input,options)=>({input,...options,volume:{setVolume(value){this.value=value;}}}),
   };
   const pipeline={prepare:prepare??(async(query)=>({input:'normalized-'+query+'.ogg',title:query,url:'https://www.youtube.com/watch?v=jNQXAC9IVRw',release:()=>released.push(query)})),destroy:async()=>{}};
-  const manager=new MusicManager({token:'fixture-only',runtime,pipeline,cooldownMs:0,idleMs,notify:async(...args)=>notices.push(args)});
+  const manager=new MusicManager({token:'fixture-only',runtime,pipeline,cooldownMs:0,idleMs,loginTimeoutMs,notify:async(...args)=>notices.push(args)});
   const request={channelId:'text',senderId:'user'};
   return {manager,request,played,connections,notices,released,guild};
 }
@@ -72,4 +72,10 @@ test('Idle advances once and a late error from the old track cannot stop the nex
     player.emit('error',{resource:first,message:'old track error'});await tick();assert.equal(f.played.length,2);
     assert.match((await f.manager.nowplaying(f.request)).message,/second/);
   }finally{await f.manager.destroy();}
+});
+
+test('a stalled Discord login cannot leave a music command thinking forever',async()=>{
+  const f=fixture({login:()=>new Promise(()=>{}),loginTimeoutMs:20});const started=Date.now();
+  try{await assert.rejects(f.manager.play({...f.request,query:'song'}),/連線逾時/);assert(Date.now()-started<1000);assert.equal(f.played.length,0);}
+  finally{await f.manager.destroy();}
 });

@@ -15,6 +15,7 @@ const CAUSES = {
   'timeout': '音樂處理超過等待期限',
   'selection-fallback': 'DSH 選歌暫不可用，目前改用搜尋首選',
   'command-registration': 'Discord 指令註冊失敗',
+  'interaction-response': 'Discord 互動確認或回覆失敗，指令可能停留在思考狀態',
   'gateway': 'Discord Gateway 連線或 Intents 設定需檢查',
   'music-runtime': '音樂執行階段發生錯誤，需查看本機顯示的錯誤',
 };
@@ -37,6 +38,7 @@ export function classifyMusicLog(row) {
   const failure = ['warn', 'error'].includes(row.level);
   let cause;
   if (event === 'music.dsh.fallback') cause = 'selection-fallback';
+  else if (failure && /interaction (?:acknowledgement|follow-up|handling|command) failed/i.test(text)) cause = 'interaction-response';
   else if (failure && /command.*(?:registration|cleanup).*failed|commands\..*fail/i.test(text)) cause = 'command-registration';
   else if (failure && /discord-gateway|connection\.(?:restore|monitor)|\b(?:4004|4013|4014)\b/i.test(text)) cause = 'gateway';
   else if (failure && event?.startsWith('music.')) {

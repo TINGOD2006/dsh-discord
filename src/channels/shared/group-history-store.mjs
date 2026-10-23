@@ -9,6 +9,8 @@ export const GROUP_HISTORY_CHANNELS = Object.freeze(['whatsapp', 'feishu', 'tele
 export const DEFAULT_GROUP_HISTORY_DAYS = 14;
 const DAY = 86_400_000;
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
+// Extensions a vision model can read directly; other archives stay file-only.
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 
 function untilAbort(promise, signal) {
   signal.throwIfAborted();
@@ -338,6 +340,8 @@ export class GroupHistoryStore {
     const items = this.#db.prepare(`SELECT m.platform_message_id AS message_id, m.sender_id, m.sender_name,
         m.sent_at, m.type, m.text, m.reply_to_message_id,
         (SELECT count(*) FROM attachments a WHERE a.message_id = m.id) AS file_count,
+        (SELECT group_concat(a.relative_path, '|') FROM attachments a
+          WHERE a.message_id = m.id AND a.relative_path IS NOT NULL) AS file_paths,
         r.sender_name AS reply_sender_name, r.text AS reply_text
       FROM messages m
       LEFT JOIN messages r ON r.group_id = m.group_id AND r.platform_message_id = m.reply_to_message_id
@@ -358,6 +362,13 @@ export class GroupHistoryStore {
         text: typeof row.text === 'string' ? row.text : '',
         replyToMessageId: row.reply_to_message_id == null ? null : String(row.reply_to_message_id),
         fileCount: Number(row.file_count ?? 0),
+        // Absolute paths of the archived files, so a context replay can show an
+        // image instead of just claiming that an attachment existed.
+        imagePaths: String(row.file_paths ?? '')
+          .split('|')
+          .filter(Boolean)
+          .map((relative) => join(this.#root, relative))
+          .filter((absolute) => IMAGE_FILE.test(absolute)),
         replySenderName: typeof row.reply_sender_name === 'string' ? row.reply_sender_name : '',
         replyText: typeof row.reply_text === 'string' ? row.reply_text : '',
       })),

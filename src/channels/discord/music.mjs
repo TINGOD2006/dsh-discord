@@ -13,10 +13,11 @@ export function needsExtractor(value) { return isPlayableUrl(value) && /(^|\.)(y
 /** Per-guild playback. A cancelled preparation can never resurrect a stopped track. */
 export class MusicManager {
   #token; #logger; #runtime; #pipeline; #notify; #client; #login; #library;
-  #guilds = new Map(); #cooldowns = new Map(); #destroyed = false; #idleMs; #cooldownMs;
-  constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000 } = {}) {
+  #guilds = new Map(); #cooldowns = new Map(); #destroyed = false; #idleMs; #cooldownMs; #loginTimeoutMs;
+  constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000 } = {}) {
     this.#token = token; this.#logger = logger; this.#runtime = runtime; this.#notify = notify;
     this.#idleMs = idleMs; this.#cooldownMs = cooldownMs;
+    this.#loginTimeoutMs = loginTimeoutMs;
     const tools = musicTools(); if (ytDlpPath) tools.ytDlp = ytDlpPath;
     this.#pipeline = pipeline ?? new MusicAudioPipeline({ tools, logger, selectCandidate: createDshMusicSelector(harness, { logger }) });
   }
@@ -36,17 +37,28 @@ export class MusicManager {
         const libs = await this.#libs();
         const client = new libs.Client({ intents: [libs.GatewayIntentBits.Guilds, libs.GatewayIntentBits.GuildVoiceStates] });
         this.#client = client; client.on('error', error => this.#log('warn', 'music.client.error', error));
+        let timer, readyListener, expired = false;
         try {
-          await client.login(this.#token);
-          if (typeof client.isReady === 'function' && !client.isReady()) await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { client.removeListener('clientReady', ready); reject(new Error('Discord 語音用戶端連線逾時')); }, 20000);
-            const ready = () => { clearTimeout(timer); resolve(); };
-            client.once('clientReady', ready);
-            if (client.isReady()) { client.removeListener('clientReady', ready); ready(); }
+          const deadline = new Promise((_, reject) => {
+            timer = setTimeout(() => { expired = true; reject(new Error('Discord 語音用戶端連線逾時')); }, this.#loginTimeoutMs);
           });
+          const connect = (async () => {
+            await client.login(this.#token);
+            if (expired || this.#destroyed) throw new Error('音樂語音連線已取消');
+            if (typeof client.isReady === 'function' && !client.isReady()) await new Promise(resolve => {
+              readyListener = resolve;
+              client.once('clientReady', readyListener);
+              if (client.isReady()) resolve();
+            });
+          })();
+          await Promise.race([connect, deadline]);
           if (this.#destroyed) throw new Error('音樂服務已關閉');
           return client;
-        } catch (error) { client.destroy(); this.#client = null; throw error; }
+        } catch (error) {
+          try { void Promise.resolve(client.destroy()).catch(() => {}); } catch {}
+          if (this.#client === client) this.#client = null;
+          throw error;
+        } finally { clearTimeout(timer); if (readyListener) client.removeListener('clientReady', readyListener); }
       })();
       this.#login.catch(() => { this.#login = null; });
     }

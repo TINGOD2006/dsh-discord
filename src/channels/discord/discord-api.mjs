@@ -152,7 +152,9 @@ export class DiscordApi {
   createInteractionResponse(interactionId, token, body, { signal } = {}) {
     return this.#request(
       `interactions/${snowflake(interactionId, 'interaction id')}/${encodeURIComponent(token)}/callback`,
-      { method: 'POST', signal, body },
+      // Without with_response=true Discord does not promise a JSON body.
+      // The acknowledgement can succeed even when a transport exposes an empty 2xx body.
+      { method: 'POST', signal, body, expectBody: false },
     );
   }
 

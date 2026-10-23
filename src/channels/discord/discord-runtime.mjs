@@ -153,6 +153,7 @@ export function historyEntriesFrom(items, {
       ts: Number(item.sentAt) || 0,
       text: clipped,
       attachments,
+      imagePaths: Array.isArray(item.imagePaths) ? item.imagePaths : [],
     });
     if (entries.length >= limit) break;
   }
@@ -177,8 +178,28 @@ export function renderHistoryBlock(entries) {
   ].join('\n');
 }
 
-function isThreadChannel(channel) {
-  return THREAD_TYPES.has(Number(channel?.type));
+/**
+ * Text plus the pictures those replayed messages carried.
+ *
+ * A replay that says "（带附件）" without the picture is how a group member's
+ * screenshot silently disappears from the model's view; the newest images are
+ * therefore attached as prompt parts, bounded so one replay cannot balloon.
+ */
+export function renderHistoryPayload(entries, { maxImages = 2 } = {}) {
+  const text = renderHistoryBlock(entries);
+  if (!text || !Array.isArray(entries)) return { text, images: [] };
+  const images = [];
+  for (const entry of [...entries].reverse()) {
+    for (const path of entry.imagePaths ?? []) {
+      if (images.length >= maxImages) break;
+      if (!images.includes(path)) images.push(path);
+    }
+    if (images.length >= maxImages) break;
+  }
+  return { text, images };
+}
+
+function isThreadChannel(channel) {  return THREAD_TYPES.has(Number(channel?.type));
 }
 
 function isThreadFromMessage(channel, message) {
@@ -925,7 +946,7 @@ export class DiscordRuntime {
   }
 
   #renderHistory(entries) {
-    return renderHistoryBlock(entries);
+    return renderHistoryPayload(entries);
   }
 
   #rememberHistory(conversationKey, entries) {

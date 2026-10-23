@@ -347,6 +347,8 @@ export async function handleApplicationCommand(interaction, {
     logger?.error?.('[dsh-im:discord] interaction acknowledgement failed:', {
       interactionId: String(interaction.id),
       message: error?.message ?? String(error),
+      status: error?.status,
+      providerCode: error?.providerCode,
     });
     return false;
   }

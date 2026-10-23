@@ -79,3 +79,11 @@ node scripts/smoke-music-audio.mjs 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
 - 關鍵詞搜尋能取得該影片，並重用已正規化音訊；此線上測試的候選選擇介面使用固定測試回覆，沒有冒稱呼叫真正的 DSH 模型。
 - AudioUsbStudio 的 Git 狀態、既有未提交差異與唯讀引用工具 SHA-256 均和實作前快照相同。原 AI `control-command.mjs` 沒有改動。
 - `lib/index.js`、`lib/client.js` 已重建。真正的 DSH 模型選歌、Discord 指令同步及語音頻道播音仍須在重新載入外掛後驗收；本次沒有讀取或輸出 Token，也沒有自動向真實頻道發送測試訊息。
+
+### 「正在思考」停住的修正
+
+2026-10-24 的真實紀錄出現 `interaction acknowledgement failed`，原因為互動確認回應沒有可解析的 JSON；程式在確認步驟就返回，沒有繼續執行音樂指令。互動 callback 現在依其無回應本文的契約處理成功結果，不影響其他 REST 端點的 JSON 驗證，也不忽略權限錯誤。
+
+語音用戶端的二十秒期限已涵蓋 `client.login()` 本身，避免在進入 Ready 等待前就無限停住。監測器也會回報互動確認／回覆失敗。修正後的回歸測試為 **29/29 通過**，包括成功的空確認回應會繼續命令並更新占位訊息。
+
+重新建置後需重新載入 DSH 外掛，再重新送出 `/play`。先前卡住的互動不會自動重跑。
