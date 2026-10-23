@@ -445,3 +445,9 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
 - `run_script` 单测：`/join` 解析、`/joinx` 不误判、`runMusicCommand` 正确把 `{channelId, senderId}` 传给 `music.join`。
 - `scripts/build-local.mjs`：`errors=0 warnings=0`，`lib/index.js` 915228 字节；bundle 内 `/join`×3、`musicTools`×2、
   `name_localizations`×17；应用命令表 17 条（含 `join`）。需重启 DSH 生效。
+## Git 推送认证（2026-10-24）
+
+`SEC_E_NO_CREDENTIALS` 不是凭据丢了，而是沙箱内 git 无法启动 MSYS 辅助进程 / 无法打开 Schannel 与 DPAPI 句柄（同批报错还有 `couldn't create signal pipe, Win32 error 5` 与 `spawn EPERM`）。仓库里的 GitHub 账号（GCM 2.7.3，`TINGOD2006`）一直有效，在完整权限的终端里 `git push` 即可成功（本次 `66ee6a3..eb9ee7a` 即由完整权限推送）。
+
+- `scripts/git-push.mjs`：先打印仓库/远端/GCM 账号/可达性，再按错误归类——沙箱类直接提示去沙箱外执行，不误触发重新登录；只有真正的凭据失效（`could not read Username` / `Authentication failed`）才尝试一次设备码登录并重试。
+- 用法：`node scripts/git-push.mjs`、`node scripts/git-push.mjs origin dev`、`node scripts/git-push.mjs --check`（只诊断不推送）。
