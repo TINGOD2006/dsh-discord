@@ -1223,20 +1223,27 @@ export class DiscordRuntime {
     }
   }
 
-  /** Global registration: makes the commands appear in every server. */
+  /**
+   * Duplicate guard. An earlier build registered the same command set both
+   * globally and per guild, and Discord then shows every command twice in the
+   * picker. Guild registration is the one kept (instant, no cache), so the
+   * global scope is cleared instead of filled.
+   */
   async #syncApplicationCommands() {
     if (this.#globalCommandsSynced || !this.#api || !this.#applicationId || this.#stopped) return;
     this.#globalCommandsSynced = true;
     try {
-      await syncApplicationCommands(this.#api, { applicationId: this.#applicationId });
-      this.#logger.event?.('commands.synced', {
-        scope: 'global',
+      await syncApplicationCommands(this.#api, {
+        applicationId: this.#applicationId,
+        commands: [],
+      });
+      this.#logger.event?.('commands.global-cleared', {
         applicationId: this.#applicationId,
       });
     } catch (error) {
-      // Retry on the next READY instead of silently leaving no commands.
+      // Retry on the next READY instead of leaving the duplicates in place.
       this.#globalCommandsSynced = false;
-      this.#logger.error?.('[dsh-im:discord] global slash command registration failed:', {
+      this.#logger.error?.('[dsh-im:discord] global slash command cleanup failed:', {
         message: error?.message ?? String(error),
         status: error?.status ?? null,
       });

@@ -352,17 +352,17 @@ export async function handleApplicationCommand(interaction, {
 }
 
 /**
- * Register the owner command set. Global registration is what makes `/skip`
- * appear everywhere; a guild registration is additionally issued when the bot
- * knows its guild because that one shows up immediately in the picker.
+ * Register the owner command set. Guild registration is the one that shows up
+ * immediately in the picker; `commands: []` clears a scope, which is how the
+ * global duplicate set from an earlier build gets removed.
  */
 export async function syncApplicationCommands(api, {
-  applicationId, guildId = null, signal,
+  applicationId, guildId = null, signal, commands = null,
 } = {}) {
-  const commands = applicationCommandPayloads();
+  const payload = commands ?? applicationCommandPayloads();
   if (!applicationId) throw new Error('Discord application id is required to register commands');
   if (guildId) {
-    return api.putGuildApplicationCommands(applicationId, guildId, commands, { signal });
+    return api.putGuildApplicationCommands(applicationId, guildId, payload, { signal });
   }
-  return api.putGlobalApplicationCommands(applicationId, commands, { signal });
+  return api.putGlobalApplicationCommands(applicationId, payload, { signal });
 }
