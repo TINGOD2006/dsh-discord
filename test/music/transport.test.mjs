@@ -5,26 +5,30 @@ import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from '..
 import { startMusicHealth } from '../../src/channels/discord/music-health.mjs';
 
 test('voice bitrate respects the actual channel and never exceeds codec limits', () => {
-  assert.equal(voiceBitrate(64000), 64000); assert.equal(voiceBitrate(256000), 128000); assert.equal(voiceBitrate(undefined), 128000);
+  assert.equal(voiceBitrate(64000), 32000); assert.equal(voiceBitrate(256000), 32000); assert.equal(voiceBitrate(undefined), 32000);
+  assert.equal(voiceBitrate(16000),16000);
 });
 
 function resourceLib(producer) {
   const calls = [];
   return { calls, StreamType: { OggOpus: 'ogg', Opus: 'opus' }, createAudioResource(input, options) {
     calls.push(options);
-    if (typeof input === 'string') return { playStream: producer, volume: { setVolume(value) { this.value = value; } }, encoder: { setBitrate(value) { this.bitrate = value; } } };
+    if (options.inputType === 'ogg') return { playStream: producer };
     return { playStream: input, get ended() { return input.readableEnded; }, read: () => input.read() };
   } };
 }
 
-test('Opus prebuffer is bounded, preserves packet ordering and encodes only once', async () => {
+test('Opus prebuffer is bounded and directly forwards externally encoded packets without inline processing', async () => {
   const packets = Array.from({ length: 100 }, (_, n) => Buffer.from([n]));
-  const libs = resourceLib(Readable.from(packets));
-  const audio = await createBufferedMusicResource(libs, 'normalized.ogg', { volume: 0.6, bitrate: 64000 });
+  const producer = Readable.from(packets), libs = resourceLib(producer);
+  let encoderOptions;
+  const audio = await createBufferedMusicResource(libs, 'normalized.ogg', { volume: 0.6, bitrate: 64000,
+    encoderFactory:(input,options)=>{encoderOptions=options;return{stream:producer, destroy(){producer.destroy();}};} });
   try {
-    assert(audio.snapshot().bufferedFrames >= 12); assert(audio.snapshot().bufferedFrames <= 32);
-    assert.equal(audio.resource.volume.value, 0.6); assert.equal(audio.resource.encoder.bitrate, 64000);
-    assert.deepEqual(libs.calls.map(call => call.inlineVolume), [true, false]);
+    assert(audio.snapshot().bufferedFrames >= 24); assert(audio.snapshot().bufferedFrames <= 48);
+    assert.equal(encoderOptions.volume,0.6);assert.equal(encoderOptions.bitrate,32000);
+    assert.equal(audio.resource.volume,undefined);assert.equal(audio.resource.encoder,undefined);
+    assert.deepEqual(libs.calls.map(call => call.inlineVolume), [false, false]);
     const read = []; for await (const packet of audio.resource.playStream) read.push(packet[0]);
     assert.deepEqual(read, Array.from({ length: 100 }, (_, n) => n));
   } finally { audio.destroy(); }
@@ -33,7 +37,8 @@ test('Opus prebuffer is bounded, preserves packet ordering and encodes only once
 test('stop cancels prebuffering and releases its producer', async () => {
   const producer = new Readable({ objectMode: true, read() {} });
   const controller = new AbortController();
-  const pending = createBufferedMusicResource(resourceLib(producer), 'file.ogg', { signal: controller.signal });
+  const pending = createBufferedMusicResource(resourceLib(producer), 'file.ogg', { signal: controller.signal,
+    encoderFactory:()=>({stream:producer,destroy(){producer.destroy();}}) });
   controller.abort(); await assert.rejects(pending, { name: 'AbortError' }); assert.equal(producer.destroyed, true);
 });
 

@@ -235,12 +235,12 @@ export class MusicAudioPipeline {
     const duration = await this.#probe(input, dir, signal);
     if (!completeDuration(expected, duration)) throw new Error(`音訊不完整：預期 ${expected.toFixed(1)} 秒，實際 ${duration.toFixed(1)} 秒`);
     if (duration > this.#maxSeconds || !(duration > 0)) throw new Error(`歌曲長度須在 ${this.#maxSeconds / 60} 分鐘以內`);
-    const { stderr } = await this.#run(this.#tools.ffmpeg, ['-nostdin', '-hide_banner', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
+    const { stderr } = await this.#run(this.#tools.ffmpeg, ['-nostdin', '-hide_banner', '-threads', '1', '-filter_threads', '1', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
       '-af', loudnessAnalysisFilter(), '-f', 'null', '-'], { cwd: dir, signal, timeoutMs: 180_000 });
     const loudness = loudnessStats(stderr);
     const rendered = join(dir, 'normalized.ogg');
-    await this.#run(this.#tools.ffmpeg, ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
-      '-af', normalizationFilter(loudness), '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-b:a', '128k', rendered], { cwd: dir, signal, timeoutMs: 180_000 });
+    await this.#run(this.#tools.ffmpeg, ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
+      '-af', normalizationFilter(loudness), '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-threads', '1', '-b:a', '128k', rendered], { cwd: dir, signal, timeoutMs: 180_000 });
     const actual = await this.#probe(rendered, dir, signal);
     if (!completeDuration(duration, actual)) throw new Error('音量處理後的音訊不完整');
     if (signal.aborted) throw abortError();

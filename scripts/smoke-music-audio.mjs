@@ -1,7 +1,8 @@
 /** Manual audio check: network + real yt-dlp/FFmpeg. No Discord messages or login. */
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { createAudioResource, StreamType, generateDependencyReport } from '@discordjs/voice';
+import * as voice from '@discordjs/voice';
+import { createBufferedMusicResource } from '../src/channels/discord/music-transport.mjs';
 import { MusicAudioPipeline, musicTools, loudnessStats, loudnessAnalysisFilter, MUSIC_LOUDNESS } from '../src/channels/discord/music-audio.mjs';
 import { MUSIC_DEFAULT_VOLUME } from '../src/channels/discord/music.mjs';
 import { runMusicProcess } from '../src/channels/discord/music-process.mjs';
@@ -14,7 +15,7 @@ const tools = musicTools();
 const pipeline = new MusicAudioPipeline({ cacheDir: join(dir, 'cache'), tools });
 try {
   console.log('Manual audio/voice-codec check. Does not call DSH or join Discord.');
-  console.log(generateDependencyReport());
+  console.log(voice.generateDependencyReport());
   const start = Date.now();
   const source = await pipeline.prepare(query);
   try {
@@ -23,15 +24,14 @@ try {
     const stats = loudnessStats(measured.stderr);
     const lufs = stats ? Number(stats.input_i) : null;
     if (lufs !== null && lufs > MUSIC_LOUDNESS.integrated + 0.6) throw new Error(`Loudness exceeds target: ${lufs} LUFS`);
-    const resource = createAudioResource(source.input, { inputType: StreamType.OggOpus, inlineVolume: true });
-    resource.encoder?.setBitrate?.(128000);
-    resource.volume.setVolume(MUSIC_DEFAULT_VOLUME);
+    const transport = await createBufferedMusicResource(voice, source.input, { volume: MUSIC_DEFAULT_VOLUME });
     let packets = 0;
-    for await (const packet of resource.playStream) { if (packet.length) packets++; }
+    try { for await (const packet of transport.resource.playStream) { if (packet.length) packets++; } }
+    finally { transport.destroy(); }
     if (!packets) throw new Error('No Discord-compatible Opus packets were produced');
     console.log(JSON.stringify({ title: source.title, url: source.url, duration: source.duration, lufs,
       truePeak: stats ? Number(stats.input_tp) : null, defaultVolumePercent: MUSIC_DEFAULT_VOLUME * 100,
-      cacheHit: source.cacheHit, opusPackets: packets, elapsedMs: Date.now() - start }, null, 2));
+      cacheHit: source.cacheHit, opusPackets: packets, ...transport.snapshot(), elapsedMs: Date.now() - start }, null, 2));
     console.log('AUDIO / OPUS CHECK PASSED');
   } finally { source.release(); }
 } finally { await pipeline.destroy(); }

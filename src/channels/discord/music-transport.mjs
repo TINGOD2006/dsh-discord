@@ -1,35 +1,39 @@
 import { PassThrough } from 'node:stream';
 import { performance } from 'node:perf_hooks';
 import { abortError } from './music-process.mjs';
+import { createMusicEncoder, MUSIC_PLAYBACK_PROFILE } from './music-encoder.mjs';
 
 export function voiceBitrate(channelBitrate) {
-  return Math.min(128000, Math.max(16000, Number(channelBitrate) || 128000));
+  return Math.min(MUSIC_PLAYBACK_PROFILE.bitrate, Math.max(16000, Number(channelBitrate) || MUSIC_PLAYBACK_PROFILE.bitrate));
 }
 
 /** A bounded packet queue decouples short encoder/I/O stalls from the 20ms player clock. */
 export async function createBufferedMusicResource(libs, input, { volume, bitrate, metadata, signal,
-  bufferFrames = 32, prebufferFrames = 12, timeoutMs = 5000 } = {}) {
+  offsetSeconds = 0, encoderFactory = createMusicEncoder,
+  bufferFrames = 48, prebufferFrames = 24, timeoutMs = 5000 } = {}) {
   if (signal?.aborted) throw abortError();
-  const producer = libs.createAudioResource(input, { inputType: libs.StreamType.OggOpus, inlineVolume: true, metadata });
-  producer.encoder?.setBitrate?.(voiceBitrate(bitrate));
-  producer.volume?.setVolume(volume);
+  const encoder = encoderFactory(input, { volume, bitrate: voiceBitrate(bitrate), offsetSeconds, signal });
+  let producer;
+  try { producer = libs.createAudioResource(encoder.stream, { inputType: libs.StreamType.OggOpus, inlineVolume: false, metadata }); }
+  catch (error) { encoder.destroy(); throw error; }
   const buffer = new PassThrough({ objectMode: true, highWaterMark: bufferFrames });
   let resource, destroyed = false, streamError;
   const stats = { framesRead: 0, sourceStarved: 0, maxReadGapMs: 0 };
   let lastRead = null;
   const fail = error => { streamError = error; buffer.destroy(error); };
   producer.playStream.on('error', fail);
+  encoder.stream.on('error', fail);
   // A player attaches its own listener later; prebuffering errors also need a listener.
   buffer.on('error', () => {});
   const destroy = () => {
     if (destroyed) return; destroyed = true;
     signal?.removeEventListener('abort', cancel);
-    resource?.playStream?.destroy(); buffer.destroy(); producer.playStream.destroy();
-    producer.playStream.removeListener('error', fail);
+    resource?.playStream?.destroy(); buffer.destroy(); producer.playStream.destroy(); encoder.destroy();
+    // Late child/stream errors remain handled during cancellation.
   };
   const cancel = () => destroy();
   signal?.addEventListener('abort', cancel, { once: true });
-  buffer.once('close', () => producer.playStream.destroy());
+  buffer.once('close', () => { producer.playStream.destroy(); encoder.destroy(); });
   producer.playStream.pipe(buffer);
   try {
     await new Promise((resolve, reject) => {
@@ -46,8 +50,6 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
       check();
     });
     resource = libs.createAudioResource(buffer, { inputType: libs.StreamType.Opus, inlineVolume: false, metadata });
-    // Expose the producer's controls without adding a second codec pipeline.
-    resource.volume = producer.volume; resource.encoder = producer.encoder;
     const read = resource.read.bind(resource);
     resource.read = () => {
       const now = performance.now();
@@ -59,9 +61,9 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
       return packet;
     };
     if (signal?.aborted) throw abortError();
-    return { resource, destroy, resetTiming: () => { lastRead = null; },
+    return { resource, destroy, offsetSeconds, resetTiming: () => { lastRead = null; },
       snapshot: () => ({ ...stats, maxReadGapMs: Math.round(stats.maxReadGapMs), bufferedFrames: buffer.readableLength,
-        bufferedMs: buffer.readableLength * 20, bitrate: voiceBitrate(bitrate) }) };
+        bufferedMs: buffer.readableLength * 20, bitrate: voiceBitrate(bitrate), channels: 1, encoder: 'ffmpeg', inlineEncoding: false }) };
   } catch (error) { destroy(); throw error; }
 }
 

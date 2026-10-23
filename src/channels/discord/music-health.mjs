@@ -16,7 +16,9 @@ export function startMusicHealth(room, log, { intervalMs = 10000 } = {}) {
     const sourceStarved = Math.max(0, audio.sourceStarved - lastStarved); lastStarved = audio.sourceStarved;
     latest = { udpPingMs, wsPingMs, udpJitterMs, eventLoopMaxMs: metric(delay.max / 1e6),
       framesRead: audio.framesRead, sourceStarved, maxReadGapMs: audio.maxReadGapMs, bufferedMs: audio.bufferedMs,
-      bitrate: audio.bitrate, connectionState: room.connection?.state?.status ?? 'unknown', rtpPacketLoss: null };
+      bitrate: audio.bitrate, channels: audio.channels === 1 ? 1 : null, encoder: audio.encoder === 'ffmpeg' ? 'ffmpeg' : null,
+      inlineEncoding: audio.inlineEncoding === false ? false : null,
+      connectionState: room.connection?.state?.status ?? 'unknown', rtpPacketLoss: null };
     delay.reset();
     log('info', 'music.transport.stats', latest);
     const problem = sourceStarved > 0 || latest.eventLoopMaxMs > 100 || udpPingMs > 500 || udpJitterMs > 100;

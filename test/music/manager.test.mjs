@@ -6,21 +6,22 @@ import { DiscordHarnessBridge } from '../../src/channels/discord/discord-bridge.
 import { handleApplicationCommand } from '../../src/channels/discord/discord-commands.mjs';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,1));
 async function until(fn){for(let n=0;n<200;n++){if(fn())return;await tick();}throw new Error('state did not settle');}
-function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice}={}) {
-  const played=[],connections=[],notices=[],released=[];
+function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice,nativeTransport=false,customBufferedFactory,deferredPlaying=false}={}) {
+  const played=[],connections=[],notices=[],released=[],transports=[];
   const guild={id:'guild',voiceStates:{cache:new Map([['user',{channelId:'voice'}],['other',{channelId:'elsewhere'}]])},voiceAdapterCreator:{},channels:{cache:new Map()}};
   class Client extends EventEmitter {channels={cache:new Map([['text',{guild}],['text-two',{guild}]])};user={id:'bot'};async login(){return login?.();}isReady(){return true;}destroy(){}}
-  class Player extends EventEmitter {state={status:'idle'};play(resource){const old=this.state;this.state={status:'playing',resource};played.push(resource);this.emit('stateChange',old,this.state);}stop(){const old=this.state;this.state={status:'idle'};this.emit('stateChange',old,this.state);}pause(){this.paused=true;return true;}unpause(){this.paused=false;return true;}}
-  const runtime={Client,GatewayIntentBits:{Guilds:1,GuildVoiceStates:128},StreamType:{OggOpus:'ogg'},AudioPlayerStatus:{Idle:'idle'},VoiceConnectionStatus:{Ready:'ready',Destroyed:'destroyed',Disconnected:'disconnected',Signalling:'signalling',Connecting:'connecting'},NoSubscriberBehavior:{Pause:'pause'},
+  class Player extends EventEmitter {state={status:'idle'};play(resource){const old=this.state;this.paused=false;this.state={status:deferredPlaying?'buffering':'playing',resource};played.push(resource);this.emit('stateChange',old,this.state);if(deferredPlaying)setTimeout(()=>{if(this.state.resource===resource){const old=this.state;this.state={status:'playing',resource};this.emit('stateChange',old,this.state);}},1);}stop(){const old=this.state;this.state={status:'idle'};this.emit('stateChange',old,this.state);}pause(){if(this.state.status==='buffering')return false;this.paused=true;return true;}unpause(){this.paused=false;return true;}}
+  const runtime={Client,GatewayIntentBits:{Guilds:1,GuildVoiceStates:128},StreamType:{OggOpus:'ogg'},AudioPlayerStatus:{Idle:'idle',Playing:'playing'},VoiceConnectionStatus:{Ready:'ready',Destroyed:'destroyed',Disconnected:'disconnected',Signalling:'signalling',Connecting:'connecting'},NoSubscriberBehavior:{Pause:'pause'},
     entersState:async(connection)=>{if(ready)await ready();return connection;},
     joinVoiceChannel:()=>{const connection=new EventEmitter();Object.assign(connection,{state:{status:'ready'},subscribe(player){this.subscribed=player;},destroy(){this.state.status='destroyed';},rejoin(){return true;}});connections.push(connection);return connection;},
     createAudioPlayer:()=>new Player(),createAudioResource:(input,options)=>({input,...options,encoder:{setBitrate(value){this.bitrate=value;}},volume:{setVolume(value){this.value=value;}}}),
   };
   const pipeline={prepare:prepare??(async(query)=>({input:'normalized-'+query+'.ogg',title:query,url:'https://www.youtube.com/watch?v=jNQXAC9IVRw',release:()=>released.push(query)})),destroy:async()=>{}};
-  const bufferedFactory=async(libs,input,options)=>{const resource=libs.createAudioResource(input,{metadata:options.metadata});resource.encoder.setBitrate(options.bitrate);resource.volume.setVolume(options.volume);return{resource,destroy(){},resetTiming(){},snapshot:()=>({framesRead:1,sourceStarved:0,maxReadGapMs:20,bufferedMs:400,bitrate:options.bitrate})}};
+  const createTransport=(libs,input,options)=>{const resource=libs.createAudioResource(input,{metadata:options.metadata});resource.encoder.setBitrate(options.bitrate);resource.volume.setVolume(options.volume);if(nativeTransport){delete resource.encoder;delete resource.volume;}const transport={resource,options,offsetSeconds:options.offsetSeconds??0,destroyed:false,destroy(){this.destroyed=true;},resetTiming(){},snapshot:()=>({framesRead:1,sourceStarved:0,maxReadGapMs:20,bufferedMs:400,bitrate:options.bitrate})};transports.push(transport);return transport;};
+  const bufferedFactory=customBufferedFactory?((libs,input,options)=>customBufferedFactory(libs,input,options,createTransport)):(async(libs,input,options)=>createTransport(libs,input,options));
   const manager=new MusicManager({bufferedFactory,...(recoverVoice?{recoverVoice}:{}),token:'fixture-only',runtime,pipeline,cooldownMs:0,idleMs,loginTimeoutMs,notify:async(...args)=>notices.push(args)});
   const request={channelId:'text',senderId:'user'};
-  return {manager,request,played,connections,notices,released,guild};
+  return {manager,request,played,connections,notices,released,guild,transports};
 }
 
 test('normalization finishes and voice Ready is reached before any playback',async()=>{
@@ -29,7 +30,7 @@ test('normalization finishes and voice Ready is reached before any playback',asy
     normalize({input:'normalized.ogg',title:'song',release(){}});await until(()=>f.played.length===1);
     assert.equal(f.played[0].metadata.lufs,-20);assert.equal(f.played[0].input,'normalized.ogg');assert.equal(f.connections[0].subscribed!=null,true);
     assert.equal(f.played[0].volume.value,MUSIC_DEFAULT_VOLUME);assert.equal(MUSIC_DEFAULT_VOLUME,0.6);
-    assert.equal(f.played[0].encoder.bitrate,128000);
+    assert.equal(f.played[0].encoder.bitrate,32000);
   }finally{await f.manager.destroy();}
 });
 
@@ -97,8 +98,8 @@ test('transport reconnect pauses and resumes the same track without clearing its
 });
 
 test('voice channel bandwidth caps the music encoder bitrate',async()=>{
-  const f=fixture();f.guild.channels.cache.set('voice',{bitrate:64000});
-  try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,64000);}
+  const f=fixture();f.guild.channels.cache.set('voice',{bitrate:16000});
+  try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,16000);}
   finally{await f.manager.destroy();}
 });
 
@@ -202,4 +203,58 @@ test('slow text-message persistence cannot revive an older play after a native s
     await bridge.runNativeCommand('/music stop',{conversationId:'text',guildId:'guild',senderId:'user'});
     record();await old;assert.equal(f.played.length,0);assert.match(replies[0],/取消/);
   }finally{record?.();lifetime.abort();await f.manager.destroy();}
+});
+
+test('native volume rebuild seeks from the current position, preserves queue and ignores retired-resource errors',async()=>{
+  const f=fixture({nativeTransport:true});try{
+    await f.manager.play({...f.request,query:'first'});await f.manager.play({...f.request,query:'second'});await until(()=>f.played.length===1);
+    const old=f.played[0];old.playbackDuration=12340;await f.manager.volume({...f.request,percent:35});
+    assert.equal(f.played.length,2);assert.equal(f.transports[1].offsetSeconds,12.34);assert.equal(f.transports[1].options.volume,0.35);
+    assert.equal(f.transports[0].destroyed,true);assert.equal(f.played[1].volume,undefined);assert.equal(f.connections[0].subscribed.paused,false);
+    f.connections[0].subscribed.emit('error',{resource:old,message:'late retired encoder'});
+    f.connections[0].subscribed.emit('stateChange',{resource:old},{status:'idle'});
+    await tick();assert.match((await f.manager.queue(f.request)).message,/first[\s\S]*second/);
+    f.played[1].playbackDuration=1000;await f.manager.pause(f.request);await f.manager.volume({...f.request,percent:40});
+    assert.equal(f.transports[2].offsetSeconds,13.34);assert.match((await f.manager.queue(f.request)).message,/已暫停/);
+  }finally{await f.manager.destroy();}
+});
+
+test('stop cancels a native volume rebuild and destroys its late resource without resuming playback',async()=>{
+  let release,calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===2)await new Promise(resolve=>{release=resolve;});return create(libs,input,options);
+  }});try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    const volume=f.manager.execute('volume',{...f.request,guildId:'guild',percent:30});const cancelled=assert.rejects(volume,{name:'AbortError'});await until(()=>release);
+    await f.manager.execute('stop',{...f.request,guildId:'guild'});await cancelled;release();await until(()=>f.transports.length===2);
+    await tick();assert(f.transports.every(item=>item.destroyed));assert.equal(f.played.length,1);assert.match((await f.manager.queue(f.request)).message,/空/);
+  }finally{release?.();await f.manager.destroy();}
+});
+
+test('failed native volume rebuild restores the previous resource, gain and play state',async()=>{
+  let calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===2)throw new Error('fixture encoder failure');return create(libs,input,options);
+  }});try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    await assert.rejects(f.manager.volume({...f.request,percent:30}),/fixture encoder/);
+    assert.equal(f.transports[0].destroyed,false);assert.equal(f.connections[0].subscribed.paused,false);
+    await f.manager.volume({...f.request,percent:60});assert.equal(calls,2);
+  }finally{await f.manager.destroy();}
+});
+
+test('volume changes during prebuffering replace the stale gain before initial playback',async()=>{
+  let release,calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===1)await new Promise(resolve=>{release=resolve;});return create(libs,input,options);
+  }});try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>release);await f.manager.volume({...f.request,percent:35});
+    release();await until(()=>f.played.length===1);assert.equal(calls,2);assert.equal(f.transports[0].destroyed,true);assert.equal(f.transports[1].options.volume,0.35);
+  }finally{release?.();await f.manager.destroy();}
+});
+
+test('a paused song stays paused when its replacement resource becomes readable after the volume command returns',async()=>{
+  const f=fixture({nativeTransport:true,deferredPlaying:true});try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.connections[0]?.subscribed?.state.status==='playing');
+    await f.manager.pause(f.request);await f.manager.volume({...f.request,percent:35});
+    await until(()=>f.connections[0].subscribed.state.status==='playing');assert.equal(f.connections[0].subscribed.paused,true);
+    await f.manager.resume(f.request);assert.equal(f.connections[0].subscribed.paused,false);
+  }finally{await f.manager.destroy();}
 });

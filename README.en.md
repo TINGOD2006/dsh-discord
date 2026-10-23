@@ -9,7 +9,7 @@ A DeepSeek Harness (DSH) plugin for Discord chat and voice music playback, forke
 - Connect Discord conversations to DSH with existing workspace, session and access policies.
 - Search YouTube from song keywords, let a separate DSH music session select a verified candidate, and queue it for voice playback.
 - Download the full track and apply constant loudness gain toward −20 LUFS with a −3 dB true-peak target before playback. Default player volume is 60%.
-- Prefetch the next track, share normalized caches, prebuffer Opus packets, cap bitrate to the voice channel and retry temporary voice disconnections.
+- Use 32 kbps mono playback with decoding, gain and low-complexity encoding in an FFmpeg child process. Prefetch tracks, share caches, prebuffer packets and retry temporary voice disconnections.
 - Show slash-command acknowledgements and results publicly in the invoking channel. Execution permissions remain in effect.
 - Inspect connection and audio supply metrics with `/music status` and a passive local monitor.
 
@@ -78,7 +78,9 @@ npm run test:music
 npm run monitor:music
 ```
 
-Additional build resolution roots can be supplied with `DSH_BUILD_NODE_MODULES`, separated by semicolons. Reload the plugin after rebuilding. The latest music and chat-order regression run passed **70/70 tests**, including chat FIFO, interleaved chat/music, ordering, cancellation, reload and voice recovery; this does not certify every inherited channel.
+Additional build resolution roots can be supplied with `DSH_BUILD_NODE_MODULES`, separated by semicolons. Reload the plugin after rebuilding. The latest music and chat-order regression run passed **79/79 tests**, including real mono CBR encoding, gain/seek behavior, child cancellation, chat FIFO, ordering, reload and voice recovery; this does not certify every inherited channel.
+
+The playback path uses 48 kHz, fixed 20 ms Opus frames and about 480 ms of initial packet prebuffering. Both voice resources disable inline volume/encoding in the host. Volume changes rebuild the FFmpeg stream at the current position and preserve pause state; a short interruption and small seek error are possible. Lower voice-channel limits still cap bitrate.
 
 `node scripts/smoke-music-transport.mjs` checks the real codec/player clock with localhost UDP echo without contacting Discord. The separate audio smoke script downloads from YouTube; see the full guide before running it.
 

@@ -34,9 +34,11 @@ export function classifyMusicLog(row) {
     let detail = {};
     try { detail = JSON.parse(text.slice(text.lastIndexOf('{'))); } catch {}
     const metrics = {};
-    for (const key of ['udpPingMs', 'wsPingMs', 'udpJitterMs', 'eventLoopMaxMs', 'framesRead', 'sourceStarved', 'maxReadGapMs', 'bufferedMs', 'bitrate']) {
+    for (const key of ['udpPingMs', 'wsPingMs', 'udpJitterMs', 'eventLoopMaxMs', 'framesRead', 'sourceStarved', 'maxReadGapMs', 'bufferedMs', 'bitrate', 'channels']) {
       metrics[key] = Number.isFinite(detail[key]) && detail[key] >= 0 ? detail[key] : null;
     }
+    metrics.encoder = detail.encoder === 'ffmpeg' ? 'ffmpeg' : null;
+    metrics.inlineEncoding = detail.inlineEncoding === false ? false : null;
     if (event === 'music.transport.degraded') return { ...result, kind: 'failure', cause: 'transport-quality', detail: CAUSES['transport-quality'], metrics };
     if (event.endsWith('.recovered')) return { ...result, kind: 'recovery', metrics };
     return { ...result, kind: 'transport', metrics };
