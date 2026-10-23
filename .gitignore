@@ -8,3 +8,4 @@ paper/
 *.sqlite-wal
 *.sqlite-shm
 .DS_Store
+work/

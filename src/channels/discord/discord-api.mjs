@@ -369,7 +369,10 @@ export class DiscordApi {
     }
 
     let parsed = null;
-    if (expectBody || response.status === 429 || !response.ok) {
+    // Discord answers 204 for interaction callbacks and thread joins. That body
+    // is absent by design, so it must not be parsed as JSON.
+    const noBody = response.status === 204;
+    if (!noBody && (expectBody || response.status === 429 || !response.ok)) {
       try {
         parsed = await response.json();
       } catch (cause) {

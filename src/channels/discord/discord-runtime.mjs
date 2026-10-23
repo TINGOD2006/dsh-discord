@@ -980,6 +980,8 @@ export class DiscordRuntime {
       if (process.env.DSK_DISCORD_MUSIC !== '0') {
         this.#music = new MusicManager({
           token: this.#token,
+          harness: this.#harness,
+          notify: (channelId, content) => api.createMessage({ channelId, content }),
           logger: (level, event, detail) => {
             const write = level === 'warn' ? this.#logger.warn
               : level === 'debug' ? this.#logger.debug
@@ -1003,16 +1005,20 @@ export class DiscordRuntime {
         },
         // Music commands work on the voice connection, which lives in the
         // runtime's own voice client rather than in the bridge.
-        musicTools: {
-          play: ({ conversationId, senderId, query }) => this.#music?.play({
-            channelId: conversationId, senderId, query,
+        musicTools: this.#music ? {
+          play: ({ channelId, conversationId, senderId, query }) => this.#music?.play({
+            channelId: channelId ?? conversationId, senderId, query,
           }),
-          next: ({ conversationId }) => this.#music?.next({ channelId: conversationId }),
-          pause: ({ conversationId }) => this.#music?.pause({ channelId: conversationId }),
-          resume: ({ conversationId }) => this.#music?.resume({ channelId: conversationId }),
-          queue: ({ conversationId }) => this.#music?.queue({ channelId: conversationId }),
-          leave: ({ conversationId }) => this.#music?.leave({ channelId: conversationId }),
-        },
+          join: (args) => this.#music?.join(args),
+          next: (args) => this.#music?.next(args),
+          stop: (args) => this.#music?.stop(args),
+          pause: (args) => this.#music?.pause(args),
+          resume: (args) => this.#music?.resume(args),
+          queue: (args) => this.#music?.queue(args),
+          nowplaying: (args) => this.#music?.nowplaying(args),
+          volume: (args) => this.#music?.volume(args),
+          leave: (args) => this.#music?.leave(args),
+        } : null,
         ownerUserId: this.#config.ownerUserId,
         status: this.#status,
         logger: this.#logger,

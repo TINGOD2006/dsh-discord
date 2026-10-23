@@ -1054,6 +1054,7 @@ export class TextHarnessBridge {
             || this.#approvals.hasPending(key),
           ownerTools: this.#ownerTools,
           music: this.#musicTools,
+          ...(runner === runMusicCommand ? { conversationId: message.conversationId, senderId } : {}),
           control: { owner: this, key },
           deferredDelivery: this.#deferred,
           enhancement: captureContextEnhancementSource(
@@ -1123,6 +1124,7 @@ export class TextHarnessBridge {
       pendingInteraction: this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       ownerTools: this.#ownerTools,
       music: this.#musicTools,
+      ...(runner === runMusicCommand ? { senderId } : {}),
       conversationId,
       control: { owner: this, key },
       deferredDelivery: this.#deferred,

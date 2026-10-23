@@ -108,6 +108,10 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
   defineCatalogCommand('play', '加入语音频道播放音乐', [
     '/play [链接或关键词]  加入你所在的语音频道并播放；不带参数时播放你刚发的音频附件',
   ]),
+  defineCatalogCommand('music', '音樂專用控制指令', [
+    '/music skip /music stop  跳歌或停止音樂；原 /skip /stop 仍控制 AI 任務',
+    '/music pause /music resume /music queue /music nowplaying /music volume 0–100 /music leave',
+  ]),
   defineCatalogCommand('join', '让机器人进入你所在的语音频道', [
     '/join  让机器人进入你所在的语音频道（需要 Connect + Speak 权限）',
   ]),

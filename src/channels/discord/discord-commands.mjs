@@ -188,6 +188,26 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
   },
   {
     type: APPLICATION_COMMAND,
+    name: 'music',
+    description: 'Music controls (separate from AI /stop and /skip)',
+    description_localizations: zh('音乐控制（不影响 AI 的 /stop 与 /skip）'),
+    options: [
+      { type: SUB_COMMAND, name: 'play', description: 'Play a URL or search for a song', options: [{ ...QUERY_OPTION, required: true }] },
+      { type: SUB_COMMAND, name: 'join', description: 'Join your voice channel' },
+      { type: SUB_COMMAND, name: 'skip', description: 'Skip the current song, including pending preparation' },
+      { type: SUB_COMMAND, name: 'stop', description: 'Stop music and clear the queue' },
+      { type: SUB_COMMAND, name: 'pause', description: 'Pause music' },
+      { type: SUB_COMMAND, name: 'resume', description: 'Resume music' },
+      { type: SUB_COMMAND, name: 'queue', description: 'Show the music queue' },
+      { type: SUB_COMMAND, name: 'nowplaying', description: 'Show the current song' },
+      { type: SUB_COMMAND, name: 'volume', description: 'Set playback volume', options: [
+        { type: INTEGER_OPTION, name: 'percent', description: 'Volume from 0 to 100', required: true, min_value: 0, max_value: 100 },
+      ] },
+      { type: SUB_COMMAND, name: 'leave', description: 'Stop music and leave voice' },
+    ],
+  },
+  {
+    type: APPLICATION_COMMAND,
     name: 'join',
     name_localizations: zh('进语音'),
     description: 'Join the voice channel the sender is currently in',
@@ -250,6 +270,12 @@ export function commandTextFromInteraction(interaction) {
   const data = interaction?.data;
   if (!data || typeof data.name !== 'string' || !data.name) return null;
   const options = Array.isArray(data.options) ? data.options : [];
+  if (data.name === 'music') {
+    const sub = options.find(option => option.type === SUB_COMMAND);
+    if (!sub) return '/music';
+    const values = (sub.options ?? []).map(option => option.value).filter(value => typeof value === 'string' || typeof value === 'number');
+    return ['/music', sub.name, ...values].join(' ');
+  }
   const values = [];
   for (const option of options) {
     if (!option || option.type === SUB_COMMAND) continue;
