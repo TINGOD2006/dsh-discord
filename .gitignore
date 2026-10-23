@@ -3,7 +3,6 @@ evidence/
 .evidence-staging/
 .dsh-im/
 paper/
-lib/
 *.log
 *.sqlite
 *.sqlite-wal
