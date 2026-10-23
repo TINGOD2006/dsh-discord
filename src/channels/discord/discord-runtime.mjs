@@ -123,6 +123,25 @@ export function historyRecallRequested(text) {
 }
 
 /**
+ * Raw Discord markup hides who is who: `<@1562...>` is an id, `<@&id>` a role,
+ * `<:emoji_1:1447...>` an emote. Replayed as-is the model sees "有人在说一个数字"
+ * and mis-attributes the line, so markup becomes readable text first.
+ */
+export function stripHistoryMarkup(text) {
+  if (typeof text !== 'string' || text === '') return '';
+  return text
+    .replace(/<a?:[A-Za-z0-9_]+:\d+>/g, (match) => {
+      const name = match.replace(/^<a?:/, '').replace(/:\d+>$/, '');
+      return name ? `:${name}:` : '';
+    })
+    .replace(/<@!?\d+>/g, '@某人')
+    .replace(/<@&\d+>/g, '@身份组')
+    .replace(/@everyone|@here/g, '@全体')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+/**
  * Turn archived rows into replayable chat entries. `items` is newest-first;
  * the model reads oldest-first, and messages already replayed once are never
  * repeated so a busy channel does not stack the same lines every turn.
@@ -138,7 +157,7 @@ export function historyEntriesFrom(items, {
   for (const item of [...(items ?? [])].reverse()) {
     if (!item?.messageId || item.messageId === currentMessageId) continue;
     if (seen.has(item.messageId)) continue;
-    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    const text = stripHistoryMarkup(typeof item.text === 'string' ? item.text : '');
     const attachments = Number(item.fileCount) || 0;
     if (!text && attachments === 0) continue;
     if (/^正在处理/.test(text)) continue;
@@ -161,7 +180,7 @@ export function historyEntriesFrom(items, {
 }
 
 /** Render replay entries as the block the bridge prepends to the prompt. */
-export function renderHistoryBlock(entries) {
+export function renderHistoryBlock(entries, { currentName = '' } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) return '';
   const clock = new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit', minute: '2-digit', hour12: false,
@@ -172,9 +191,13 @@ export function renderHistoryBlock(entries) {
     const suffix = entry.attachments > 0 && entry.text ? '（带附件）' : '';
     return `${when} ${entry.name}：${body}${suffix}`;
   });
+  const speaker = stripHistoryMarkup(String(currentName ?? '')).trim();
   return [
     '【最近群聊，仅供你了解上下文；不必逐条回应，也不代表都是对你说的】',
     ...lines,
+    speaker
+      ? `【以上都是背景。下面这条才是现在要回的，是 ${speaker} 说的】`
+      : '【以上都是背景。下面这条才是现在要回的】',
   ].join('\n');
 }
 
@@ -185,8 +208,8 @@ export function renderHistoryBlock(entries) {
  * screenshot silently disappears from the model's view; the newest images are
  * therefore attached as prompt parts, bounded so one replay cannot balloon.
  */
-export function renderHistoryPayload(entries, { maxImages = 2 } = {}) {
-  const text = renderHistoryBlock(entries);
+export function renderHistoryPayload(entries, { maxImages = 2, currentName = '' } = {}) {
+  const text = renderHistoryBlock(entries, { currentName });
   if (!text || !Array.isArray(entries)) return { text, images: [] };
   const images = [];
   for (const entry of [...entries].reverse()) {
@@ -764,6 +787,10 @@ export class DiscordRuntime {
   // Group messages that were never addressed to the bot are invisible to the
   // harness; this window replays them as context on the next addressed turn.
   #historySeen = new Map();
+  // Replay blocks are arrays; the requester's name rides alongside them so the
+  // rendered block can say whose message is the one being answered instead of
+  // leaving the last background line looking like the current speaker.
+  #historyMeta = new WeakMap();
   #accessPolicy;
   #logger;
   #diagnostics;
@@ -776,6 +803,11 @@ export class DiscordRuntime {
   #api = null;
   #bridge = null;
   #music = null;
+  // Music commands answer on their own lane; the turn scheduler never sees
+  // them, so without a note they are invisible in the session and a burst of
+  // @chat buries what the player was told. Notes replay like chat lines.
+  #musicNotes = new Map();
+  #musicLanes = new Map();
   #abortController = null;
   #socket = null;
   #gatewayUrl = null;
@@ -908,6 +940,43 @@ export class DiscordRuntime {
     };
   }
 
+  // One music lane per channel: /play and /next on the same player run in the
+  // order they arrived instead of racing each other, while chat turns keep
+  // using the turn scheduler and never wait on the player.
+  #queueMusic(channelId, work) {
+    const key = String(channelId ?? '');
+    const prev = this.#musicLanes.get(key) ?? Promise.resolve();
+    const next = prev.catch(() => undefined).then(work);
+    this.#musicLanes.set(key, next.catch(() => undefined));
+    return next;
+  }
+
+  #noteMusic(args, verb, result) {
+    const channelId = String(args?.channelId ?? args?.conversationId ?? '');
+    if (!channelId) return;
+    const message = String(result?.message ?? '').trim();
+    const text = stripHistoryMarkup(message || `${verb} 已执行`);
+    const notes = this.#musicNotes.get(channelId) ?? [];
+    notes.push({
+      id: `music:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
+      ts: Date.now(),
+      text: text.length > 200 ? `${text.slice(0, 200)}…` : text,
+    });
+    while (notes.length > 20) notes.shift();
+    this.#musicNotes.set(channelId, notes);
+  }
+
+  #musicTool(verb, run) {
+    return (args) => {
+      const channelId = args?.channelId ?? args?.conversationId;
+      return this.#queueMusic(channelId, async () => {
+        const result = await run(args);
+        this.#noteMusic(args, verb, result);
+        return result;
+      });
+    };
+  }
+
   async #collectHistory(message, conversationKey) {
     const store = this.#groupHistory;
     if (!store || message?.kind !== 'group') return [];
@@ -932,17 +1001,37 @@ export class DiscordRuntime {
       limit,
       maxChars: recalled ? RECALL_MAX_CHARS : HISTORY_MAX_CHARS,
     });
+    // Music replies never pass through the turn scheduler, so a burst of @chat
+    // used to bury them: replay them from the note lane as their own lines.
+    const notes = (this.#musicNotes.get(channelId) ?? [])
+      .filter((note) => !seen.has(note.id))
+      .map((note) => ({
+        collector: 'music',
+        eventId: note.id,
+        name: '音乐',
+        ts: note.ts,
+        text: note.text,
+        attachments: 0,
+        imagePaths: [],
+      }));
+    const merged = notes.length > 0
+      ? [...entries, ...notes].sort((left, right) => left.ts - right.ts)
+      : entries;
     // The widening is the risky part, so every recall leaves a trace and a
     // hard-cap note when the archive had more to give than the budget allowed.
     this.#logger?.info?.('[dsh-im:discord] recent chat recalled', {
       recalled,
       hours: Math.round(windowMs / 3_600_000),
       limit,
-      entries: entries.length,
-      chars: entries.reduce((sum, entry) => sum + String(entry.text ?? '').length + 40, 0),
-      capped: entries.length >= limit,
+      entries: merged.length,
+      music: notes.length,
+      chars: merged.reduce((sum, entry) => sum + String(entry.text ?? '').length + 40, 0),
+      capped: merged.length >= limit,
     });
-    return entries;
+    if (merged.length > 0) {
+      this.#historyMeta.set(merged, { currentName: String(message?.senderName ?? '') });
+    }
+    return merged;
   }
 
   #renderHistory(entries) {
@@ -958,7 +1047,9 @@ export class DiscordRuntime {
         images: [],
       };
     }
-    return renderHistoryPayload(entries);
+    return renderHistoryPayload(entries, {
+      currentName: this.#historyMeta.get(entries)?.currentName ?? '',
+    });
   }
 
   #rememberHistory(conversationKey, entries) {
@@ -1039,19 +1130,19 @@ export class DiscordRuntime {
         // Music commands work on the voice connection, which lives in the
         // runtime's own voice client rather than in the bridge.
         musicTools: this.#music ? {
-          play: ({ channelId, conversationId, senderId, query }) => this.#music?.play({
+          play: this.#musicTool('/play', ({ channelId, conversationId, senderId, query }) => this.#music.play({
             channelId: channelId ?? conversationId, senderId, query,
-          }),
-          join: (args) => this.#music?.join(args),
-          next: (args) => this.#music?.next(args),
-          stop: (args) => this.#music?.stop(args),
-          pause: (args) => this.#music?.pause(args),
-          resume: (args) => this.#music?.resume(args),
-          queue: (args) => this.#music?.queue(args),
-          nowplaying: (args) => this.#music?.nowplaying(args),
-          status: (args) => this.#music?.status(args),
-          volume: (args) => this.#music?.volume(args),
-          leave: (args) => this.#music?.leave(args),
+          })),
+          join: this.#musicTool('/join', (args) => this.#music.join(args)),
+          next: this.#musicTool('/next', (args) => this.#music.next(args)),
+          stop: this.#musicTool('/stop', (args) => this.#music.stop(args)),
+          pause: this.#musicTool('/pause', (args) => this.#music.pause(args)),
+          resume: this.#musicTool('/resume', (args) => this.#music.resume(args)),
+          queue: this.#musicTool('/queue', (args) => this.#music.queue(args)),
+          nowplaying: this.#musicTool('/nowplaying', (args) => this.#music.nowplaying(args)),
+          status: this.#musicTool('/musicstatus', (args) => this.#music.status(args)),
+          volume: this.#musicTool('/volume', (args) => this.#music.volume(args)),
+          leave: this.#musicTool('/leave', (args) => this.#music.leave(args)),
         } : null,
         ownerUserId: this.#config.ownerUserId,
         status: this.#status,

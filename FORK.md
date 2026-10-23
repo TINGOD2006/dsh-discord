@@ -480,3 +480,24 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
 验证记录：
 - `run_script` 单测：200 自动钳到 72；`/recall 200` 进入待确认、`/recall 批准` 后 grant=200；`/recall 9999` 钳到 720；无待确认时回「没有待确认的回溯请求」。
 - `scripts/build-local.mjs`：`errors=0 warnings=0`，`lib/index.js` 942016 字节，bundle 内含待确认文案与空窗提示。需重启 DSH 生效。
+## 群聊回放的归属标注（2026-10-24）
+
+主人反馈「信息和請求者對不上」：回放块最后一行是别人说的，紧接着就是本轮要回的消息，模型容易把当前发言者当成上一行那个人；消息里还夹着 `<@1562...>`、`<:emoji:id>` 这类原始标记，读起来像一串数字。
+
+- `src/channels/discord/discord-runtime.mjs`：新增 `stripHistoryMarkup()`，回放前把 `<@id>`→`@某人`、`<@&id>`→`@身份组`、`<a:name:id>`/`<:name:id>`→`:name:`、`@everyone/@here`→`@全体`。
+- 回放块末尾固定补一行边界：「以上都是背景。下面这条才是现在要回的，是 <发送者名> 说的」（取 `message.senderName`，用 `#historyMeta` WeakMap 随回放数组带到 render；没有名字时退化为「下面这条才是现在要回的」）。
+
+验证记录：`stripHistoryMarkup` 单测 7/7（用户/角色/表情/全体/纯文本）；`renderHistoryBlock` 带 `currentName` 时末行含发送者名；`node --check` 通过；`scripts/build-local.mjs` `errors=0 warnings=0`，`lib/index.js` 949635 字节。需重启 DSH 生效。
+
+## 音乐指令并入会话回放 + 频道内串行（2026-10-24）
+
+主人反馈「音乐指令会跟 @ 对话卡住，音乐指令被 @ 对话盖住」：音乐指令走的是旁路，不经过排序表，回复也不进入会话回放，所以群里一 @ 它，播放器的回复就被聊天淹没，会话记录里也看不到。
+
+- `src/channels/discord/discord-runtime.mjs`：
+  - 新增 `#musicNotes`（按频道保留最近 20 条音乐指令结果）与 `#musicLanes`。
+  - `#queueMusic(channelId, work)`：每频道一条串行车道，`/play`、`/next` 这类指令按到达顺序执行，不再互相抢播放器；聊天回合仍走排序表，互不等待。
+  - `#musicTool(verb, run)`：包一层，执行后把返回的 `message` 记成一条备注（超 200 字截断）。
+  - `#collectHistory` 把备注合并进回放条目（`collector: 'music'`、`name: '音乐'`），与聊天行按时间排序、走同一套 `#historySeen` 去重，所以音乐指令会像对话一样出现在会话记录里，且只出现一次。
+  - 日志 `recent chat recalled` 增加 `music` 计数。
+
+验证记录：`node --check` 通过；`scripts/build-local.mjs` `errors=0 warnings=0`，`lib/index.js` 950684 字节，bundle 内含 `/musicstatus` 与音乐备注前缀。需重启 DSH 生效。
