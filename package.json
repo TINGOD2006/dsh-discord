@@ -71,7 +71,8 @@
     "monitor:music": "node scripts/monitor-music.mjs",
     "test:music": "node --test test/music/*.test.mjs",
     "build": "node scripts/build-local.mjs",
-    "test": "node --test test/*.test.mjs test/channels/*/*.test.mjs"
+    "test": "node --test test/*.test.mjs test/channels/*/*.test.mjs",
+    "push": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/push.ps1"
   },
   "engines": {
     "node": ">=22.19"
