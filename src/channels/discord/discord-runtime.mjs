@@ -946,6 +946,18 @@ export class DiscordRuntime {
   }
 
   #renderHistory(entries) {
+    if (Array.isArray(entries) && entries.length === 0) {
+      // Nothing landed inside the window. Say so, and point at the one-step
+      // wider look-back, instead of letting the model answer from an empty
+      // context as if the chat had been silent.
+      const minutes = envInt('DSK_DISCORD_HISTORY_MINUTES', 15, 1, 120);
+      return {
+        text: t('（最近 {minutes} 分钟群里没有新消息；要翻更早的记录，请主人发送 /recall 批准）', {
+          minutes: String(minutes),
+        }),
+        images: [],
+      };
+    }
     return renderHistoryPayload(entries);
   }
 

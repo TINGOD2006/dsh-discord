@@ -88,7 +88,8 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
     '/thread [标题]  在当前频道创建讨论串',
   ], { privateOnly: true }),
   defineCatalogCommand('recall', '开放一次更早的群聊回溯（仅主人）', [
-    '/recall [小时]  开放一次更早的群聊回溯（默认 24 小时，最多 72 小时），只放宽下一轮',
+    '/recall [小时]  开放一次更早的群聊回溯（默认 24 小时；72 小时内直接生效，更长需再确认）',
+    '/recall 批准  确认更长的回溯请求（最多 720 小时）',
   ], { privateOnly: true }),
   defineCatalogCommand('block', '在本频道暂停某人的回复（仅主人）', [
     '/block @某人 [分钟]  在本频道暂停某人的回复（默认 60 分钟，最多 7 天）',

@@ -330,8 +330,8 @@ export default {
   // command-catalog.mjs (recall / per-user pause)
   '开放一次更早的群聊回溯（仅主人）':
     'Open one wider look-back over the chat archive (owner only)',
-  '/recall [小时]  开放一次更早的群聊回溯（默认 24 小时，最多 72 小时），只放宽下一轮':
-    '/recall [hours]  Open one wider look-back (default 24 hours, at most 72); only the next turn is widened',
+  '/recall [小时]  开放一次更早的群聊回溯（默认 24 小时；72 小时内直接生效，更长需再确认）':
+    '/recall [hours]  Open one wider look-back (default 24; up to 72 at once, longer needs one more confirmation)',
   '在本频道暂停某人的回复（仅主人）':
     'Pause one person’s replies in this channel (owner only)',
   '/block @某人 [分钟]  在本频道暂停某人的回复（默认 60 分钟，最多 7 天）':
@@ -346,6 +346,13 @@ export default {
     'Could not identify this conversation; the look-back was not opened.',
   '已开放回溯 {hours} 小时，只放宽下一轮上下文，之后自动恢复。':
     'Look-back opened for {hours} hours; only the next turn is widened, then it reverts.',
+  '已开放回溯 {hours} 小时（已确认），只放宽下一轮上下文，之后自动恢复。':
+    'Look-back opened for {hours} hours (confirmed); only the next turn is widened, then it reverts.',
+  '没有待确认的回溯请求。': 'There is no look-back request waiting for confirmation.',
+  '更早的记录需要主人确认：{minutes} 分钟内再发 /recall 批准，可开放 {hours} 小时窗口。':
+    'Earlier records need the owner’s confirmation: send /recall approve within {minutes} minutes to open a {hours}-hour window.',
+  '（最近 {minutes} 分钟群里没有新消息；要翻更早的记录，请主人发送 /recall 批准）':
+    '(No new messages in this chat within the last {minutes} minutes; to look further back, ask the owner to send /recall approve)',
   '无法识别当前对话，暂停用户回复失败。':
     'Could not identify this conversation; the user was not paused.',
   '用法：/block @某人 [分钟]，默认 60 分钟。':

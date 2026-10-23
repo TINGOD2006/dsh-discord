@@ -10,9 +10,14 @@ const BLOCK_DEFAULT_MINUTES = 60;
 const BLOCK_MAX_MINUTES = 7 * 24 * 60;
 const DIGEST_DEFAULT_HOURS = 24;
 const RECALL_DEFAULT_HOURS = 24;
-const RECALL_MAX_HOURS = 72;
+// Two tiers: a wide-but-routine look-back needs a plain command, anything
+// beyond it is an explicit second confirmation, so a typo cannot pull a week of
+// chat into one prompt.
+const RECALL_AUTO_MAX_HOURS = 72;
+const RECALL_APPROVED_MAX_HOURS = 720;
 // A recall grant is one-shot: it widens the next addressed turn, then expires.
 const RECALL_GRANT_TTL_MS = 10 * 60_000;
+const RECALL_PENDING_TTL_MS = 3 * 60_000;
 
 // Mute is a switch for the live bridge, not archived configuration: a restart
 // brings replies back. Platform conversation ids are globally unique, so one
@@ -23,6 +28,7 @@ const mutedUntil = new Map();
 // expiry. Kept separate from mute because it silences one sender, not the room.
 const blocked = new Map();
 const recallGrants = new Map();
+const pendingRecalls = new Map();
 
 export function isOwnerCommand(text) {
   return typeof text === 'string' && OWNER_COMMAND.test(text.trim());
@@ -79,12 +85,35 @@ export function listBlockedUsers(conversationId, now = Date.now()) {
   return rows;
 }
 
-export function grantRecall(conversationId, hours) {
+export function grantRecall(conversationId, hours, { approved = false } = {}) {
   const colloquy = typeof conversationId === 'string' ? conversationId.trim() : '';
   if (!colloquy) return 0;
-  const bounded = Math.min(RECALL_MAX_HOURS, Math.max(1, Math.trunc(hours)));
+  const ceiling = approved ? RECALL_APPROVED_MAX_HOURS : RECALL_AUTO_MAX_HOURS;
+  const bounded = Math.min(ceiling, Math.max(1, Math.trunc(hours)));
   recallGrants.set(colloquy, { hours: bounded, expiresAt: Date.now() + RECALL_GRANT_TTL_MS });
   return bounded;
+}
+
+/**
+ * Remember an over-limit request until the owner confirms it, and report the
+ * hours that confirmation would open (already clamped to the hard ceiling).
+ */
+export function requestRecallApproval(conversationId, hours) {
+  const colloquy = typeof conversationId === 'string' ? conversationId.trim() : '';
+  if (!colloquy) return 0;
+  const bounded = Math.min(RECALL_APPROVED_MAX_HOURS, Math.max(RECALL_AUTO_MAX_HOURS + 1, Math.trunc(hours)));
+  pendingRecalls.set(colloquy, { hours: bounded, expiresAt: Date.now() + RECALL_PENDING_TTL_MS });
+  return bounded;
+}
+
+/** Consume a pending confirmation request, if it has not expired. */
+export function takePendingRecall(conversationId, now = Date.now()) {
+  const colloquy = typeof conversationId === 'string' ? conversationId.trim() : '';
+  if (!colloquy) return null;
+  const pending = pendingRecalls.get(colloquy);
+  if (!pending) return null;
+  pendingRecalls.delete(colloquy);
+  return now <= pending.expiresAt ? pending : null;
 }
 
 /** Consume the pending recall grant for a conversation, if any. */
@@ -164,10 +193,27 @@ export async function runOwnerCommand(text, harness, state, key, {
 
   if (name === 'recall') {
     if (!conversationId) return commandResult(t('无法识别当前对话，无法开放回溯。'));
-    const requested = Number.parseInt(args, 10);
-    const hours = grantRecall(conversationId, Number.isFinite(requested) ? requested : RECALL_DEFAULT_HOURS);
+    const argument = String(args ?? '').trim();
+    if (/^(?:批准|确认|確認|approve|yes|ok)$/iu.test(argument)) {
+      const pending = takePendingRecall(conversationId);
+      if (!pending) return commandResult(t('没有待确认的回溯请求。'));
+      const granted = grantRecall(conversationId, pending.hours, { approved: true });
+      return commandResult(t('已开放回溯 {hours} 小时（已确认），只放宽下一轮上下文，之后自动恢复。', {
+        hours: String(granted),
+      }));
+    }
+    const requested = Number.parseInt(argument, 10);
+    const hours = Number.isFinite(requested) ? requested : RECALL_DEFAULT_HOURS;
+    if (hours > RECALL_AUTO_MAX_HOURS) {
+      const pending = requestRecallApproval(conversationId, hours);
+      return commandResult(t('更早的记录需要主人确认：{minutes} 分钟内再发 /recall 批准，可开放 {hours} 小时窗口。', {
+        minutes: String(Math.round(RECALL_PENDING_TTL_MS / 60_000)),
+        hours: String(pending),
+      }));
+    }
+    const granted = grantRecall(conversationId, hours);
     return commandResult(t('已开放回溯 {hours} 小时，只放宽下一轮上下文，之后自动恢复。', {
-      hours: String(hours),
+      hours: String(granted),
     }));
   }
 

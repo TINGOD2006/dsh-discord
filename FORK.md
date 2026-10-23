@@ -464,3 +464,19 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
 - 检查：`powershell -File scripts/push.ps1 -Check`
 - 推送：`powershell -File scripts/push.ps1`（默认 origin main，可用 `-Remote`/`-Branch`）
 - 前置：`gh auth status` 需为已登录；未登录就 `gh auth login`。
+
+## 批准式回溯（2026-10-24）
+
+窗口内一条消息都没有时，过去只会静默给出空上下文。现在分两层：
+
+- `src/channels/shared/owner-commands.mjs`
+  - `RECALL_AUTO_MAX_HOURS = 72`：`/recall N` 直接生效的上限，超过就只记一条待确认请求。
+  - `RECALL_APPROVED_MAX_HOURS = 720`：主人确认后的硬顶，任何时候都不会超过它。
+  - `RECALL_PENDING_TTL_MS = 3 分钟`：待确认请求的有效期，过期作废。
+  - `/recall 批准` 用 `takePendingRecall()` 消费请求后以 `grantRecall(..., { approved: true })` 放行；没有请求时明确回「没有待确认的回溯请求」。
+- `src/channels/discord/discord-runtime.mjs`：`#renderHistory` 在回放为空时改为注入一行提示「最近 N 分钟群里没有新消息；要翻更早的记录，请主人发送 /recall 批准」，让模型主动请主人放行，而不是当作群里没人说话。
+- `src/channels/shared/command-catalog.mjs`、`src/channels/shared/i18n-en/shared-b.mjs`：帮助行与提示文案同步。
+
+验证记录：
+- `run_script` 单测：200 自动钳到 72；`/recall 200` 进入待确认、`/recall 批准` 后 grant=200；`/recall 9999` 钳到 720；无待确认时回「没有待确认的回溯请求」。
+- `scripts/build-local.mjs`：`errors=0 warnings=0`，`lib/index.js` 942016 字节，bundle 内含待确认文案与空窗提示。需重启 DSH 生效。
