@@ -24,10 +24,10 @@ param(
   [switch]$Check
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 Set-Location -LiteralPath (Join-Path $PSScriptRoot '..')
 
-$remoteUrl = (& git remote get-url $Remote 2>&1) -join "`n"
+$remoteUrl = (& git remote get-url $Remote 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) {
   Write-Error "没有远端 $Remote：$remoteUrl"
   exit 1
