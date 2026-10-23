@@ -427,3 +427,21 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
 - `scripts/build-local.mjs`：host / client 皆 `errors=0 warnings=0`，`lib/index.js` 918808 字节，
   bundle 内含 `/play`、`/leave`、`joinVoiceChannel`、`DSK_DISCORD_MUSIC`、`dsh-discord-music-` 标记。
   需重启 DSH 生效。
+
+## 音乐：`/join` 让机器人跟着命令者进频道（2026-10-23）
+
+`/play` 一直是“谁用命令，就进谁所在的语音频道”，但没有独立入口；`/join` 补上这一步：
+不播任何东西，只把机器人拉进**使用命令的人**当前所在的语音频道。文字命令与原生斜线命令同源。
+
+- `src/channels/discord/music.mjs`：新增 `join({ channelId, senderId })`——用 `voiceStates.get(senderId)?.channelId`
+  找命令者所在频道，没有则回“先进一个语音频道”，有则 `#connection(...)` 加入。
+- `src/channels/shared/music-commands.mjs`：`MUSIC_COMMAND_NAMES` 与正则加入 `join`，`runMusicCommand` 增 `case 'join'`。
+- `src/channels/shared/command-catalog.mjs`：新增 `/join` 帮助项（非 `privateOnly`，所有人可用）。
+- `src/channels/discord/discord-commands.mjs`：新增 `join` 应用命令（中文名“进语音”），命令表变 17 条。
+- `src/channels/shared/i18n-en/shared-b.mjs`：补 `/join` 及各音乐帮助行的英文。
+
+验证记录：
+- `node --check` 5 个改动文件通过。
+- `run_script` 单测：`/join` 解析、`/joinx` 不误判、`runMusicCommand` 正确把 `{channelId, senderId}` 传给 `music.join`。
+- `scripts/build-local.mjs`：`errors=0 warnings=0`，`lib/index.js` 915228 字节；bundle 内 `/join`×3、`musicTools`×2、
+  `name_localizations`×17；应用命令表 17 条（含 `join`）。需重启 DSH 生效。

@@ -8,9 +8,9 @@ import { t } from './i18n.mjs';
  * methods take the channel id and answer with `{ message }`.
  */
 
-export const MUSIC_COMMAND_NAMES = Object.freeze(['play', 'next', 'pause', 'resume', 'queue', 'leave']);
+export const MUSIC_COMMAND_NAMES = Object.freeze(['play', 'join', 'next', 'pause', 'resume', 'queue', 'leave']);
 
-const MUSIC_COMMAND = /^\/(play|next|pause|resume|queue|leave)(?=$|\s)/iu;
+const MUSIC_COMMAND = /^\/(play|join|next|pause|resume|queue|leave)(?=$|\s)/iu;
 
 export const MUSIC_COMMAND_USAGE = '/play <链接|关键词>';
 
@@ -51,6 +51,8 @@ export async function runMusicCommand(
     switch (parsed.name) {
       case 'play':
         return await music.play({ channelId, senderId: actorId, query: parsed.argument });
+      case 'join':
+        return await music.join({ channelId, senderId: actorId });
       case 'next':
         return await music.next({ channelId });
       case 'pause':

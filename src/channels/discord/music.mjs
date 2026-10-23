@@ -294,6 +294,16 @@ export class MusicManager {
     };
   }
 
+  /** Join the voice channel the command sender is already sitting in. */
+  async join({ channelId, senderId }) {
+    if (!this.available) return { message: '音乐功能没配 token，先跳过嘛' };
+    const { guild, voiceStates } = await this.#guild(channelId);
+    const voiceChannelId = voiceStates?.get(String(senderId))?.channelId;
+    if (!voiceChannelId) return { message: '先进一个语音频道，我才能跟着进去嘛' };
+    await this.#connection({ guild, voiceChannelId, voiceStates });
+    return { message: `进 <#${voiceChannelId}> 啦` };
+  }
+
   async next({ channelId }) {
     if (!this.available) return { message: '音乐功能没配 token，先跳过嘛' };
     const { guild } = await this.#guild(channelId);

@@ -367,4 +367,15 @@ export default {
   '音乐功能没开嘛。': 'Music playback is disabled.',
   '要在一个服务器频道里用嘛。': 'Use this inside a server channel.',
   '放歌失败了：{reason}': 'Playback failed: {reason}',
+
+  // music help lines (command-catalog.mjs)
+  '/join  让机器人进入你所在的语音频道（需要 Connect + Speak 权限）':
+    '/join  Make the bot join your voice channel (needs Connect + Speak)',
+  '/play [链接或关键词]  加入你所在的语音频道并播放；不带参数时播放你刚发的音频附件':
+    '/play [url or query]  Join your voice channel and play; without arguments it plays your attached audio file',
+  '/next  跳到下一首': '/next  Skip to the next track',
+  '/pause  暂停播放': '/pause  Pause playback',
+  '/resume  继续播放': '/resume  Resume playback',
+  '/queue  查看当前歌单': '/queue  Show the current playlist',
+  '/leave  断开语音频道并清空歌单': '/leave  Leave the voice channel and clear the playlist',
 };

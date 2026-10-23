@@ -188,6 +188,14 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
   },
   {
     type: APPLICATION_COMMAND,
+    name: 'join',
+    name_localizations: zh('进语音'),
+    description: 'Join the voice channel the sender is currently in',
+    description_localizations: zh('进入使用命令的人所在的语音频道'),
+    options: [],
+  },
+  {
+    type: APPLICATION_COMMAND,
     name: 'next',
     name_localizations: zh('下一首'),
     description: 'Skip to the next track',
