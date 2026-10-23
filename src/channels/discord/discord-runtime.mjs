@@ -8,6 +8,7 @@ import { fetchImageBuffer } from '../shared/image-prompt.mjs';
 import { t } from '../shared/i18n.mjs';
 import { captureContextEnhancement } from '../shared/context-enhancement.mjs';
 import { evaluateInboundAccess } from '../shared/inbound-access.mjs';
+import { stripInternalLeaks } from '../shared/outbound-sanitize.mjs';
 import { digestForContext, normalizeDigestConfig } from '../shared/thread-digest.mjs';
 import { takeRecallGrant } from '../shared/owner-commands.mjs';
 import { DiscordApi } from './discord-api.mjs';
@@ -631,9 +632,12 @@ export class DiscordBotClient {
   }
 
   async #sendText(target, text, markdown) {
+    // Archive bookkeeping must never be visible in the chat; see the helper.
+    const clean = stripInternalLeaks(text);
+    if (!clean) return { providerMessageIds: [] };
     const notice = !this.#deliveredNotices.has(target) && target?.notice
       ? String(target.notice) : null;
-    const chunks = (markdown ? chunkMarkdownText : splitMessageText)(notice ? `${notice}\n\n${text}` : text, 1_900);
+    const chunks = (markdown ? chunkMarkdownText : splitMessageText)(notice ? `${notice}\n\n${clean}` : clean, 1_900);
     const providerMessageIds = [];
     for (const [index, chunk] of chunks.entries()) {
       const result = await this.#api.createMessage({
