@@ -513,3 +513,17 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
 - 交接时 `#start` 仍 `await #prepare`，但此时缓存已就绪，只剩建编码器。
 
 验证记录：`prefetchTargets` 单测 9/9（默认深度、0 关闭、超长钳制、非数组、默认参数、env 覆盖）；`node --check` 通过；`node --test --test-isolation=none test/music/*.test.mjs` 101/101 通过。注意：音频模块由 `music-worker.mjs` 从包内源码路径加载，改源码即生效，不必重建 bundle；`lib/index.js` 不含这部分代码属正常。
+## 群聊回放的稳定发言者标签（2026-10-24）
+
+主人反馈「会认错人、对用户对话记录分析错乱」：回放只有显示名，重名、改名、名字里带冒号或换行时「谁说的」只能靠猜，引用关系也只是暗示。
+
+- `src/channels/discord/discord-runtime.mjs`：
+  - `historyEntriesFrom()` 现在把原始 `senderId`、`replyToMessageId`、`replyName`、`replyExcerpt` 带进条目，成本估算连引用一起算。
+  - `renderHistoryBlock()` 给每个说话人分配本轮固定代号 `#uN 显示名·ID后四位`：同一个 `senderId` 永远同一个 `#uN`，同名不同 id 是两个 `#uN`，改名也还是同一个号。
+  - 每条历史前置 `[hN]` 序号与 `HH:MM`，正文压成一行并包在双引号里，注入的换行或 `[system]` 只会留在引号内部。
+  - 引用写成 `→ 回复 [hM]`（目标在窗口内）；目标在窗口外时退化为 `→ 回复 名字：「摘要"`。
+  - 当前要回的那条在末行标成 `[now] #uN 显示名·尾号`，与历史行共用代号，避免把「上一条是谁」和「现在回谁」混在一起。
+  - 音乐旁路备注（`collector: 'music'`）标 `#sys 音乐`，不会被当成某个成员。
+  - 名字里的 `:`、`：`、`|` 先替换成 `·`，避免冒号把名字和正文切开。
+
+验证记录：`node --check` 通过；新增 `test/context-speaker.test.mjs` 7 个用例（同名不同 id、`[now]` 复用代号、名字含全角冒号与换行注入、引用窗口内外两条路径、音乐备注 `#sys`、senderId 与引用字段保留、无当前说话人时的边界行）全部通过；`test/context-access.test.mjs` 原有用例不变仍通过。
