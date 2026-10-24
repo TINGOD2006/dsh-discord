@@ -24,7 +24,7 @@ export function parseMusicCommand(text) {
   let name = match[1].toLowerCase();
   let argument = String(text).trim().slice(match[0].length).trim();
   if (name === 'music') {
-    const command = /^(play|join|skip|stop|pause|resume|queue|nowplaying|status|volume|leave)(?=$|\s)/i.exec(argument);
+    const command = /^(play|join|skip|stop|pause|resume|queue|nowplaying|status|volume|bitrate|channels|leave)(?=$|\s)/i.exec(argument);
     if (!command) return { name: 'help', argument: '' };
     name = command[1].toLowerCase();
     argument = argument.slice(command[0].length).trim();
@@ -56,7 +56,7 @@ export async function runMusicCommand(
   if (signal?.aborted) return null;
   if (hasImages || hasFiles) return { message: '音樂指令請使用純文字網址或關鍵詞，移除附件後重試。' };
   if (isDirect) return { message: '請在伺服器頻道使用音樂指令。' };
-  if (parsed.argument && !['play', 'volume', 'help'].includes(parsed.name)) {
+  if (parsed.argument && !['play', 'volume', 'bitrate', 'channels', 'help'].includes(parsed.name)) {
     return { message: '這個音樂控制指令不接受額外文字；請單獨使用 /music stop、/music skip 等指令。' };
   }
   if (!music) return { message: t('音乐功能没开嘛。') };
@@ -84,6 +84,10 @@ export async function runMusicCommand(
         return await invoke('status');
       case 'volume':
         return await invoke('volume', { ...request, percent: /^\d{1,3}$/.test(parsed.argument) ? Number(parsed.argument) : NaN });
+      case 'bitrate':
+        return await invoke('bitrate', { ...request, ...(parsed.argument ? { kbps: /^\d{1,3}$/.test(parsed.argument) ? Number(parsed.argument) : NaN } : {}) });
+      case 'channels':
+        return await invoke('channels', { ...request, ...(parsed.argument ? { count: /^[12]$/.test(parsed.argument) ? Number(parsed.argument) : NaN } : {}) });
       case 'pause':
         return await invoke('pause');
       case 'resume':
@@ -93,7 +97,7 @@ export async function runMusicCommand(
       case 'leave':
         return await invoke('leave');
       case 'help':
-        return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/stop 與 /skip 仍然控制 AI 任務。' };
+        return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/music bitrate [16–384]：查看或設定 kbps（預設 128，受聲道及語音頻道上限限制）\n/music channels [1|2]：單聲道／雙聲道（預設 2）；320 kbps 請選 2\n也可在聊天中 @機器人，明確要求點歌或控制音樂。\n/stop 與 /skip 仍然控制 AI 任務。' };
       default:
         return null;
     }

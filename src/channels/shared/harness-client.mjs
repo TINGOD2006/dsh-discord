@@ -1,4 +1,5 @@
 import { groupHistoryAccess } from './group-history-access.mjs';
+import { musicAccess } from './music-access.mjs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -1942,6 +1943,7 @@ export class HarnessClient {
     }
     // Advertise delivery only when this request can actually claim its files.
     const closeGroupHistoryAccess = groupHistoryAccess.open(sessionId, promptRpcId, options.groupHistory);
+    const closeMusicAccess = musicAccess.open(sessionId, promptRpcId, options.music);
     const closeArtifactConsumer = typeof onArtifact === 'function'
       ? outboundArtifactRegistry.openConsumer(sessionId, promptRpcId)
       : null;
@@ -2193,6 +2195,7 @@ export class HarnessClient {
       }
       closeArtifactConsumer?.();
       closeGroupHistoryAccess();
+      closeMusicAccess();
       if (ownership) {
         this.#unregisterControlOwnership(ownership);
         this.#unregisterInteractionOwnership(sessionId, ownership);

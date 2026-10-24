@@ -9,7 +9,7 @@ const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/p
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav', '.webm', '.mp4']);
 const hash = value => createHash('sha256').update(value).digest('hex');
 export const MUSIC_LOUDNESS = Object.freeze({ integrated: -20, truePeak: -3, lra: 11, sampleRate: 48000 });
-export const MUSIC_CACHE_VERSION = 2;
+export const MUSIC_CACHE_VERSION = 3;
 
 export function loudnessAnalysisFilter() {
   return `loudnorm=I=${MUSIC_LOUDNESS.integrated}:TP=${MUSIC_LOUDNESS.truePeak}:LRA=${MUSIC_LOUDNESS.lra}:print_format=json`;
@@ -41,6 +41,27 @@ export function youtubeUrl(raw) {
     id = /^\/watch\/?$/.test(url.pathname) ? url.searchParams.get('v') : /^\/(?:shorts|live)\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
   }
   return /^[\w-]{11}$/.test(id ?? '') ? `https://www.youtube.com/watch?v=${id}` : null;
+}
+
+/** Direct media only; discard tracking while keeping the explicitly selected part. */
+export function bilibiliUrl(raw) {
+  let url;
+  try { url = new URL(raw); } catch { return null; }
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port) return null;
+  if (url.hostname === 'b23.tv') {
+    const id = /^\/([A-Za-z0-9]+)\/?$/.exec(url.pathname)?.[1];
+    return id ? `https://b23.tv/${id}` : null;
+  }
+  if (!['bilibili.com', 'www.bilibili.com', 'm.bilibili.com'].includes(url.hostname)) return null;
+  const video = /^\/video\/(BV[A-Za-z0-9]{10}|av[1-9]\d*)\/?$/.exec(url.pathname)?.[1];
+  if (video) {
+    const part = url.searchParams.get('p') ?? '1';
+    if (!/^[1-9]\d*$/.test(part) || !Number.isSafeInteger(Number(part))) return null;
+    // An explicit p=1 prevents a multi-part video from expanding to a playlist.
+    return `https://www.bilibili.com/video/${video}?p=${part}`;
+  }
+  const audio = /^\/audio\/(au[1-9]\d*)\/?$/.exec(url.pathname)?.[1];
+  return audio ? `https://www.bilibili.com/audio/${audio}` : null;
 }
 
 function publicWebUrl(raw) {
@@ -158,9 +179,21 @@ export class MusicAudioPipeline {
     let search = query;
     if (/^https?:/i.test(query)) {
       const url = publicWebUrl(query);
+      if (/(^|\.)(bilibili\.com|b23\.tv)$/.test(url.hostname)) {
+        let direct = bilibiliUrl(url.href);
+        if (!direct) throw new Error('請提供 Bilibili BV／av 影片、au 音訊或 b23 分享連結');
+        if (new URL(direct).hostname === 'b23.tv') {
+          let info;
+          try { info = await this.#metadata(direct, dir, signal); }
+          catch (error) { if (signal.aborted) throw error; throw new Error('無法解析 Bilibili 分享連結，請改貼原影片的 BV／av 連結'); }
+          direct = bilibiliUrl(info.webpage_url);
+          if (!direct || new URL(direct).hostname === 'b23.tv') throw new Error('Bilibili 分享連結未指向支援的影片或音訊');
+        }
+        return { id: hash(direct), url: direct, title: direct, kind: 'bilibili', duration: 0, selection: 'direct' };
+      }
       if (AUDIO_EXTENSIONS.has(extname(url.pathname).toLowerCase())) return { input: url.href, id: hash(url.href), title: url.pathname.split('/').at(-1), kind: 'audio-url', duration: 0, selection: 'direct' };
       let title = '';
-      if (/(^|\.)(bilibili\.com|b23\.tv|spotify\.com|soundcloud\.com|vimeo\.com)$/.test(url.hostname)) {
+      if (/(^|\.)(spotify\.com|soundcloud\.com|vimeo\.com)$/.test(url.hostname)) {
         try { const info = await this.#metadata(url.href, dir, signal); title = info.track ?? info.title ?? ''; } catch (error) { if (signal.aborted) throw error; }
       }
       if (!title) {
@@ -200,7 +233,7 @@ export class MusicAudioPipeline {
     const dir = join(this.#root, 'audio', key);
     try {
       const item = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8'));
-      const input = join(dir, 'audio.ogg');
+      const input = join(dir, 'audio.flac');
       const file = await stat(input);
       if (item.version !== MUSIC_CACHE_VERSION || file.size < 1024 || Date.now() - file.mtimeMs > 24 * 3600_000 || !completeDuration(item.expectedDuration, item.duration)) return null;
       return { ...item, input, cacheHit: true };
@@ -211,11 +244,15 @@ export class MusicAudioPipeline {
     let input = source.input;
     let expected = source.duration;
     let title = source.title;
-    if (source.kind === 'youtube') {
+    if (source.kind === 'youtube' || source.kind === 'bilibili') {
       const infoPath = join(dir, 'download.json');
-      await this.#run(this.#tools.ytDlp, [...this.#ytArgs(), '--no-playlist', '--no-simulate', '--no-progress', '--max-filesize', '256M', '--match-filter', '!is_live',
+      try { await this.#run(this.#tools.ytDlp, [...this.#ytArgs(), '--no-playlist', '--no-simulate', '--no-progress', '--max-filesize', '256M', '--match-filter', '!is_live',
         '-f', 'bestaudio/best', '-o', join(dir.replaceAll('%', '%%'), 'raw.%(ext)s'), '--print-to-file', 'after_move:%()j', infoPath, '--', source.url],
-      { cwd: dir, env: this.#env(dir), signal, timeoutMs: 180_000 });
+      { cwd: dir, env: this.#env(dir), signal, timeoutMs: 180_000 }); }
+      catch (error) {
+        if (signal.aborted || source.kind !== 'bilibili') throw error;
+        throw new Error('無法下載 Bilibili 音訊，影片可能受限、已下架或擷取失敗；請稍後重試');
+      }
       const info = JSON.parse(await readFile(infoPath, 'utf8'));
       if (info.is_live) throw new Error('目前不支援直播音訊');
       expected = Number(info.duration) || expected;
@@ -238,34 +275,34 @@ export class MusicAudioPipeline {
     const { stderr } = await this.#run(this.#tools.ffmpeg, ['-nostdin', '-hide_banner', '-threads', '1', '-filter_threads', '1', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
       '-af', loudnessAnalysisFilter(), '-f', 'null', '-'], { cwd: dir, signal, timeoutMs: 180_000 });
     const loudness = loudnessStats(stderr);
-    const rendered = join(dir, 'normalized.ogg');
+    const rendered = join(dir, 'normalized.flac');
     await this.#run(this.#tools.ffmpeg, ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
-      '-af', normalizationFilter(loudness), '-ar', '48000', '-ac', '2', '-c:a', 'libopus', '-threads', '1', '-b:a', '128k', rendered], { cwd: dir, signal, timeoutMs: 180_000 });
+      '-af', normalizationFilter(loudness), '-ar', '48000', '-ac', '2', '-c:a', 'flac', '-sample_fmt', 's32', '-threads', '1', rendered], { cwd: dir, signal, timeoutMs: 180_000 });
     const actual = await this.#probe(rendered, dir, signal);
     if (!completeDuration(duration, actual)) throw new Error('音量處理後的音訊不完整');
     if (signal.aborted) throw abortError();
     const out = join(this.#root, 'audio', key);
     await mkdir(out, { recursive: true });
-    await rename(rendered, join(out, 'audio.ogg'));
+    await rename(rendered, join(out, 'audio.flac'));
     const metadata = { version: MUSIC_CACHE_VERSION, id: source.id, title, url: source.url ?? '', duration: actual, expectedDuration: expected || duration,
       selection: source.selection, loudness: MUSIC_LOUDNESS, cacheHit: false };
     const pending = join(out, `${randomUUID()}.json`);
     await writeFile(pending, JSON.stringify(metadata)); await rename(pending, join(out, 'meta.json'));
     await this.#prune(key).catch(() => {});
-    return { ...metadata, input: join(out, 'audio.ogg') };
+    return { ...metadata, input: join(out, 'audio.flac') };
   }
 
   async #prune(except) {
     const base = join(this.#root, 'audio');
     const names = (await readdir(base)).filter(name => /^[a-f0-9]{64}$/.test(name));
     const entries = await Promise.all(names.map(async name => {
-      const file = await stat(join(base, name, 'audio.ogg')).catch(() => null);
+      const file = await stat(join(base, name, 'audio.flac')).catch(() => stat(join(base, name, 'audio.ogg')).catch(() => null));
       return { name, bytes: file?.size ?? 0, at: file?.mtimeMs ?? 0 };
     }));
     let size = entries.reduce((sum, entry) => sum + entry.bytes, 0), count = entries.length;
     for (const entry of entries.sort((a, b) => a.at - b.at)) {
       if (size <= this.#maxBytes && count <= this.#maxEntries && Date.now() - entry.at < 24 * 3600_000) break;
-      if (entry.name === except || this.#pins.has(join(base, entry.name, 'audio.ogg'))) continue;
+      if (entry.name === except || this.#pins.has(join(base, entry.name, 'audio.flac')) || this.#pins.has(join(base, entry.name, 'audio.ogg'))) continue;
       await rm(join(base, entry.name), { recursive: true, force: true });
       size -= entry.bytes; count--;
     }

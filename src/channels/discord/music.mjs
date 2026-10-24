@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { isMainThread } from 'node:worker_threads';
 import { MusicAudioPipeline, musicTools, MUSIC_LOUDNESS } from './music-audio.mjs';
+import { MUSIC_PLAYBACK_PROFILE } from './music-encoder.mjs';
 import { createDshMusicSelector } from './music-dsh.mjs';
 import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from './music-transport.mjs';
 import { startMusicHealth } from './music-health.mjs';
@@ -9,10 +11,23 @@ import { MusicCommandLane, musicTask } from './music-command-lane.mjs';
 export const MUSIC_AUDIO_URL = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|webm)(\?|#|$)/i;
 export const MUSIC_MAX_QUEUE = 25;
 export const MUSIC_DEFAULT_VOLUME = 0.6;
+// How many queued tracks may be resolved, searched and decoded to the cache
+// ahead of time. The pipeline already dedupes and rate-limits the renders, so a
+// small depth buys an instant hand-off without stampeding ffmpeg. 0 turns the
+// look-ahead off; the current track is still prepared before it starts.
+export const MUSIC_PREFETCH_DEPTH = (() => {
+  const parsed = Number.parseInt(process.env.DSK_DISCORD_PREFETCH_DEPTH ?? '3', 10);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(6, parsed)) : 3;
+})();
 export const DEFAULT_YTDLP_CANDIDATES = Object.freeze([process.env.DSK_DISCORD_YTDLP, musicTools().ytDlp]);
 export function defaultYtDlpPath(candidates = DEFAULT_YTDLP_CANDIDATES) { return candidates.find(value => value && existsSync(value)) ?? 'yt-dlp'; }
 export function isPlayableUrl(value) { try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; } }
 export function needsExtractor(value) { return isPlayableUrl(value) && /(^|\.)(youtube\.com|youtu\.be|soundcloud\.com|bilibili\.com|b23\.tv|nicovideo\.jp|vimeo\.com|twitch\.tv)$/.test(new URL(value).hostname); }
+/** The queued tracks worth warming now: playback order, capped by the depth. */
+export function prefetchTargets(tracks, depth = MUSIC_PREFETCH_DEPTH) {
+  const limit = Math.max(0, Math.min(MUSIC_MAX_QUEUE, Number(depth) || 0));
+  return Array.isArray(tracks) ? tracks.slice(0, limit) : [];
+}
 
 /** Per-guild playback. A cancelled preparation can never resurrect a stopped track. */
 export class MusicManager {
@@ -22,23 +37,23 @@ export class MusicManager {
   #commands = new MusicCommandLane();
   #lifetime = new AbortController();
   constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000,
-    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000 } = {}) {
+    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate } = {}) {
     this.#token = token; this.#logger = logger; this.#runtime = runtime; this.#notify = notify;
     this.#idleMs = idleMs; this.#cooldownMs = cooldownMs;
     this.#loginTimeoutMs = loginTimeoutMs;
     this.#bufferedFactory = bufferedFactory; this.#recoverVoice = recoverVoice; this.#healthIntervalMs = healthIntervalMs;
     const tools = musicTools(); if (ytDlpPath) tools.ytDlp = ytDlpPath;
-    this.#pipeline = pipeline ?? new MusicAudioPipeline({ tools, logger, selectCandidate: createDshMusicSelector(harness, { logger }) });
+    this.#pipeline = pipeline ?? new MusicAudioPipeline({ tools, logger, selectCandidate: selectCandidate ?? createDshMusicSelector(harness, { logger }) });
   }
   get available() { return !this.#destroyed && typeof this.#token === 'string' && this.#token.length > 0; }
   async execute(command, args = {}) {
-    if (!['play', 'join', 'next', 'stop', 'pause', 'resume', 'queue', 'nowplaying', 'status', 'volume', 'leave'].includes(command)) throw new Error('未知音樂指令');
+    if (!['play', 'join', 'next', 'stop', 'pause', 'resume', 'queue', 'nowplaying', 'status', 'volume', 'bitrate', 'channels', 'leave'].includes(command)) throw new Error('未知音樂指令');
     const signal = args.signal ? AbortSignal.any([args.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     signal.throwIfAborted();
     // Gateway guild IDs reserve a shared player lane before any asynchronous lookup.
     if (!args.guildId) await musicTask(args.ready, signal);
     const guildId = args.guildId ?? (await this.#context(args.channelId, args.senderId, { voice: false, signal })).guild.id;
-    if (['queue', 'nowplaying', 'status'].includes(command)) {
+    if (['queue', 'nowplaying', 'status'].includes(command) || (command === 'bitrate' && args.kbps === undefined) || (command === 'channels' && args.count === undefined)) {
       await musicTask(args.ready, signal); signal.throwIfAborted(); return this[command]({ ...args, signal });
     }
     // Permission checks must precede a barrier: another voice channel cannot cancel admissions.
@@ -95,7 +110,7 @@ export class MusicManager {
   }
   #room(id) {
     if (!this.#guilds.has(id)) this.#guilds.set(id, { id, tracks: [], current: null, player: null, connection: null, channelId: null,
-      textChannelId: null, resource: null, transport: null, health: null, bitrate: voiceBitrate(), recoveryController: null,
+      textChannelId: null, resource: null, transport: null, health: null, bitrate: voiceBitrate(), requestedBitrate: MUSIC_PLAYBACK_PROFILE.bitrate, channelBitrate: null, channels: MUSIC_PLAYBACK_PROFILE.channels, recoveryController: null,
       state: 'idle', volume: MUSIC_DEFAULT_VOLUME, leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false });
     return this.#guilds.get(id);
   }
@@ -123,7 +138,8 @@ export class MusicManager {
     signal?.throwIfAborted(); if (this.#destroyed || room.leaving) throw new Error('音樂服務已關閉');
     const permissions = voiceChannel?.permissionsFor?.(guild.members?.me);
     if (permissions && (!permissions.has('Connect') || !permissions.has('Speak'))) throw new Error('機器人需要該語音頻道的 Connect 與 Speak 權限');
-    room.bitrate = voiceBitrate(voiceChannel?.bitrate);
+    room.channelBitrate = voiceChannel?.bitrate ?? null;
+    room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels);
     const connection = libs.joinVoiceChannel({ channelId: voiceChannelId, guildId: guild.id, group: `dsh-music-${client.user?.id ?? 'bot'}`,
       adapterCreator: guild.voiceAdapterCreator, selfDeaf: true, selfMute: false });
     room.connection = connection; room.channelId = voiceChannelId;
@@ -185,7 +201,15 @@ export class MusicManager {
     }
     return track.preparation;
   }
-  #prefetch(room) { const next = room.tracks[0]; if (next && !room.leaving) this.#prepare(room, next); }
+  #prefetch(room) {
+    if (!room || room.leaving || this.#destroyed) return;
+    // Queue order is playback order: warm the next few tracks while the current
+    // one plays, so handing over needs no search and no transcode wait.
+    for (const track of prefetchTargets(room.tracks)) {
+      if (track.preparation) continue;
+      this.#prepare(room, track).catch(() => {});
+    }
+  }
   #finished(room, id) {
     if (room.current?.id !== id) return;
     room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
@@ -201,9 +225,9 @@ export class MusicManager {
     const libs = await this.#libs();
     while (true) {
       signal.throwIfAborted();
-      const volume = room.volume, source = track.source;
+      const volume = room.volume, bitrate = room.bitrate, channels = room.channels, source = track.source;
       if (!source || room.current !== track || room.leaving) throw new Error('歌曲準備已取消');
-      const operation = Promise.resolve(this.#bufferedFactory(libs, source.input, { volume, bitrate: room.bitrate, offsetSeconds,
+      const operation = Promise.resolve(this.#bufferedFactory(libs, source.input, { volume, bitrate, channels, offsetSeconds,
         metadata: { title: source.title, trackId: track.id, url: source.url, lufs: MUSIC_LOUDNESS.integrated }, signal })).then(value => {
         if (signal.aborted || room.leaving || room.current !== track) {
           value.destroy(); signal.throwIfAborted(); throw new Error('歌曲準備已取消');
@@ -212,7 +236,7 @@ export class MusicManager {
       });
       const transport = await musicTask(operation, signal);
       // A volume command during startup must not leave the old gain in the new encoder.
-      if (room.volume !== volume) { transport.destroy(); continue; }
+      if (room.volume !== volume || room.bitrate !== bitrate || room.channels !== channels) { transport.destroy(); continue; }
       return transport;
     }
   }
@@ -291,41 +315,89 @@ export class MusicManager {
     let ping; try { ping = room.connection?.ping; } catch {}
     const frames = room.transport?.snapshot(); const health = room.health?.snapshot();
     const number = value => Number.isFinite(value) ? Math.round(value) : '尚無資料';
-    const encoder = frames?.encoder === 'ffmpeg' ? 'FFmpeg 子程序／單聲道，主程序不重編碼' : '尚無播放資料';
-    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${room.bitrate / 1000} kbps；封包緩衝：${frames?.bufferedMs ?? 0} ms\n播放編碼：${encoder}\n來源缺包：${frames?.sourceStarved ?? 0}；主程序最大延遲：${number(health?.eventLoopMaxMs)} ms\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。` };
+    const encoder = frames?.encoder === 'ffmpeg' ? `FFmpeg 子程序／${frames.channels === 2 ? '雙聲道立體聲' : '單聲道'}，主程序不重編碼` : '尚無播放資料';
+    const execution = isMainThread ? '主程序' : '獨立 worker';
+    const fallbackLimit = `${voiceBitrate() / 1000} kbps 為上限`;
+    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps\n頻道上限：${room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : `尚無資料（暫以 ${fallbackLimit}）`}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。` };
   }
   async volume({ channelId, senderId, percent, signal }) {
     const { room } = await this.#context(channelId, senderId, { signal }); if (!Number.isInteger(percent) || percent < 0 || percent > 100) return { message: '用法：/music volume 0–100' };
     const previousVolume = room.volume; room.volume = percent / 100;
     if (room.resource?.volume) room.resource.volume.setVolume(room.volume);
     else if (room.current && room.resource && room.volume !== previousVolume) {
-      const track = room.current, previous = room.transport, oldResource = room.resource, previousState = room.state;
-      const active = signal ? AbortSignal.any([signal, track.controller.signal]) : track.controller.signal;
-      const offsetSeconds = (previous?.offsetSeconds ?? 0) + (oldResource.playbackDuration ?? 0) / 1000;
-      room.player?.pause(); if (room.state === 'playing') room.state = 'paused';
-      let replacement;
-      try {
-        replacement = await this.#buildTransport(room, track, { offsetSeconds, signal: active });
-        const libs = await this.#libs();
-        if (previousState === 'playing') await musicTask(libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000), active);
-        active.throwIfAborted();
-        if (room.current !== track || room.transport !== previous || room.leaving) throw new Error('歌曲已切換，音量調整已取消');
-        room.player.play(replacement.resource);
-        room.transport = replacement; room.resource = replacement.resource;
-        room.state = previousState;
-        if (previousState !== 'playing') room.player.pause(); else room.player.unpause();
-        room.health?.destroy(); room.health = startMusicHealth(room, (...args) => this.#log(...args), { intervalMs: this.#healthIntervalMs });
-        previous?.destroy();
-      } catch (error) {
-        replacement?.destroy();
-        if (room.current === track && room.transport === previous) {
-          room.volume = previousVolume; room.state = previousState;
-          if (previousState === 'playing') room.player?.unpause();
-        }
-        throw error;
-      }
+      await this.#replacePlayback(room, signal, () => { room.volume = previousVolume; });
     }
     return { message: `音樂音量已設為 ${percent}%` };
+  }
+  async bitrate({ channelId, senderId, kbps, signal }) {
+    if (kbps !== undefined && (!Number.isInteger(kbps) || kbps < 16 || kbps > 384)) return { message: '用法：/music bitrate [16–384]，單位 kbps；超過 256 請使用 /music channels 2；省略數值可查看目前設定' };
+    const { room, guild, voiceChannelId } = await this.#context(channelId, senderId, { voice: kbps !== undefined, signal });
+    if (kbps !== undefined) {
+      const voiceChannel = guild.channels?.cache.get(voiceChannelId) ?? await guild.channels?.fetch?.(voiceChannelId).catch(() => null);
+      signal?.throwIfAborted();
+      const previous = { requestedBitrate: room.requestedBitrate, bitrate: room.bitrate };
+      room.channelBitrate = voiceChannel?.bitrate ?? room.channelBitrate;
+      room.requestedBitrate = kbps * 1000;
+      room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels);
+      if (room.current && room.resource && room.bitrate !== previous.bitrate) {
+        await this.#replacePlayback(room, signal, () => Object.assign(room, previous));
+      }
+    }
+    return this.#encodingStatus(room);
+  }
+  async channels({ channelId, senderId, count, signal }) {
+    if (count !== undefined && count !== 1 && count !== 2) return { message: '用法：/music channels [1|2]；1 為單聲道，2 為雙聲道立體聲；省略數值可查看設定' };
+    const { room, guild, voiceChannelId } = await this.#context(channelId, senderId, { voice: count !== undefined, signal });
+    if (count !== undefined) {
+      const voiceChannel = guild.channels?.cache.get(voiceChannelId) ?? await guild.channels?.fetch?.(voiceChannelId).catch(() => null);
+      signal?.throwIfAborted();
+      const previous = { channels: room.channels, bitrate: room.bitrate };
+      room.channelBitrate = voiceChannel?.bitrate ?? room.channelBitrate;
+      room.channels = count;
+      room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels);
+      if (room.current && room.resource && (room.channels !== previous.channels || room.bitrate !== previous.bitrate)) {
+        await this.#replacePlayback(room, signal, () => Object.assign(room, previous));
+      }
+    }
+    return this.#encodingStatus(room);
+  }
+  #encodingStatus(room) {
+    const frames = room.transport?.snapshot();
+    const actual = frames?.bitrate;
+    const rate = actual ?? room.bitrate;
+    const limit = room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : `尚無資料（暫以 ${voiceBitrate() / 1000} kbps 為上限）`;
+    const channels = frames?.channels ?? room.channels;
+    const hint = room.requestedBitrate > rate ? (room.channels === 1 && room.requestedBitrate > 256000
+      ? '\n單聲道上限為 256 kbps；請先 /music channels 2，並確認語音頻道碼率足夠。'
+      : '\n目標高於目前可用碼率；請確認語音頻道的碼率設定。') : '';
+    return { message: `音樂目標碼率：${room.requestedBitrate / 1000} kbps\n${actual ? '目前輸出' : '預計輸出'}：${rate / 1000} kbps；頻道上限：${limit}\n聲道：${channels === 2 ? '2（雙聲道立體聲）' : '1（單聲道）'}${hint}\n設定沿用至離開語音或外掛重載；/music channels ${MUSIC_PLAYBACK_PROFILE.channels} 及 /music bitrate ${MUSIC_PLAYBACK_PROFILE.bitrate / 1000} 可恢復預設。` };
+  }
+  async #replacePlayback(room, signal, rollback) {
+    const track = room.current, previous = room.transport, oldResource = room.resource, previousState = room.state;
+    const active = signal ? AbortSignal.any([signal, track.controller.signal]) : track.controller.signal;
+    const offsetSeconds = (previous?.offsetSeconds ?? 0) + (oldResource.playbackDuration ?? 0) / 1000;
+    room.player?.pause(); if (room.state === 'playing') room.state = 'paused';
+    let replacement;
+    try {
+      replacement = await this.#buildTransport(room, track, { offsetSeconds, signal: active });
+      const libs = await this.#libs();
+      if (previousState === 'playing') await musicTask(libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000), active);
+      active.throwIfAborted();
+      if (room.current !== track || room.transport !== previous || room.leaving) throw new Error('歌曲已切換，音訊調整已取消');
+      room.player.play(replacement.resource);
+      room.transport = replacement; room.resource = replacement.resource;
+      room.state = previousState;
+      if (previousState !== 'playing') room.player.pause(); else room.player.unpause();
+      room.health?.destroy(); room.health = startMusicHealth(room, (...args) => this.#log(...args), { intervalMs: this.#healthIntervalMs });
+      previous?.destroy();
+    } catch (error) {
+      replacement?.destroy();
+      if (room.current === track && room.transport === previous) {
+        rollback(); room.state = previousState;
+        if (previousState === 'playing') room.player?.unpause();
+      }
+      throw error;
+    }
   }
   async leave({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); this.#dispose(room); return { message: '已停止音樂並離開語音頻道' }; }
   async destroy() {

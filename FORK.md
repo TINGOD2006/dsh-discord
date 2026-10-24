@@ -501,3 +501,15 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
   - 日志 `recent chat recalled` 增加 `music` 计数。
 
 验证记录：`node --check` 通过；`scripts/build-local.mjs` `errors=0 warnings=0`，`lib/index.js` 950684 字节，bundle 内含 `/musicstatus` 与音乐备注前缀。需重启 DSH 生效。
+## 多首排队时的预取（搜索 + 解码，2026-10-24）
+
+主人要求「多首音乐在排列时可以预处理寻找和解码，轮到传输时马上播放」。管线本身已经会搜索、下载并把音频解码渲染成缓存文件（`MusicAudioPipeline.prepare`，命中缓存直接复用），但预取只做了队列里的**一首**，所以第二首开始仍要等搜索和转码。
+
+- `src/channels/discord/music.mjs`
+  - 新增 `MUSIC_PREFETCH_DEPTH`（`DSK_DISCORD_PREFETCH_DEPTH`，默认 3，范围 0–6；0 关闭预取）。
+  - 新增导出的 `prefetchTargets(tracks, depth)`：按播放顺序取前 N 首。
+  - `#prefetch(room)` 从「只准备 tracks[0]」改成遍历 `prefetchTargets(room.tracks)`，已在准备的跳过；管线内部有并发槽位与同查询去重，不会一次拉起一堆 ffmpeg。
+  - `/musicstatus` 增加一行「预读：最多 N 首…；待预读 M 首」。
+- 交接时 `#start` 仍 `await #prepare`，但此时缓存已就绪，只剩建编码器。
+
+验证记录：`prefetchTargets` 单测 9/9（默认深度、0 关闭、超长钳制、非数组、默认参数、env 覆盖）；`node --check` 通过；`node --test --test-isolation=none test/music/*.test.mjs` 101/101 通过。注意：音频模块由 `music-worker.mjs` 从包内源码路径加载，改源码即生效，不必重建 bundle；`lib/index.js` 不含这部分代码属正常。

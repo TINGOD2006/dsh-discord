@@ -1,18 +1,21 @@
 import { PassThrough } from 'node:stream';
 import { performance } from 'node:perf_hooks';
 import { abortError } from './music-process.mjs';
-import { createMusicEncoder, MUSIC_PLAYBACK_PROFILE } from './music-encoder.mjs';
+import { createMusicEncoder, MUSIC_PLAYBACK_PROFILE, playbackBitrate, playbackChannels } from './music-encoder.mjs';
 
-export function voiceBitrate(channelBitrate) {
-  return Math.min(MUSIC_PLAYBACK_PROFILE.bitrate, Math.max(16000, Number(channelBitrate) || MUSIC_PLAYBACK_PROFILE.bitrate));
+export function voiceBitrate(channelBitrate, requestedBitrate = MUSIC_PLAYBACK_PROFILE.bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels) {
+  // Unknown channel limits stay at the original conservative default.
+  const limit = Number.isFinite(channelBitrate) && channelBitrate > 0 ? channelBitrate : 64000;
+  return Math.min(playbackBitrate(requestedBitrate, channels), playbackBitrate(limit, channels));
 }
 
 /** A bounded packet queue decouples short encoder/I/O stalls from the 20ms player clock. */
-export async function createBufferedMusicResource(libs, input, { volume, bitrate, metadata, signal,
+export async function createBufferedMusicResource(libs, input, { volume, bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels, metadata, signal,
   offsetSeconds = 0, encoderFactory = createMusicEncoder,
   bufferFrames = 48, prebufferFrames = 24, timeoutMs = 5000 } = {}) {
   if (signal?.aborted) throw abortError();
-  const encoder = encoderFactory(input, { volume, bitrate: voiceBitrate(bitrate), offsetSeconds, signal });
+  const count = playbackChannels(channels);
+  const encoder = encoderFactory(input, { volume, bitrate: playbackBitrate(bitrate, count), channels: count, offsetSeconds, signal });
   let producer;
   try { producer = libs.createAudioResource(encoder.stream, { inputType: libs.StreamType.OggOpus, inlineVolume: false, metadata }); }
   catch (error) { encoder.destroy(); throw error; }
@@ -63,7 +66,7 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
     if (signal?.aborted) throw abortError();
     return { resource, destroy, offsetSeconds, resetTiming: () => { lastRead = null; },
       snapshot: () => ({ ...stats, maxReadGapMs: Math.round(stats.maxReadGapMs), bufferedFrames: buffer.readableLength,
-        bufferedMs: buffer.readableLength * 20, bitrate: voiceBitrate(bitrate), channels: 1, encoder: 'ffmpeg', inlineEncoding: false }) };
+        bufferedMs: buffer.readableLength * 20, bitrate: playbackBitrate(bitrate, count), channels: count, encoder: 'ffmpeg', inlineEncoding: false }) };
   } catch (error) { destroy(); throw error; }
 }
 

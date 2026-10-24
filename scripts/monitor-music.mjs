@@ -38,6 +38,7 @@ export function classifyMusicLog(row) {
       metrics[key] = Number.isFinite(detail[key]) && detail[key] >= 0 ? detail[key] : null;
     }
     metrics.encoder = detail.encoder === 'ffmpeg' ? 'ffmpeg' : null;
+    metrics.execution = ['worker', 'main'].includes(detail.execution) ? detail.execution : null;
     metrics.inlineEncoding = detail.inlineEncoding === false ? false : null;
     if (event === 'music.transport.degraded') return { ...result, kind: 'failure', cause: 'transport-quality', detail: CAUSES['transport-quality'], metrics };
     if (event.endsWith('.recovered')) return { ...result, kind: 'recovery', metrics };

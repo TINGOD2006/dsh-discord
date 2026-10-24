@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { MusicManager, MUSIC_DEFAULT_VOLUME } from '../../src/channels/discord/music.mjs';
 import { DiscordHarnessBridge } from '../../src/channels/discord/discord-bridge.mjs';
 import { handleApplicationCommand } from '../../src/channels/discord/discord-commands.mjs';
+import { createMusicRequestContext, createMusicTool, musicAccess } from '../../src/channels/shared/music-access.mjs';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,1));
 async function until(fn){for(let n=0;n<200;n++){if(fn())return;await tick();}throw new Error('state did not settle');}
 function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice,nativeTransport=false,customBufferedFactory,deferredPlaying=false}={}) {
@@ -24,13 +25,29 @@ function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverV
   return {manager,request,played,connections,notices,released,guild,transports};
 }
 
+test('chat music tool reaches the real manager with voice checks and accepted playback outlives the chat grant',async()=>{
+  const f=fixture();f.guild.channels.cache.set('voice',{bitrate:128000});
+  const invoke=async(senderId)=>{
+    const context=createMusicRequestContext({messageId:'request-'+senderId,kind:'group',guildId:'guild',conversationId:'text',senderId,content:'請播放song'},
+      {execute:(action,args)=>f.manager.execute(action,args)});
+    const session={id:'chat-'+senderId,events:[{type:'turn/start',data:{turn:1}}]},close=musicAccess.open(session.id,'rpc',context);
+    musicAccess.observe(session,session.events[0]);musicAccess.claim(session,{source:{rpcId:'rpc'}},1);
+    try{return await createMusicTool().execute({action:'play',query:'song',reason:'目前使用者要求播放song'},{agent:{session}});}finally{close();}
+  };
+  try{
+    await invoke('user');await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,128000);
+    await assert.rejects(invoke('other'),/目前所在/);assert.equal(f.played.length,1);
+    assert.match((await f.manager.nowplaying(f.request)).message,/song/);
+  }finally{await f.manager.destroy();}
+});
+
 test('normalization finishes and voice Ready is reached before any playback',async()=>{
   let normalize;const f=fixture({prepare:()=>new Promise(resolve=>{normalize=resolve;})});
   try{await f.manager.play({...f.request,query:'song'});await until(()=>normalize);assert.equal(f.played.length,0);
     normalize({input:'normalized.ogg',title:'song',release(){}});await until(()=>f.played.length===1);
     assert.equal(f.played[0].metadata.lufs,-20);assert.equal(f.played[0].input,'normalized.ogg');assert.equal(f.connections[0].subscribed!=null,true);
     assert.equal(f.played[0].volume.value,MUSIC_DEFAULT_VOLUME);assert.equal(MUSIC_DEFAULT_VOLUME,0.6);
-    assert.equal(f.played[0].encoder.bitrate,32000);
+    assert.equal(f.played[0].encoder.bitrate,64000);
   }finally{await f.manager.destroy();}
 });
 
@@ -101,6 +118,131 @@ test('voice channel bandwidth caps the music encoder bitrate',async()=>{
   const f=fixture();f.guild.channels.cache.set('voice',{bitrate:16000});
   try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,16000);}
   finally{await f.manager.destroy();}
+});
+
+test('bitrate rebuild preserves playback position, volume and pause state, and applies to subsequent songs',async()=>{
+  const f=fixture({nativeTransport:true});f.guild.channels.cache.set('voice',{bitrate:384000});
+  try{
+    await f.manager.play({...f.request,query:'first'});await f.manager.play({...f.request,query:'second'});await until(()=>f.played.length===1);
+    f.played[0].playbackDuration=12000;
+    const result=await f.manager.execute('bitrate',{...f.request,guildId:'guild',kbps:256});
+    assert.match(result.message,/目前輸出：256 kbps/);assert.equal(f.transports[1].options.bitrate,256000);
+    assert.equal(f.transports[1].offsetSeconds,12);assert.equal(f.transports[1].options.volume,0.6);assert(f.transports[0].destroyed);
+    await f.manager.pause(f.request);f.played[1].playbackDuration=1000;
+    await f.manager.bitrate({...f.request,kbps:320});assert.equal(f.transports[2].offsetSeconds,13);
+    assert.equal(f.connections[0].subscribed.paused,true);assert.match((await f.manager.queue(f.request)).message,/已暫停[\s\S]*second/);
+    await f.manager.volume({...f.request,percent:35});assert.equal(f.transports[3].options.bitrate,320000);
+    await f.manager.next(f.request);await until(()=>f.played.length===5);assert.equal(f.transports[4].options.bitrate,320000);
+    await f.manager.bitrate({...f.request,kbps:32});assert.equal(f.transports[5].options.bitrate,32000);
+  }finally{await f.manager.destroy();}
+});
+
+test('bitrate respects channel cap and caller permissions, validates values, and avoids unnecessary rebuilds',async()=>{
+  const f=fixture({nativeTransport:true});f.guild.channels.cache.set('voice',{bitrate:64000});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    assert.match((await f.manager.bitrate({...f.request,kbps:128})).message,/目前輸出：64 kbps；頻道上限：64 kbps/);
+    await f.manager.bitrate({...f.request,kbps:256});assert.equal(f.played.length,1);
+    assert.match((await f.manager.bitrate({...f.request,senderId:'other'})).message,/目標碼率：256/);
+    await assert.rejects(f.manager.bitrate({...f.request,senderId:'other',kbps:32}),/目前所在/);
+    for(const kbps of [0,15,385,NaN,Infinity,64.5,'128'])assert.match((await f.manager.bitrate({...f.request,kbps})).message,/用法/);
+    assert.equal(f.played.length,1);
+    f.guild.channels.cache.set('voice',{bitrate:256000});await f.manager.bitrate({...f.request,kbps:256});assert.equal(f.transports[1].options.bitrate,256000);
+    await f.manager.stop(f.request);await f.manager.play({...f.request,query:'again'});await until(()=>f.played.length===3);
+    assert.equal(f.transports[2].options.bitrate,256000);
+  }finally{await f.manager.destroy();}
+});
+
+test('failed bitrate rebuild restores the old settings and stream',async()=>{
+  let calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===2)throw new Error('fixture encoder failure');return create(libs,input,options);
+  }});f.guild.channels.cache.set('voice',{bitrate:256000});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    await assert.rejects(f.manager.bitrate({...f.request,kbps:256}),/fixture encoder/);
+    assert.equal(f.transports[0].destroyed,false);assert.equal(f.connections[0].subscribed.paused,false);
+    assert.match((await f.manager.bitrate(f.request)).message,/目標碼率：128 kbps[\s\S]*目前輸出：128 kbps/);
+  }finally{await f.manager.destroy();}
+});
+
+test('stop cancels a bitrate rebuild and cannot resurrect its late resource',async()=>{
+  let release,calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===2)await new Promise(resolve=>{release=resolve;});return create(libs,input,options);
+  }});f.guild.channels.cache.set('voice',{bitrate:256000});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    const change=f.manager.execute('bitrate',{...f.request,guildId:'guild',kbps:256});const cancelled=assert.rejects(change,{name:'AbortError'});await until(()=>release);
+    await f.manager.execute('stop',{...f.request,guildId:'guild'});await cancelled;release();await until(()=>f.transports.length===2);
+    assert(f.transports.every(item=>item.destroyed));assert.equal(f.played.length,1);
+  }finally{release?.();await f.manager.destroy();}
+});
+
+test('bitrate changes during initial prebuffering replace stale encoding before playback',async()=>{
+  let release,calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===1)await new Promise(resolve=>{release=resolve;});return create(libs,input,options);
+  }});f.guild.channels.cache.set('voice',{bitrate:256000});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>release);await f.manager.bitrate({...f.request,kbps:256});
+    release();await until(()=>f.played.length===1);assert(f.transports[0].destroyed);assert.equal(f.transports[1].options.bitrate,256000);
+  }finally{release?.();await f.manager.destroy();}
+});
+
+test('stereo default permits 320 kbps, mono caps output without losing target, and position and volume survive',async()=>{
+  const f=fixture({nativeTransport:true});f.guild.channels.cache.set('voice',{bitrate:384000});
+  try{
+    await f.manager.play({...f.request,query:'first'});await f.manager.play({...f.request,query:'second'});await until(()=>f.played.length===1);
+    assert.equal(f.transports[0].options.channels,2);assert.equal(f.transports[0].options.bitrate,128000);
+    await f.manager.bitrate({...f.request,kbps:320});assert.equal(f.transports[1].options.bitrate,320000);
+    assert.match((await f.manager.bitrate(f.request)).message,/目標碼率：320[\s\S]*目前輸出：320/);
+    f.played[1].playbackDuration=12340;await f.manager.pause(f.request);
+    const result=await f.manager.execute('channels',{...f.request,guildId:'guild',count:1});
+    assert.match(result.message,/目前輸出：256 kbps/);assert.match(result.message,/單聲道/);
+    assert.equal(f.transports[2].options.channels,1);assert.equal(f.transports[2].options.bitrate,256000);
+    assert.equal(f.transports[2].offsetSeconds,12.34);assert.equal(f.transports[2].options.volume,0.6);assert(f.connections[0].subscribed.paused);
+    await f.manager.channels({...f.request,count:1});assert.equal(f.played.length,3);
+    await f.manager.volume({...f.request,percent:35});assert.equal(f.transports[3].options.channels,1);assert.equal(f.transports[3].options.bitrate,256000);
+    await f.manager.next(f.request);await until(()=>f.played.length===5);assert.equal(f.transports[4].options.channels,1);
+    await f.manager.channels({...f.request,count:2});assert.equal(f.transports[5].options.bitrate,320000);
+    assert.match((await f.manager.bitrate(f.request)).message,/目標碼率：320/);
+    f.guild.channels.cache.set('voice',{bitrate:64000});await f.manager.channels({...f.request,count:2});assert.equal(f.transports[6].options.bitrate,64000);
+    await assert.rejects(f.manager.channels({...f.request,senderId:'other',count:1}),/目前所在/);
+    assert.match((await f.manager.channels({...f.request,senderId:'other'})).message,/雙聲道/);
+    for(const count of [0,3,6,NaN,'2'])assert.match((await f.manager.channels({...f.request,count})).message,/用法/);
+  }finally{await f.manager.destroy();}
+});
+
+test('failed mono rebuild restores stereo and its effective bitrate',async()=>{
+  let calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===3)throw new Error('fixture encoder failure');return create(libs,input,options);
+  }});f.guild.channels.cache.set('voice',{bitrate:384000});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);await f.manager.bitrate({...f.request,kbps:320});
+    await assert.rejects(f.manager.channels({...f.request,count:1}),/fixture encoder/);
+    const status=await f.manager.channels(f.request);assert.match(status.message,/目前輸出：320 kbps/);assert.match(status.message,/聲道：2/);
+    assert.equal(f.transports[1].destroyed,false);assert.equal(f.connections[0].subscribed.paused,false);
+  }finally{await f.manager.destroy();}
+});
+
+test('stop cancels a channel-mode rebuild and destroys its late result',async()=>{
+  let release,calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===2)await new Promise(resolve=>{release=resolve;});return create(libs,input,options);
+  }});f.guild.channels.cache.set('voice',{bitrate:384000});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    const change=f.manager.execute('channels',{...f.request,guildId:'guild',count:1});const cancelled=assert.rejects(change,{name:'AbortError'});await until(()=>release);
+    await f.manager.execute('stop',{...f.request,guildId:'guild'});await cancelled;release();await until(()=>f.transports.length===2);
+    assert(f.transports.every(x=>x.destroyed));assert.equal(f.played.length,1);
+  }finally{release?.();await f.manager.destroy();}
+});
+
+test('mono selected during prebuffering replaces the stale stereo resource',async()=>{
+  let release,calls=0;const f=fixture({nativeTransport:true,customBufferedFactory:async(libs,input,options,create)=>{
+    if(++calls===1)await new Promise(resolve=>{release=resolve;});return create(libs,input,options);
+  }});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>release);await f.manager.channels({...f.request,count:1});
+    release();await until(()=>f.played.length===1);assert(f.transports[0].destroyed);assert.equal(f.transports[1].options.channels,1);
+  }finally{release?.();await f.manager.destroy();}
 });
 
 test('cross-channel commands share one guild lane and create only one voice connection',async()=>{

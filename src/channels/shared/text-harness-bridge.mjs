@@ -1,5 +1,6 @@
 import { BusyMessageDispatcher, canAutomaticallySteer } from './busy-message-dispatcher.mjs';
 import { randomUUID } from 'node:crypto';
+import { createMusicRequestContext } from './music-access.mjs';
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 
@@ -1490,6 +1491,7 @@ export class TextHarnessBridge {
         existsOptions: this.#signal ? { signal: this.#signal } : undefined,
         askOptions: {
           groupHistory: message.groupHistory,
+          music: this.#descriptor.key === 'discord' ? createMusicRequestContext(message, this.#musicTools, { signal: this.#signal }) : null,
           timeoutMs: this.#replyTimeoutMs,
           signal: this.#signal,
           control: { owner: this, key: conversationKey },

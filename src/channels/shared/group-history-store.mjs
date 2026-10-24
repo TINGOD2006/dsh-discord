@@ -302,7 +302,7 @@ export class GroupHistoryStore {
     for (const row of rows.slice(0, limit)) {
       let item;
       if (kind === 'files') item = { ...attachmentView(row), sentAt: row.sent_at };
-      else item = { id: row.id, senderId: row.sender_id, senderName: row.sender_name,
+      else item = { id: row.id, messageId: row.platform_message_id, senderId: row.sender_id, senderName: row.sender_name,
         sentAt: row.sent_at, type: row.type, text: row.text.slice(0, 8000), textTruncated: row.text.length > 8000,
         threadId: row.thread_id, replyToMessageId: row.reply_to_message_id,
         attachments: this.#db.prepare('SELECT * FROM attachments WHERE message_id = ? ORDER BY source_attachment_key LIMIT 11').all(row.id).map(attachmentView) };
@@ -330,7 +330,7 @@ export class GroupHistoryStore {
    * Read-only and never paged: callers bound the window by both time and rows,
    * and the digest layer trims further by a character budget.
    */
-  async recentMessages(groupId, { since, limit = 100 } = {}) {
+  async recentMessages(groupId, { since, before = this.#now(), keyword = '', limit = 100 } = {}) {
     await this.ready();
     if (this.#settingsError) throw invalid(this.#settingsError);
     const group = this.#db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
@@ -345,8 +345,8 @@ export class GroupHistoryStore {
         r.sender_name AS reply_sender_name, r.text AS reply_text
       FROM messages m
       LEFT JOIN messages r ON r.group_id = m.group_id AND r.platform_message_id = m.reply_to_message_id
-      WHERE m.group_id = ? AND m.sent_at >= ?
-      ORDER BY m.sent_at DESC, m.id DESC LIMIT ?`).all(groupId, lower, rows + 1);
+      WHERE m.group_id = ? AND m.sent_at >= ? AND m.sent_at <= ? AND instr(lower(m.text), lower(?)) > 0
+      ORDER BY m.sent_at DESC, m.id DESC LIMIT ?`).all(groupId, lower, before, text(keyword, 160), rows + 1);
     const keep = rows < items.length ? items.slice(0, rows) : items;
     return {
       groupName: group.name || group.platform_group_id,

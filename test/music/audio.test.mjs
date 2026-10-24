@@ -6,7 +6,7 @@ import { MusicAudioPipeline, musicTools, loudnessStats, youtubeUrl, completeDura
 import { runMusicProcess } from '../../src/channels/discord/music-process.mjs';
 
 const work=resolve('work/test-music');
-async function scratch(fn){await mkdir(work,{recursive:true});const dir=await mkdtemp(join(work,'case-'));try{await fn(dir);}finally{await rm(dir,{recursive:true,force:true});}}
+async function scratch(fn){await mkdir(work,{recursive:true});const dir=await mkdtemp(join(work,'case-'));try{await fn(dir);}finally{assert(resolve(dir).startsWith(work+'\\')||resolve(dir).startsWith(work+'/'));await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:50});}}
 
 test('only real YouTube host and video shapes reach the direct route',()=>{
   assert.equal(youtubeUrl('https://youtu.be/jNQXAC9IVRw'),'https://www.youtube.com/watch?v=jNQXAC9IVRw');
@@ -16,7 +16,7 @@ test('only real YouTube host and video shapes reach the direct route',()=>{
 
 test('music uses constant gain, leaves peak headroom and invalidates the louder cache profile',()=>{
   assert.equal(MUSIC_LOUDNESS.integrated,-20);assert.equal(MUSIC_LOUDNESS.truePeak,-3);
-  assert.equal(MUSIC_CACHE_VERSION,2);
+  assert.equal(MUSIC_CACHE_VERSION,3);
   assert.equal(normalizationFilter({input_i:-10,input_tp:-1,input_lra:25}),'volume=-10.000000dB');
   assert.equal(normalizationFilter({input_i:-30,input_tp:-2,input_lra:25}),'volume=-1.000000dB');
   assert.equal(normalizationFilter(null),'anull');
@@ -50,7 +50,7 @@ test('cancelling one shared request does not cancel another guild consumer',asyn
       const controller=new AbortController();const first=pipeline.prepare(input,{signal:controller.signal,guildId:'one'});first.catch(()=>{});
       const second=pipeline.prepare(input,{guildId:'two'});
       while(!probeCalls)await new Promise(resolve=>setTimeout(resolve,1));
-      controller.abort();begin();await assert.rejects(first,{name:'AbortError'});const result=await second;assert(result.input.endsWith('audio.ogg'));result.release();
+      controller.abort();begin();await assert.rejects(first,{name:'AbortError'});const result=await second;assert(result.input.endsWith('audio.flac'));result.release();
     }finally{await pipeline.destroy();}
   });
 });

@@ -4,16 +4,26 @@ import { dirname } from 'node:path';
 import { musicTools } from './music-audio.mjs';
 import { abortError } from './music-process.mjs';
 
-export const MUSIC_PLAYBACK_PROFILE = Object.freeze({ bitrate: 32000, channels: 1, sampleRate: 48000, frameMs: 20 });
+// Default target; the transport still clamps actual output to the voice channel.
+export const MUSIC_PLAYBACK_PROFILE = Object.freeze({ bitrate: 128000, channels: 2, sampleRate: 48000, frameMs: 20 });
+export function playbackChannels(value = MUSIC_PLAYBACK_PROFILE.channels) {
+  if (value !== 1 && value !== 2) throw new Error('聲道數須為 1（單聲道）或 2（雙聲道）');
+  return value;
+}
+export function playbackBitrate(value = MUSIC_PLAYBACK_PROFILE.bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels) {
+  const rate = Number(value);
+  const ceiling = playbackChannels(channels) === 1 ? 256000 : 384000;
+  return Math.min(ceiling, Math.max(8000, Number.isFinite(rate) && rate > 0 ? rate : MUSIC_PLAYBACK_PROFILE.bitrate));
+}
 const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/package.json'));
 
-export function playbackEncoderArgs(input, { volume = 0.6, bitrate = MUSIC_PLAYBACK_PROFILE.bitrate, offsetSeconds = 0 } = {}) {
+export function playbackEncoderArgs(input, { volume = 0.6, bitrate = MUSIC_PLAYBACK_PROFILE.bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels, offsetSeconds = 0 } = {}) {
   if (!Number.isFinite(volume) || volume < 0 || volume > 1) throw new Error('播放音量無效');
   if (!Number.isFinite(offsetSeconds) || offsetSeconds < 0) throw new Error('播放位置無效');
-  const rate = Math.min(MUSIC_PLAYBACK_PROFILE.bitrate, Math.max(16000, Number(bitrate) || MUSIC_PLAYBACK_PROFILE.bitrate));
+  const count = playbackChannels(channels), rate = playbackBitrate(bitrate, count);
   return ['-nostdin', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1',
     ...(offsetSeconds > 0 ? ['-ss', offsetSeconds.toFixed(3)] : []), '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
-    '-af', `volume=${volume.toFixed(6)}`, '-ar', '48000', '-ac', '1', '-c:a', 'libopus', '-threads', '1',
+    '-af', `volume=${volume.toFixed(6)}`, '-ar', '48000', '-ac', String(count), '-c:a', 'libopus', '-threads', '1',
     '-application', 'audio', '-compression_level', '0', '-b:a', String(rate), '-vbr', 'off', '-frame_duration', '20',
     '-page_duration', '20000', '-flush_packets', '1', '-f', 'ogg', 'pipe:1'];
 }

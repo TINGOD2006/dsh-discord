@@ -48,7 +48,7 @@ export async function captureGroupHistory(store, message, entry, { logger = cons
       attachments: entry.attachments ?? groupHistoryAttachments(message),
     });
     // A context is a live service reference, not a model-controlled group selector.
-    if (context) message.groupHistory = context;
+    if (context) message.groupHistory = { ...context, currentMessageId: message.messageId, requestedAt: Date.now() };
   } catch (error) {
     logger.warn?.('[dsh-im] unable to save group message:', error?.message ?? 'archive unavailable');
   }

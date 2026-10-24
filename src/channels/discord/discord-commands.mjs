@@ -204,6 +204,14 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
       { type: SUB_COMMAND, name: 'volume', description: 'Set playback volume', options: [
         { type: INTEGER_OPTION, name: 'percent', description: 'Volume from 0 to 100', required: true, min_value: 0, max_value: 100 },
       ] },
+      { type: SUB_COMMAND, name: 'bitrate', description: 'Show or set music bitrate (limited by voice channel)', options: [
+        { type: INTEGER_OPTION, name: 'kbps', description: 'Target kbps; omit to show current settings', required: false,
+          min_value: 16, max_value: 384, choices: [16, 32, 48, 64, 96, 128, 192, 256, 320, 384].map(value => ({ name: `${value} kbps`, value })) },
+      ] },
+      { type: SUB_COMMAND, name: 'channels', description: 'Show or set mono / stereo playback', options: [
+        { type: INTEGER_OPTION, name: 'count', description: '1 = mono, 2 = stereo; omit to show current setting', required: false,
+          choices: [{ name: '1 — 單聲道 Mono', value: 1 }, { name: '2 — 雙聲道 Stereo', value: 2 }] },
+      ] },
       { type: SUB_COMMAND, name: 'leave', description: 'Stop music and leave voice' },
     ],
   },

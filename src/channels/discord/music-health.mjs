@@ -1,4 +1,5 @@
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { isMainThread } from 'node:worker_threads';
 
 const metric = value => Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
 
@@ -14,9 +15,9 @@ export function startMusicHealth(room, log, { intervalMs = 10000 } = {}) {
     const udpJitterMs = udpPingMs !== null && lastUdp !== null ? Math.abs(udpPingMs - lastUdp) : null;
     if (udpPingMs !== null) lastUdp = udpPingMs;
     const sourceStarved = Math.max(0, audio.sourceStarved - lastStarved); lastStarved = audio.sourceStarved;
-    latest = { udpPingMs, wsPingMs, udpJitterMs, eventLoopMaxMs: metric(delay.max / 1e6),
+    latest = { udpPingMs, wsPingMs, udpJitterMs, execution: isMainThread ? 'main' : 'worker', eventLoopMaxMs: metric(delay.max / 1e6),
       framesRead: audio.framesRead, sourceStarved, maxReadGapMs: audio.maxReadGapMs, bufferedMs: audio.bufferedMs,
-      bitrate: audio.bitrate, channels: audio.channels === 1 ? 1 : null, encoder: audio.encoder === 'ffmpeg' ? 'ffmpeg' : null,
+      bitrate: audio.bitrate, channels: [1, 2].includes(audio.channels) ? audio.channels : null, encoder: audio.encoder === 'ffmpeg' ? 'ffmpeg' : null,
       inlineEncoding: audio.inlineEncoding === false ? false : null,
       connectionState: room.connection?.state?.status ?? 'unknown', rtpPacketLoss: null };
     delay.reset();

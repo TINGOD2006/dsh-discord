@@ -37,6 +37,29 @@ test('music network status stays in the music namespace and forwards its caller'
   assert.equal(result.message,'UDP status');assert.deepEqual(caller,{channelId:'channel',senderId:'sender'});
 });
 
+test('native and text bitrate commands retain kbps and optional read-only queries',async()=>{
+  const sub=applicationCommandPayloads().find(c=>c.name==='music').options.find(c=>c.name==='bitrate');
+  assert.equal(sub.options[0].required,false);assert.equal(sub.options[0].max_value,384);
+  assert(sub.options[0].choices.some(choice=>choice.value===128));
+  assert.equal(commandTextFromInteraction({data:{name:'music',options:[{type:1,name:'bitrate',options:[{type:4,name:'kbps',value:128}]}]}}),'/music bitrate 128');
+  assert.deepEqual(parseMusicCommand('/music bitrate 128'),{name:'bitrate',argument:'128'});
+  const calls=[];const options={conversationId:'channel',senderId:'sender',music:{execute:async(name,args)=>{calls.push({name,args});return{message:'ok'};}}};
+  for(const command of ['/music bitrate 128','/music bitrate','/music bitrate 1.5','/music bitrate 128 extra'])await runMusicCommand(command,{}, {},'key',options);
+  assert.equal(calls[0].name,'bitrate');assert.equal(calls[0].args.kbps,128);
+  assert.equal(calls[1].args.kbps,undefined);assert(Number.isNaN(calls[2].args.kbps));assert(Number.isNaN(calls[3].args.kbps));
+});
+
+test('stereo choice and 320 kbps are available through native and text commands',async()=>{
+  const options=applicationCommandPayloads().find(c=>c.name==='music').options;
+  assert.deepEqual(options.find(c=>c.name==='channels').options[0].choices.map(x=>x.value),[1,2]);
+  assert(options.find(c=>c.name==='bitrate').options[0].choices.some(x=>x.value===320));
+  assert.equal(commandTextFromInteraction({data:{name:'music',options:[{type:1,name:'channels',options:[{type:4,name:'count',value:2}]}]}}),'/music channels 2');
+  const calls=[];const request={conversationId:'text',senderId:'user',music:{execute:async(name,args)=>{calls.push({name,args});return{message:'ok'};}}};
+  for(const cmd of ['/music channels 2','/music channels','/music bitrate 320','/music channels 6'])await runMusicCommand(cmd,{}, {},'key',request);
+  assert.equal(calls[0].name,'channels');assert.equal(calls[0].args.count,2);assert.equal(calls[1].args.count,undefined);
+  assert.equal(calls[2].args.kbps,320);assert(Number.isNaN(calls[3].args.count));
+});
+
 test('music dispatcher forwards channel and sender to controls without touching the chat harness', async () => {
   const calls = [];
   const harness = new Proxy({}, { get() { throw new Error('AI harness must remain untouched by music stop'); } });

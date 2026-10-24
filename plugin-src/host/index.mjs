@@ -1,5 +1,6 @@
 import { installGroupHistoryTools } from '../../src/channels/shared/group-history-access.mjs';
 import { installThreadDigestTools } from '../../src/channels/shared/thread-digest.mjs';
+import { installMusicTools } from '../../src/channels/shared/music-access.mjs';
 // dsh-discord：只保留 Discord 频道的 host 侧实现。
 import { apply as applyDiscord } from './channels/discord/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
@@ -119,11 +120,13 @@ export function createImHostPlugin(internals = {}) {
         installOutboundArtifactTool(artifactCtx);
         installGroupHistoryTools(artifactCtx);
         installThreadDigestTools(artifactCtx, { config: config.digest });
+        installMusicTools(artifactCtx);
       });
     } else {
       installOutboundArtifactTool(ctx);
       installGroupHistoryTools(ctx);
       installThreadDigestTools(ctx, { config: config.digest });
+      installMusicTools(ctx);
     }
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)
