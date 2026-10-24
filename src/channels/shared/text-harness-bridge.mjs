@@ -116,6 +116,39 @@ const FILE_ONLY_COMPLETION_TEXT = '任务已完成。';
  * attempts the mark stays and the message is treated as handled.
  */
 const MAX_DELIVERY_ATTEMPTS = 3;
+/**
+ * How many times a queued message may be replayed after its turn failed or a
+ * restart interrupted it. The message stays in the staging list between tries,
+ * so a crash cannot silently lose it; after the last attempt it is reported to
+ * the asker instead of being retried forever.
+ */
+const MAX_PENDING_REPLAY_ATTEMPTS = 3;
+/**
+ * A staged message older than this is reported, not replayed: replaying hours
+ * of backlog on startup would answer questions that are no longer relevant.
+ */
+function pendingReplayMaxAgeMs() {
+  const raw = Number.parseInt(process.env.DSK_DISCORD_REPLAY_MAX_AGE_HOURS ?? '', 10);
+  const hours = Number.isFinite(raw) ? Math.min(168, Math.max(0, raw)) : 6;
+  return hours * 3_600_000;
+}
+
+/**
+ * Whether a staged message should be replayed on startup or only reported.
+ * Stale backlog is reported rather than answered hours late, and a message
+ * that already exhausted its attempts is not retried forever.
+ */
+export function pendingReplayDecision(entry, {
+  now = Date.now(),
+  maxAgeMs = pendingReplayMaxAgeMs(),
+  maxAttempts = MAX_PENDING_REPLAY_ATTEMPTS,
+} = {}) {
+  const attempts = Number.isSafeInteger(entry?.attempts) ? entry.attempts : 0;
+  if (attempts >= maxAttempts) return 'report';
+  const createdAt = Date.parse(String(entry?.createdAt ?? ''));
+  if (maxAgeMs > 0 && Number.isFinite(createdAt) && now - createdAt > maxAgeMs) return 'report';
+  return 'replay';
+}
 /** How many plain-text messages one coalescing window folds into one dispatch. */
 const MAX_COALESCE_MEMBERS = 8;
 /** Longest user body forwarded to the model, in characters. */
@@ -211,7 +244,7 @@ function pendingMessageId(key, messageId) {
   return `${key}\u0000${messageId}`;
 }
 
-const PENDING_RESTART_NOTICE = '排队中的消息在服务重启时被中断。为避免重复执行，未自动重放；如果该消息尚未处理，请重新发送。';
+const PENDING_RESTART_NOTICE = '排队中的消息在服务重启时被中断，已重试多次仍未完成；如果还没得到回复，请重新发送一次。';
 
 export class TextHarnessBridge {
   #descriptor;
@@ -846,13 +879,17 @@ export class TextHarnessBridge {
   #enqueueMessage(message, messageId, senderId, key, {
     releaseMessageId = true,
     alreadyRecorded = false,
+    pendingAttempts = 0,
   } = {}) {
     const body = typeof message?.content === 'string' ? message.content : '';
     const pendingKey = pendingMessageId(key, messageId);
     // Persist before the message joins the table: it may wait behind a long
     // turn, and a restart in that window must not lose the input. A folded
     // message keeps its own record until the turn it joined completes.
-    const pending = this.#recordPendingMessage(message, messageId, senderId, key);
+    const pending = this.#recordPendingMessage(message, messageId, senderId, key, pendingAttempts);
+    // Set by the run wrapper when a turn fails with attempts left: the staging
+    // row must survive so the next start can replay it.
+    let keepForReplay = false;
     // The ordering table: owner first, then whoever opened the in-flight turn,
     // then the room. Fairness and burst folding live in the scheduler; this
     // only states who each message is.
@@ -883,9 +920,17 @@ export class TextHarnessBridge {
       // Persistence already started before the table chose a slot; the run
       // waits for it so a crash cannot leave a turn with no record.
       record: () => pending,
-      run: () => this.#process(message, messageId, senderId, key, { alreadyRecorded }),
+      run: async () => {
+        try {
+          return await this.#process(message, messageId, senderId, key, { alreadyRecorded });
+        } catch (error) {
+          keepForReplay = await this.#bumpPendingAttempt(key, messageId, pendingAttempts);
+          throw error;
+        }
+      },
       cleanup: async () => {
         if (releaseMessageId) this.#acceptedMessageIds.delete(messageId);
+        if (keepForReplay) return;
         await this.#removePendingMessage(pendingKey);
       },
     });
@@ -910,10 +955,18 @@ export class TextHarnessBridge {
     if (typeof this.#state?.pendingMessages !== 'function') return;
     const entries = this.#state.pendingMessages();
     if (!Array.isArray(entries) || entries.length === 0) return;
-    for (const entry of entries) {
+    // Oldest first: a restart replays the backlog in the order people asked,
+    // not in whatever order the state file happened to list.
+    const ordered = [...entries].sort((left, right) => (
+      String(left?.createdAt ?? '').localeCompare(String(right?.createdAt ?? ''))
+    ));
+    const maxAgeMs = pendingReplayMaxAgeMs();
+    for (const entry of ordered) {
       if (!entry || this.#signal?.aborted) return;
       try {
-        if (entry.submitted === true) {
+        const attempts = Number.isSafeInteger(entry.attempts) ? entry.attempts : 0;
+        if (pendingReplayDecision(entry, { maxAgeMs }) === 'report') {
+          // Out of attempts, or too stale to be worth answering again.
           await this.#notifyInterruptedPending(entry);
           await this.#removePendingMessage(entry.id);
           continue;
@@ -921,13 +974,14 @@ export class TextHarnessBridge {
         this.#logger.warn?.(
           `[dsh-im:${this.#descriptor.key}] replaying a queued message that a restart interrupted:`,
           entry.messageId,
+          `attempt=${attempts + 1}`,
         );
-        // The turn never reached Harness, so any earlier mark-seen is an
-        // attempt, not a completed delivery; clear it so the replay can run.
+        // Any earlier mark-seen is an attempt, not a completed delivery; clear
+        // it so the replay can run.
         if (typeof this.#state.unmarkSeen === 'function') {
           await this.#state.unmarkSeen(entry.messageId).catch(() => undefined);
         }
-        await this.#replayPendingMessage(entry);
+        await this.#replayPendingMessage(entry, attempts + 1);
       } catch (error) {
         this.#logger.warn?.(
           `[dsh-im:${this.#descriptor.key}] failed to recover a queued message:`,
@@ -938,7 +992,7 @@ export class TextHarnessBridge {
     }
   }
 
-  #recordPendingMessage(message, messageId, senderId, key) {
+  #recordPendingMessage(message, messageId, senderId, key, attempts = 0) {
     if (typeof this.#state?.putPendingMessage !== 'function') return Promise.resolve();
     const text = controlTextOf(message);
     if (!text) return Promise.resolve();
@@ -950,6 +1004,7 @@ export class TextHarnessBridge {
       text,
       submitted: false,
       createdAt: new Date().toISOString(),
+      ...(attempts > 0 ? { attempts } : {}),
       ...(senderId ? { senderId } : {}),
       ...(message.replyTarget !== undefined ? { target: message.replyTarget } : {}),
     };
@@ -978,10 +1033,38 @@ export class TextHarnessBridge {
     }
   }
 
-  #replayPendingMessage(entry) {
+  #replayPendingMessage(entry, attempts = 1) {
     const message = this.#pendingReplayMessage(entry);
     if (!message) return Promise.resolve();
-    return this.#enqueueMessage(message, entry.messageId, entry.senderId ?? '', entry.key);
+    return this.#enqueueMessage(message, entry.messageId, entry.senderId ?? '', entry.key, {
+      pendingAttempts: attempts,
+    });
+  }
+
+  /**
+   * Bump the persisted attempt counter for a staged message. Returns true when
+   * the entry may be retried again, false once it has exhausted its attempts.
+   */
+  async #bumpPendingAttempt(key, messageId, previousAttempts = 0) {
+    const id = pendingMessageId(key, messageId);
+    const next = previousAttempts + 1;
+    if (next >= MAX_PENDING_REPLAY_ATTEMPTS) {
+      if (typeof this.#state?.patchPendingMessage === 'function') {
+        await this.#state.patchPendingMessage(id, { attempts: next }).catch(() => undefined);
+      }
+      return false;
+    }
+    if (typeof this.#state?.patchPendingMessage !== 'function') return true;
+    try {
+      await this.#state.patchPendingMessage(id, { attempts: next, submitted: false });
+      return true;
+    } catch (error) {
+      this.#logger.warn?.(
+        `[dsh-im:${this.#descriptor.key}] failed to stage a retry for a queued message:`,
+        error?.message ?? error,
+      );
+      return true;
+    }
   }
 
   #pendingReplayMessage(entry) {

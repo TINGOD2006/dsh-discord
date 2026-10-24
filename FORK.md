@@ -542,3 +542,22 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
 验证记录：
 ode --check 通过；新增 	est/context-refs.test.mjs 4 个用例（撞号加长、编号定位与前后窗口、回放打印编号与引用、标点变体去重）全部通过；	est/context-speaker.test.mjs、	est/context-access.test.mjs 共 25 个用例全通过；
 ode scripts/build-local.mjs 重建 lib/index.js（947891 字节），bundle 内确认含 messages_ref、ADD COLUMN ref、windowAroundRef。docs/context-policy.md 补「訊息編號與定位」「重複訊息判定」两节。
+## 排队请求的持久暂存与重启重放（2026-10-24）
+
+优先级高于「重放会重复回答」的顾虑：消息进入顺序表之前先落到会话状态文件
+（`integrations/dsh-discord/session-state.json` 的 `pendingMessages`），失败或被重启打断的
+条目不丢弃，下次启动按到达时间顺序补跑。
+
+- **写入时机**：`TextHarnessBridge#enqueueMessage` → `#recordPendingMessage`，与顺序表同一步，
+  正文为空（如纯附件）的条目不记。
+- **失败重试**：turn 抛错时 `#bumpPendingAttempt` 把 `attempts` 加一并把 `submitted` 重置为
+  false，条目留在暂存区；成功（`cleanup`）才删除。
+- **重启重放**：`#recoverPendingMessages` 按 `createdAt` 升序处理；`attempts >= 3` 或超过
+  `DSK_DISCORD_REPLAY_MAX_AGE_HOURS`（默认 6 小时，0 关闭）只发提示不再重跑，其余先
+  `unmarkSeen` 再入队，所以不会再出现「重启后排队消息凭空消失」。
+- **提示文案**：`PENDING_RESTART_NOTICE` 改为「已重试多次仍未完成，请重新发送」，
+  英文映射同步更新。
+- **环境变量**：`DSK_DISCORD_REPLAY_MAX_AGE_HOURS`（0–168，默认 6）。
+- **测试**：`test/pending-replay.test.mjs` 6 项（新条目重放、次数用尽只报告、过期只报告、
+  0 关闭过期判断、无时间戳仍重放、attempts 落盘后可读回）；`node --test` 合计 133 通过，
+  9 个失败均为沙箱禁止 spawn 的 ffmpeg/worker 用例（与本次改动无关）。

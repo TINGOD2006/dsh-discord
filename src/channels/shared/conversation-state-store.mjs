@@ -43,6 +43,11 @@ function normalizePendingMessage(value) {
   };
   if (typeof value.senderId === 'string' && value.senderId) entry.senderId = value.senderId;
   if (typeof value.createdAt === 'string' && value.createdAt) entry.createdAt = value.createdAt;
+  // How many times a failed turn has been put back for another try. Bounded by
+  // the bridge; persisted so a restart does not reset the counter to zero.
+  if (Number.isSafeInteger(value.attempts) && value.attempts > 0) {
+    entry.attempts = Math.min(99, value.attempts);
+  }
   if (value.target !== undefined) {
     try {
       entry.target = structuredClone(value.target);
