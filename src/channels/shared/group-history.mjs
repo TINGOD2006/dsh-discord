@@ -12,6 +12,31 @@ export function groupHistoryAttachments(message) {
   return attachments;
 }
 
+/**
+ * The id of the message a Discord event replies to.
+ *
+ * The gateway usually sends `message_reference`, but not every delivery path
+ * keeps it: sometimes only the widened `referenced_message` object survives,
+ * and the normalized message may carry the id instead. Any of them is the same
+ * fact, so take whichever is present rather than lose the quote.
+ */
+export function discordReplyTargetId(raw, message) {
+  const candidates = [
+    raw?.message_reference?.message_id,
+    raw?.reference?.message_id,
+    raw?.referenced_message?.id,
+    raw?.referencedMessage?.id,
+    message?.replyToMessageId,
+    message?.replyTo?.messageId,
+    message?.reference?.messageId,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return String(candidate);
+  }
+  return undefined;
+}
+
 export function groupHistoryEntry(channel, raw, message, { scope = '', groupName } = {}) {
   const common = { channel, scope, groupName, senderId: message.senderId,
     senderName: message.contextSource?.()?.senderName, attachments: groupHistoryAttachments(message) };
@@ -29,7 +54,7 @@ export function groupHistoryEntry(channel, raw, message, { scope = '', groupName
   }
   if (channel === 'discord') return { ...common, scope: String(raw.guild_id ?? ''), groupId: raw.channel_id,
     messageId: raw.id, sentAt: raw.timestamp, text: raw.content ?? '', type: raw.attachments?.length ? 'file' : 'text',
-    replyToMessageId: raw.message_reference?.message_id,
+    replyToMessageId: discordReplyTargetId(raw, message),
     capability: '需要频道访问权限及 MESSAGE_CONTENT；未授权时正文和附件可能为空。' };
   if (channel === 'slack') return { ...common, scope: raw.team_id ?? scope, groupId: raw.event.channel,
     messageId: raw.event.ts, sentAt: Math.floor(Number(raw.event.ts) * 1000), text: raw.event.text ?? '',

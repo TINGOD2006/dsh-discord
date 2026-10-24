@@ -250,12 +250,18 @@ export function renderHistoryBlock(entries, { currentName = '', currentSenderId 
     const suffix = entry.attachments > 0 && entry.text ? '（带附件）' : '';
     const replyIndex = entry.replyToMessageId ? position.get(String(entry.replyToMessageId)) : undefined;
     const replyRef = entry.replyToMessageId ? refOf.get(String(entry.replyToMessageId)) : '';
+    // When the quoted row sits outside the replay window it has no [hN] and no
+    // archived name, but the id itself still carries its stable #m suffix, so
+    // the quote stays traceable through /recall.
+    const hintRef = entry.replyToMessageId ? String(entry.replyToMessageId).slice(-4) : '';
     const excerpt = entry.replyExcerpt ? `：「${entry.replyExcerpt}${entry.replyExcerpt.length >= 60 ? '…' : ''}"` : '';
     const reply = replyRef
       ? ` → 回复 #m${replyRef}`
       : (replyIndex
         ? ` → 回复 [h${replyIndex}]`
-        : (entry.replyName ? ` → 回复 ${entry.replyName}${excerpt}` : (excerpt ? ` → 回复${excerpt}` : '')));
+        : (entry.replyName
+          ? ` → 回复 ${entry.replyName}${excerpt}`
+          : (hintRef ? ` → 回复 #m${hintRef}` : (excerpt ? ` → 回复${excerpt}` : ''))));
     const tag = entry.ref ? `[h${index + 1} #m${entry.ref}]` : `[h${index + 1}]`;
     return `${tag} ${when} ${labelOf(entry)}："${body}${suffix}"${reply}`;
   });

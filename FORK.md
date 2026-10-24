@@ -561,3 +561,18 @@ ode scripts/build-local.mjs 重建 lib/index.js（947891 字节），bundle 内�
 - **测试**：`test/pending-replay.test.mjs` 6 项（新条目重放、次数用尽只报告、过期只报告、
   0 关闭过期判断、无时间戳仍重放、attempts 落盘后可读回）；`node --test` 合计 133 通过，
   9 个失败均为沙箱禁止 spawn 的 ffmpeg/worker 用例（与本次改动无关）。
+
+## 引用关系兜底（2026-10-24）
+
+Discord 并不总在事件里带 `message_reference`：同一条「回复某条消息」的投递，可能只留下
+`referenced_message`，也可能只在规范化后的消息对象上留下 id。以前只认第一种，于是偶发的
+引用会整个丢掉，`/recall #mXXXX` 自然也就追不到。
+
+- `src/channels/shared/group-history.mjs` 新增 `discordReplyTargetId(raw, message)`，按
+  `message_reference.message_id` → `reference.message_id` → `referenced_message.id` →
+  `referencedMessage.id` → `replyToMessageId` → `replyTo.messageId` → `reference.messageId`
+  依次取第一个非空值；数字 id 统一转字符串，空白视为没有。归档时改用该函数。
+- `src/channels/discord/discord-runtime.mjs` 渲染回放时，若被引用那条不在本次窗口、也没有
+  归档名字，仍会按平台 id 的末四位写成 `→ 回复 #mXXXX`，保证能顺着编号回查。
+- 测试：`test/discord-reply-target.test.mjs` 5 项（各字段形状、数字 id、空白、归档入口），
+  与 `test/context-refs.test.mjs` 一起 9/9 通过。
