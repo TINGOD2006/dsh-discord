@@ -104,6 +104,14 @@ export class GroupHistoryStore {
         source_attachment_key TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT NOT NULL,
         size_bytes INTEGER, relative_path TEXT, status TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '',
         UNIQUE(message_id, source_attachment_key));`);
+    // Stable per-group message numbers (#mXXXX): the tail of the platform id,
+    // extended only when a shorter tail is already taken. They give the model a
+    // handle for one archived row that a later turn can ask about directly,
+    // and the unique index makes that lookup a single index seek.
+    const messageColumns = this.#db.prepare('PRAGMA table_info(messages)').all().map((column) => column.name);
+    if (!messageColumns.includes('ref')) this.#db.exec('ALTER TABLE messages ADD COLUMN ref TEXT');
+    this.#db.exec('CREATE UNIQUE INDEX IF NOT EXISTS messages_ref ON messages(group_id, ref)');
+    this.#ensureMessageRefs();
     this.#db.prepare("UPDATE attachments SET status = 'unavailable', last_error = ? WHERE status = 'pending'")
       .run('下载被重启中断，原文件尚未保存。');
     // Only our fixed-depth partial files are removed; ready files remain untouched.
@@ -191,6 +199,7 @@ export class GroupHistoryStore {
         .run(randomUUID(), group.id, messageId, text(entry.senderId), text(entry.senderName), sentAt, now,
           text(entry.type) || 'text', typeof entry.text === 'string' ? entry.text : '', text(entry.threadId) || null, text(entry.replyToMessageId, 2048) || null);
       const message = this.#db.prepare('SELECT id FROM messages WHERE group_id = ? AND platform_message_id = ?').get(group.id, messageId);
+      this.#assignRef(group.id, messageId);
       // Repeated delivery may carry metadata missing from the first event.
       for (const [index, source] of (entry.attachments ?? []).entries()) {
         const key = text(source.key) || String(index);
@@ -210,6 +219,35 @@ export class GroupHistoryStore {
     for (const job of queued) this.#jobs.set(job.attachment.id, job);
     this.#pump();
     return context;
+  }
+
+  /**
+   * The number a replayed line is labelled with. Four trailing characters by
+   * default; a collision inside one group widens the tail instead of refusing
+   * the row, so a busy channel never ends up with two `#m3f2a`s.
+   */
+  #assignRef(groupId, platformMessageId) {
+    const row = this.#db.prepare('SELECT id, ref FROM messages WHERE group_id = ? AND platform_message_id = ?')
+      .get(groupId, platformMessageId);
+    if (!row || row.ref) return row?.ref ?? null;
+    const taken = this.#db.prepare('SELECT 1 AS hit FROM messages WHERE group_id = ? AND ref = ?');
+    const source = String(platformMessageId);
+    const limit = Math.min(source.length, 12);
+    for (let length = Math.min(4, source.length); length <= limit; length += 1) {
+      const candidate = source.slice(-length).toLowerCase();
+      if (!taken.get(groupId, candidate)) {
+        this.#db.prepare('UPDATE messages SET ref = ? WHERE id = ?').run(candidate, row.id);
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  /** One-time pass that numbers rows written before the column existed. */
+  #ensureMessageRefs() {
+    const pending = this.#db.prepare('SELECT group_id, platform_message_id FROM messages WHERE ref IS NULL')
+      .all();
+    for (const row of pending) this.#assignRef(String(row.group_id), String(row.platform_message_id));
   }
 
   #pump() {
@@ -338,7 +376,7 @@ export class GroupHistoryStore {
     const rows = Math.min(200, Math.max(1, Number.isInteger(limit) ? limit : 100));
     const lower = Math.max(this.cutoff(), Number.isFinite(since) ? since : this.cutoff());
     const items = this.#db.prepare(`SELECT m.platform_message_id AS message_id, m.sender_id, m.sender_name,
-        m.sent_at, m.type, m.text, m.reply_to_message_id,
+        m.sent_at, m.type, m.text, m.reply_to_message_id, m.ref,
         (SELECT count(*) FROM attachments a WHERE a.message_id = m.id) AS file_count,
         (SELECT group_concat(a.relative_path, '|') FROM attachments a
           WHERE a.message_id = m.id AND a.relative_path IS NOT NULL) AS file_paths,
@@ -355,6 +393,7 @@ export class GroupHistoryStore {
       truncated: rows < items.length,
       items: keep.map((row) => ({
         messageId: String(row.message_id),
+        ref: row.ref == null ? '' : String(row.ref),
         senderId: String(row.sender_id ?? ''),
         senderName: typeof row.sender_name === 'string' ? row.sender_name : '',
         sentAt: Number(row.sent_at),
@@ -395,6 +434,78 @@ export class GroupHistoryStore {
     const row = this.#db.prepare('SELECT id FROM groups WHERE channel = ? AND platform_group_id = ?')
       .get(channel, id);
     return row ? row.id : null;
+  }
+
+  /**
+   * Resolve a `#mXXXX` number to the row it belongs to inside one group.
+   *
+   * The number column is uniquely indexed, so this is a single index seek even
+   * when the archive holds months of traffic.
+   */
+  async findByRef(groupId, ref) {
+    await this.ready();
+    const wanted = String(ref ?? '').trim().replace(/^#/u, '').replace(/^m/u, '').toLowerCase();
+    if (!wanted) return null;
+    const row = this.#db.prepare(`SELECT id, group_id, platform_message_id, ref, sender_id, sender_name,
+        sent_at, type, text, reply_to_message_id FROM messages WHERE group_id = ? AND ref = ?`).get(groupId, wanted);
+    if (!row) return null;
+    return { ...this.#rowView(row), rowId: String(row.id) };
+  }
+
+  /**
+   * The rows surrounding a numbered message, oldest first.
+   *
+   * Anchoring on a number is how "what was #m3f2a replying to?" becomes an
+   * indexed range read instead of a full scan, and the neighbours make the
+   * quoted line readable even when it fell outside the normal window.
+   */
+  async windowAroundRef(groupId, ref, { before = 6, after = 6 } = {}) {
+    const anchor = await this.findByRef(groupId, ref);
+    if (!anchor) return null;
+    const head = Math.min(Math.max(Number(before) || 0, 0), 40);
+    const tail = Math.min(Math.max(Number(after) || 0, 0), 40);
+    const select = `SELECT m.id, m.group_id, m.platform_message_id, m.ref, m.sender_id, m.sender_name,
+        m.sent_at, m.type, m.text, m.reply_to_message_id,
+        (SELECT count(*) FROM attachments a WHERE a.message_id = m.id) AS file_count,
+        (SELECT group_concat(a.relative_path, '|') FROM attachments a
+          WHERE a.message_id = m.id AND a.relative_path IS NOT NULL) AS file_paths,
+        r.sender_name AS reply_sender_name, r.text AS reply_text
+      FROM messages m
+      LEFT JOIN messages r ON r.group_id = m.group_id AND r.platform_message_id = m.reply_to_message_id`;
+    const older = head
+      ? this.#db.prepare(`${select} WHERE m.group_id = ? AND (m.sent_at < ? OR (m.sent_at = ? AND m.id < ?))
+          ORDER BY m.sent_at DESC, m.id DESC LIMIT ?`).all(groupId, anchor.sentAt, anchor.sentAt, anchor.rowId, head)
+      : [];
+    const newer = tail
+      ? this.#db.prepare(`${select} WHERE m.group_id = ? AND (m.sent_at > ? OR (m.sent_at = ? AND m.id > ?))
+          ORDER BY m.sent_at, m.id LIMIT ?`).all(groupId, anchor.sentAt, anchor.sentAt, anchor.rowId, tail)
+      : [];
+    const anchorRow = this.#db.prepare(`${select} WHERE m.id = ?`).get(anchor.rowId);
+    const rows = [...older.reverse(), ...(anchorRow ? [anchorRow] : []), ...newer];
+    return {
+      anchor,
+      items: rows.map((row) => ({ ...this.#rowView(row), fileCount: Number(row.file_count ?? 0),
+        imagePaths: this.#imagePaths(row.file_paths), replySenderName: typeof row.reply_sender_name === 'string' ? row.reply_sender_name : '',
+        replyText: typeof row.reply_text === 'string' ? row.reply_text : '' })),
+    };
+  }
+
+  #imagePaths(value) {
+    return String(value ?? '').split('|').filter(Boolean)
+      .map((relative) => join(this.#root, relative)).filter((absolute) => IMAGE_FILE.test(absolute));
+  }
+
+  #rowView(row) {
+    return {
+      messageId: String(row.platform_message_id),
+      ref: row.ref == null ? '' : String(row.ref),
+      senderId: String(row.sender_id ?? ''),
+      senderName: typeof row.sender_name === 'string' ? row.sender_name : '',
+      sentAt: Number(row.sent_at),
+      type: row.type,
+      text: typeof row.text === 'string' ? row.text : '',
+      replyToMessageId: row.reply_to_message_id == null ? null : String(row.reply_to_message_id),
+    };
   }
 
   async listGroups({ channel } = {}) {

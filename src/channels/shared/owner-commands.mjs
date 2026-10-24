@@ -194,6 +194,12 @@ export async function runOwnerCommand(text, harness, state, key, {
   if (name === 'recall') {
     if (!conversationId) return commandResult(t('无法识别当前对话，无法开放回溯。'));
     const argument = String(args ?? '').trim();
+    // `#m3f2a` names one archived row: read that row and its neighbours now,
+    // instead of widening the next turn's window and hoping it lands inside.
+    if (/^#?m[0-9a-z]{2,12}$/iu.test(argument)) {
+      const found = await ownerTools?.recallRef?.({ conversationId, ref: argument });
+      return commandResult(found?.text || t('没有找到编号 {ref} 的记录。', { ref: argument.replace(/^#/u, '') }));
+    }
     if (/^(?:批准|确认|確認|approve|yes|ok)$/iu.test(argument)) {
       const pending = takePendingRecall(conversationId);
       if (!pending) return commandResult(t('没有待确认的回溯请求。'));

@@ -349,6 +349,7 @@ export default {
   '已开放回溯 {hours} 小时（已确认），只放宽下一轮上下文，之后自动恢复。':
     'Look-back opened for {hours} hours (confirmed); only the next turn is widened, then it reverts.',
   '没有待确认的回溯请求。': 'There is no look-back request waiting for confirmation.',
+  '没有找到编号 {ref} 的记录。': 'No archived message has the number {ref}.',
   '更早的记录需要主人确认：{minutes} 分钟内再发 /recall 批准，可开放 {hours} 小时窗口。':
     'Earlier records need the owner’s confirmation: send /recall approve within {minutes} minutes to open a {hours}-hour window.',
   '（最近 {minutes} 分钟群里没有新消息；要翻更早的记录，请主人发送 /recall 批准）':

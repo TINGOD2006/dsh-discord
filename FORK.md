@@ -526,4 +526,19 @@ Discord 一个频道的消息过去靠一条 promise 链串行：先到先跑；
   - 音乐旁路备注（`collector: 'music'`）标 `#sys 音乐`，不会被当成某个成员。
   - 名字里的 `:`、`：`、`|` 先替换成 `·`，避免冒号把名字和正文切开。
 
-验证记录：`node --check` 通过；新增 `test/context-speaker.test.mjs` 7 个用例（同名不同 id、`[now]` 复用代号、名字含全角冒号与换行注入、引用窗口内外两条路径、音乐备注 `#sys`、senderId 与引用字段保留、无当前说话人时的边界行）全部通过；`test/context-access.test.mjs` 原有用例不变仍通过。
+验证记录：`node --check` 通过；新增 `test/context-speaker.test.mjs` 7 个用例（同名不同 id、`[now]` 复用代号、名字含全角冒号与换行注入、引用窗口内外两条路径、音乐备注 `#sys`、senderId 与引用字段保留、无当前说话人时的边界行）全部通过；`test/context-access.test.mjs` 原有用例不变仍通过。## 归档编号与索引直查（2026-10-24）
+
+主人要求「优化编号与顺序表的关系，更稳定和快地查找记录」，并追加「优化算法和过滤」。
+
+- src/channels/shared/group-history-store.mjs：
+  - messages 表新增 ef TEXT 列（旧库首次打开时 ALTER TABLE 自动补列 + 回填），并建唯一索引 messages_ref ON messages(group_id, ref)；编号取平台消息号后四位，同群撞号时逐位加长（最多 8 位，MESSAGE_REF_GROWTH_LIMIT）。
+  - capture() 在插入后调用 #assignRef() 分配编号；#ensureMessageRefs() 在 eady() 时补历史行的编号。
+  - 新增 indByRef(groupId, ref)（唯一索引 O(1) 取单条，接受 #m3f2a／m3f2a／3f2a）与 windowAroundRef(groupId, ref, {before, after})（编号定位 + messages_group_time 前后窗口，返回 {anchor, items, truncated}）。
+  - ecentMessages() 每行多返回 ef，回放直接用，不再二次查询。
+- src/channels/discord/discord-runtime.mjs：回放行变成 [h1 #m3f2a] 12:34 #u2 名字·1111：「…」；引用写成 → 回复 #m3f2a（目标是刚提到的消息号），窗口外的引用仍是名字摘要。
+- src/channels/shared/history-context.mjs：去重键先做「去掉空白与标点后小写化」（哈哈！！ 与 哈 哈 视为同一句），只用去掉编号后的正文长度估算预算。
+- src/channels/shared/owner-commands.mjs：/recall #m3f2a 直接读该条及前后各 6 条（efore/fter 可调，上限 20），不需要任何时间窗；编号不存在时回「没有找到编号 #m… 的记录。」
+
+验证记录：
+ode --check 通过；新增 	est/context-refs.test.mjs 4 个用例（撞号加长、编号定位与前后窗口、回放打印编号与引用、标点变体去重）全部通过；	est/context-speaker.test.mjs、	est/context-access.test.mjs 共 25 个用例全通过；
+ode scripts/build-local.mjs 重建 lib/index.js（947891 字节），bundle 内确认含 messages_ref、ADD COLUMN ref、windowAroundRef。docs/context-policy.md 补「訊息編號與定位」「重複訊息判定」两节。

@@ -25,6 +25,16 @@ export function historyNoise(text, fileCount = 0) {
   return (!value && !fileCount) || STATUS.test(value) || CONTROL.test(value);
 }
 
+/**
+ * One repeat, not two: the punctuation and spacing differ, the words do not.
+ * Normalising here stops a burst of "哈哈!!" / "哈 哈" from filling the window
+ * with what a reader experiences as a single line.
+ */
+function repeatKey(senderId, replyToMessageId, text) {
+  const compact = text.replace(/[\s\p{P}\p{S}]+/gu, '').toLocaleLowerCase();
+  return `${senderId}\0${replyToMessageId ?? ''}\0${compact || text.toLocaleLowerCase()}`;
+}
+
 /** Input/output are newest first; repeated human statements far apart survive. */
 export function filterHistoryRows(rows, { currentMessageId = '', seen = new Set(), keyword = '', senderId = '' } = {}) {
   const duplicate = new Map();
@@ -37,7 +47,7 @@ export function filterHistoryRows(rows, { currentMessageId = '', seen = new Set(
     if (historyNoise(text, files)) return false;
     if (senderId && String(row.senderId) !== senderId) return false;
     if (needle && !text.toLocaleLowerCase().includes(needle)) return false;
-    const key = `${row.senderId}\0${row.replyToMessageId ?? ''}\0${text}`;
+    const key = repeatKey(row.senderId, row.replyToMessageId, text);
     const ts = Number(row.sentAt) || 0;
     const previous = duplicate.get(key);
     if (!files && previous !== undefined && Math.abs(previous - ts) <= 90_000) return false;
@@ -58,7 +68,7 @@ export function boundHistoryPage(page, groupId, kind, maxChars, currentMessageId
   const duplicates = new Map();
   for (const item of page.items ?? []) {
     const text = cleanHistoryText(item.text);
-    const duplicateKey = `${item.senderId}\0${item.replyToMessageId ?? ''}\0${text}`;
+    const duplicateKey = repeatKey(item.senderId, item.replyToMessageId, text);
     const previous = duplicates.get(duplicateKey);
     if (kind !== 'files' && ((currentMessageId && String(item.messageId ?? '') === currentMessageId)
       || historyNoise(text, item.attachments?.length ?? 0)
