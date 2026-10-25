@@ -4,6 +4,10 @@ import { activeHarnessInteractionOwner, clearModelCatalogCache, hasActiveHarness
 import { extractConnectionEvidence } from '../../src/channels/shared/connection-error.mjs';
 import { harnessPeer } from './harness-peer.mjs';
 import { sameWorkspacePath } from '../../src/channels/shared/default-workspace.mjs';
+import {
+  channelOfPromptRpcId,
+  rememberSessionChannel,
+} from '../../src/channels/shared/session-channel-registry.mjs';
 
 const modernApis = new WeakMap();
 
@@ -239,12 +243,21 @@ class ModernHarnessApi {
       )),
       adopt: (request, signal) => rpcResult(request, () => this.#adoptSession(request.payload, signal)),
       history: (request, signal) => rpcResult(request, () => this.#history(request.payload, signal)),
-      prompt: (request, signal) => rpcResult(request, () => this.#invoke(
-        'session',
-        'prompt',
-        { request: { requestId: request.rpcId, ...request.payload } },
-        signal,
-      )),
+      prompt: (request, signal) => rpcResult(request, () => {
+        // The prompt id carries the channel that sent it (`discord-<uuid>`, ...).
+        // Record the pairing before the agent assembles its System prompt, so
+        // context that belongs to one channel can tell its Sessions apart.
+        rememberSessionChannel(
+          request.payload?.sessionId ?? request.payload?.agentId,
+          channelOfPromptRpcId(request.rpcId),
+        );
+        return this.#invoke(
+          'session',
+          'prompt',
+          { request: { requestId: request.rpcId, ...request.payload } },
+          signal,
+        );
+      }),
       rename: (request, signal) => rpcResult(request, () => this.#invoke(
         'session', 'rename', { request: request.payload }, signal,
       )),

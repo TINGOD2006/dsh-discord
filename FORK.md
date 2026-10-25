@@ -607,3 +607,19 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
   插件单独安装、没有 AGENT.md 时行为一致。
 - `<DSH_HOME>/agents/projects/dsh-discord-*.md` 已改写为纯开发约定（构建/推送命令与文档入口），不再定义人格与语气。
 - 自定义人格仍存 `<DSH_HOME>/integrations/dsh-discord/persona.md`，可在设置卡片里读写。
+
+## Discord 人格只进 Discord 会话（2026-10-25）
+
+上一节把人格注册成插件级 prompt context，但 `ctx.systemPrompt.context()` 是**全局注册**：网页、CLI、子代理会话
+只要加载同一个插件，也会被拼上 Discord 人格。这违反了「bot 人格与开发工作分开」的本意，本节把它按会话收口。
+
+- 新增 `src/channels/shared/session-channel-registry.mjs`：`channelOfPromptRpcId()` 从 prompt/steer 的请求 id 前缀
+  （`discord-<uuid>`、`discord-steer-<uuid>`）读出渠道；`rememberSessionChannel()` / `sessionChannelOf()` /
+  `forgetSessionChannel()` 维护 session → 渠道的配对，最多 4096 条，按最近提示时间淘汰。
+- `plugin-src/host/modern-harness-api.mjs` 的 `sessions.prompt` 处理器在转发给 Host 之前先记下配对——
+  这一步早于 Agent 组装 System prompt，所以开轮第一句就已经有渠道可判。
+- `installDiscordPersona()` 改为把 `text` 包成函数：同一个 context 每次 Assemble 时按会话渠道渲染，
+  只有 `discord` 会话拿到人格文本，其它会话得到空串；`agent/disposed` 时清掉该会话的配对。
+  文案与 order（120）不变，自定义人格、设置卡片、持久化路径都不受影响。
+- 新增 `test/persona-scope.test.mjs`：请求 id 解析、配对增删、Discord/非 Discord/未知会话渲染、自定义文案、清理时机。
+
