@@ -73,6 +73,7 @@ export function createTokenChannelSettings(definition) {
     emptyDescription,
     platformLabel,
     CredentialPanel = null,
+    PersonaSettings = null,
     credentialPayload = ({ secret }) => ({ token: secret }),
     credentialAriaLabel = `使用 Bot Token 接入 ${channel} 机器人`,
     credentialOpenLabel = '手动接入',
@@ -142,6 +143,7 @@ export function createTokenChannelSettings(definition) {
           disabled: Boolean(busy),
           onSave: onContextEnhancementSave,
         }),
+        PersonaSettings ? h(PersonaSettings, { rpcCall }) : null,
         AccountSettings ? h(AccountSettings, {
           account,
           busy: Boolean(busy),

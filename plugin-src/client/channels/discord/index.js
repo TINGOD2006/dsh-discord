@@ -1,4 +1,5 @@
 import { DiscordLogoGlyph } from '../../channel-logos.js';
+import { PersonaEditor } from '../../persona-editor.js';
 import { createTokenChannelSettings } from '../shared/token-channel.js';
 import {
   DISCORD_ENDPOINTS,
@@ -19,6 +20,7 @@ const channel = createTokenChannelSettings({
   emptyTitle: '接入 Discord 机器人',
   emptyDescription: '先在 Developer Portal 创建 Bot 并邀请到服务器，再在这里完成接入。',
   platformLabel: 'Discord Developer Portal',
+  PersonaSettings: PersonaEditor,
 });
 
 export const DiscordSettingsTab = channel.SettingsTab;
