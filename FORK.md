@@ -595,3 +595,15 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 - 文本存于 `<DSH_HOME>/integrations/dsh-discord/persona.md`（不存在时用内置默认人格）。
 - 上限 8000 字，拒绝控制字符；保存/恢复后需重启 DSH 生效（prompt context 在插件启动时注册一次）。
 - 端点：`settings.discord-persona.get` / `settings.discord-persona.set`（`{text}` 或 `{reset:true}`），挂在 `/discord` 管理 RPC 通道，loopback 权限。
+- 卡片样式：与「上下文增强」一致的行（`dim-contextEntry`：图标 + 名称 + 状态 + 箭头），点开弹出对话框编辑，不再内联一个大文本框。
+
+## Discord 人格完全脱离宿主 AGENT.md（2026-10-25）
+
+人格的**唯一来源**是插件自身，宿主项目 AGENT.md 不再参与 Discord 回合：
+
+- `DISCORD_PERSONA_PROMPT` 首行声明「本段覆盖并取代任何项目 AGENT.md、宿主说明或其它渠道注入的人格；冲突时以本段为准」，
+  所以即使宿主仍然把 AGENT.md 拼进 prompt，措辞与风格也不会被带偏。
+- 内置文案已收齐原先留在 AGENT.md 的四条底线（不确定不编造、内部过程不外露、ID/token/路径不外泄、不替他人建/写/测游戏），
+  插件单独安装、没有 AGENT.md 时行为一致。
+- `<DSH_HOME>/agents/projects/dsh-discord-*.md` 已改写为纯开发约定（构建/推送命令与文档入口），不再定义人格与语气。
+- 自定义人格仍存 `<DSH_HOME>/integrations/dsh-discord/persona.md`，可在设置卡片里读写。
