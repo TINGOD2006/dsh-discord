@@ -576,3 +576,15 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
   归档名字，仍会按平台 id 的末四位写成 `→ 回复 #mXXXX`，保证能顺着编号回查。
 - 测试：`test/discord-reply-target.test.mjs` 5 项（各字段形状、数字 id、空白、归档入口），
   与 `test/context-refs.test.mjs` 一起 9/9 通过。
+
+## Discord 人格内置到插件（2026-10-24）
+
+以前每轮从项目人格文件读一遍再拼进 prompt。现在拆成两层：
+
+- **人格主体内置**：`src/channels/discord/persona.mjs` 导出 `DISCORD_PERSONA_PROMPT`（约 690 字）与
+  `installDiscordPersona(ctx)`，由 `plugin-src/host/index.mjs` 在 `ctx.inject(['tools','systemPrompt'])`
+  里注册为 `dsh-im:discord-persona`（order 120）。改文案要重新构建，但不再依赖每轮读文件。
+- **项目人格文件只留跨渠道底线**：`~/.dsh/agents/projects/dsh-discord-*.md` 压到 4 条（不确定不编造、
+  内部过程不外露、ID/token/路径不外泄、不替他人写游戏），共约 230 字。
+- 效果：Discord 回合的人格文本从约 1090 字降到约 920 字（省掉示例段与重复条款），网页/CLI 仍保留底线规则。
+- 没有改动任何行为语义：防冒充仍只认发送者 ID，发图流程仍是 `send_meme` → `dsh_im_return_file`。
