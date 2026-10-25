@@ -588,3 +588,10 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
   内部过程不外露、ID/token/路径不外泄、不替他人写游戏），共约 230 字。
 - 效果：Discord 回合的人格文本从约 1090 字降到约 920 字（省掉示例段与重复条款），网页/CLI 仍保留底线规则。
 - 没有改动任何行为语义：防冒充仍只认发送者 ID，发图流程仍是 `send_meme` → `dsh_im_return_file`。
+
+## Discord 人格可在设置卡片里修改（2026-10-25）
+
+- 设置页（Discord 机器人 → 通用设置）新增「人格」文本框：读取、保存、恢复默认。
+- 文本存于 `<DSH_HOME>/integrations/dsh-discord/persona.md`（不存在时用内置默认人格）。
+- 上限 8000 字，拒绝控制字符；保存/恢复后需重启 DSH 生效（prompt context 在插件启动时注册一次）。
+- 端点：`settings.discord-persona.get` / `settings.discord-persona.set`（`{text}` 或 `{reset:true}`），挂在 `/discord` 管理 RPC 通道，loopback 权限。

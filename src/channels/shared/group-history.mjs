@@ -1,3 +1,5 @@
+import { ensureHistoryReadState } from './history-read-state.mjs';
+
 export function groupHistoryAttachments(message) {
   const attachments = [];
   for (const [type, sources] of [['image', message?.images], ['file', message?.files]]) {
@@ -73,7 +75,10 @@ export async function captureGroupHistory(store, message, entry, { logger = cons
       attachments: entry.attachments ?? groupHistoryAttachments(message),
     });
     // A context is a live service reference, not a model-controlled group selector.
-    if (context) message.groupHistory = { ...context, currentMessageId: message.messageId, requestedAt: Date.now() };
+    if (context) {
+      message.groupHistory = { ...context, logger, currentMessageId: message.messageId, requestedAt: Date.now() };
+      ensureHistoryReadState(message.groupHistory);
+    }
   } catch (error) {
     logger.warn?.('[dsh-im] unable to save group message:', error?.message ?? 'archive unavailable');
   }

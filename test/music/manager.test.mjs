@@ -77,6 +77,24 @@ test('pause, resume and volume affect music; other voice channels cannot control
   }finally{await f.manager.destroy();}
 });
 
+test('relative volume uses the actual current value in the player lane, clamps at both ends and preserves pause',async()=>{
+  const f=fixture({nativeTransport:true});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    assert.match((await f.manager.execute('volume',{...f.request,guildId:'guild',deltaPercent:-10})).message,/50%/);
+    await Promise.all([1,2].map(()=>f.manager.execute('volume',{...f.request,guildId:'guild',deltaPercent:-10})));
+    assert.equal(f.transports.at(-1).options.volume,0.3);
+    await f.manager.pause(f.request);
+    await f.manager.execute('volume',{...f.request,guildId:'guild',deltaPercent:10});
+    assert.equal(f.transports.at(-1).options.volume,0.4);assert.equal(f.connections[0].subscribed.paused,true);
+    await assert.rejects(f.manager.execute('volume',{...f.request,guildId:'guild',senderId:'other',deltaPercent:-10}),/目前所在/);
+    await f.manager.volume({...f.request,percent:5});await f.manager.execute('volume',{...f.request,guildId:'guild',deltaPercent:-10});assert.equal(f.transports.at(-1).options.volume,0);
+    await f.manager.volume({...f.request,percent:95});await f.manager.execute('volume',{...f.request,guildId:'guild',deltaPercent:10});assert.equal(f.transports.at(-1).options.volume,1);
+    assert.match((await f.manager.volume({...f.request,percent:10,deltaPercent:-10})).message,/不能同時指定/);
+    assert.equal(f.transports.at(-1).options.volume,1);
+  }finally{await f.manager.destroy();}
+});
+
 test('idle disconnects and leave releases cached media',async()=>{
   const f=fixture({idleMs:15});await f.manager.join(f.request);await new Promise(resolve=>setTimeout(resolve,30));assert.equal(f.connections[0].state.status,'destroyed');
   await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);await f.manager.leave(f.request);assert.deepEqual(f.released,['song']);await f.manager.destroy();

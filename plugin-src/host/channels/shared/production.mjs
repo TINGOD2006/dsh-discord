@@ -246,9 +246,11 @@ export async function createTokenProductionController(ctx, config, internals, de
     } : {}),
     ready: supervisor.ready,
     async close() {
-      await supervisor.close();
-      await controller.close();
-      harness.stopManagedProcess();
+      try {
+        await supervisor.close();
+        await controller.close();
+        harness.stopManagedProcess();
+      } finally { await logger.close?.(); }
     },
   };
 }

@@ -60,6 +60,21 @@ test('music controls map skip to the existing lane and validate numeric settings
   } finally { f.close(); }
 });
 
+test('relative volume is passed as a bounded step instead of an invented absolute setting', async () => {
+  const calls = [], f = authorize(createMusicRequestContext(message('聲音小一點'), { execute: async (action, args) => {
+    calls.push([action, args]); return { message: '音樂音量已設為 50%' };
+  } }));
+  const tool = createMusicTool();
+  try {
+    await assert.rejects(tool.execute({ action: 'volume', direction: 'down', percent: 80, reason: '調低目前音量' }, f.exec), /either/);
+    await assert.rejects(tool.execute({ action: 'volume', direction: 'sideways', reason: '調低目前音量' }, f.exec), /either/);
+    const result = await tool.execute({ action: 'volume', direction: 'down', reason: '使用者要求聲音小一點' }, f.exec);
+    assert.equal(result.message, '音樂音量已設為 50%'); assert.equal(calls.length, 1); assert.equal(calls[0][0], 'volume');
+    assert.equal(calls[0][1].deltaPercent, -10); assert.equal(calls[0][1].percent, undefined); assert.equal(calls[0][1].senderId, 'user');
+    await assert.rejects(tool.execute({ action: 'volume', direction: 'down', reason: '重複調低目前音量' }, f.exec), /already submitted/);
+  } finally { f.close(); }
+});
+
 test('a web/CLI input or mixed senders cannot inherit a chat music capability', () => {
   const music = { execute() {} }, f = authorize(createMusicRequestContext(message(), music));
   try {

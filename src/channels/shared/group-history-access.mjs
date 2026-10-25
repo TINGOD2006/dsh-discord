@@ -1,4 +1,5 @@
 import { boundHistoryPage, historyQueryKey } from './history-context.mjs';
+import { ensureHistoryReadState, HISTORY_EXPOSURES } from './history-read-state.mjs';
 
 export const HISTORY_READ_LIMITS = Object.freeze({ calls: 3, chars: 6000, perReadChars: 4000 });
 
@@ -18,10 +19,12 @@ export class GroupHistoryAccessRegistry {
     if (!this.#valid(context)) return () => {};
     const key = this.#key(sessionId, rpcId);
     const request = { context: { ...context, requestedAt: Number.isFinite(context.requestedAt) ? context.requestedAt : Date.now() }, cleanups: [] };
+    if (request.context.store) ensureHistoryReadState(request.context);
     this.#requests.set(key, request);
     return () => {
       if (this.#requests.get(key) === request) this.#requests.delete(key);
       request.context.revoke?.();
+      request.context.readState?.close();
       for (const cleanup of request.cleanups.splice(0)) void Promise.resolve().then(cleanup).catch(() => {});
     };
   }
@@ -91,26 +94,38 @@ export class GroupHistoryAccessRegistry {
     const supplied = context.suppliedHistory;
     const budget = scope.budget ??= { calls: supplied?.calls ?? 0,
       remaining: Math.max(0, HISTORY_READ_LIMITS.chars - (supplied?.chars ?? 0)), keys: new Set(), attachments: new Set() };
-    if (budget.keys.has(key)) throw new Error('This query was already read in this turn. Use its existing result; do not repeat it.');
-    if (budget.calls >= HISTORY_READ_LIMITS.calls || budget.remaining < 1000) throw new Error('History read budget exhausted for this turn. Answer with the evidence already available and disclose gaps.');
+    const readState = context.readState;
+    if (budget.keys.has(key)) { readState?.trace('skipped', { reasonCode: 'duplicate_query', calls: budget.calls, remaining: budget.remaining }); throw new Error('This query was already read in this turn. Use its existing result; do not repeat it.'); }
+    if (budget.calls >= HISTORY_READ_LIMITS.calls || budget.remaining < 1000) { readState?.trace('skipped', { reasonCode: 'budget_exhausted', calls: budget.calls, remaining: budget.remaining }); throw new Error('History read budget exhausted for this turn. Answer with the evidence already available and disclose gaps.'); }
     const maxChars = Math.min(HISTORY_READ_LIMITS.perReadChars, budget.remaining);
     budget.calls++; budget.keys.add(key); budget.remaining -= maxChars;
+    const prior = budget.tail;
+    let release;
+    budget.tail = new Promise(resolve => { release = resolve; });
+    const started = performance.now();
     try {
+      if (prior) await prior;
+      if (this.resolve(session) !== context) throw new Error('The originating group request has ended.');
       const value = await load({ context, maxChars, attachments: budget.attachments });
       if (this.resolve(session) !== context || this.#turns.get(session?.id ?? session?.header?.id) !== scope) throw new Error('The originating group request has ended.');
       // Text tools must budget the entire rendered result, including metadata.
       if (JSON.stringify(value).length > maxChars) throw new Error('History output exceeded its character budget; narrow the query.');
       budget.remaining += maxChars - JSON.stringify(value).length;
+      readState?.remember(value[HISTORY_EXPOSURES]);
       for (const item of value.items ?? []) {
         for (const file of item.attachments ?? []) budget.attachments.add(file.id);
         if (item.mimeType && item.id) budget.attachments.add(item.id);
       }
+      readState?.trace('read', { source: key.split(':', 1)[0], reasonCode: 'missing_context', calls: budget.calls,
+        remaining: budget.remaining, chars: JSON.stringify(value).length, shown: value.shown ?? value.items?.length ?? 0,
+        filtered: value.filtered ?? value.dropped ?? 0, elapsedMs: Math.round(performance.now() - started) });
       return value;
     } catch (error) {
       // Failed calls still count, so repeated failures cannot create a read loop.
       budget.remaining += maxChars;
+      readState?.trace('read_failed', { reasonCode: 'read_failed', calls: budget.calls, remaining: budget.remaining, elapsedMs: Math.round(performance.now() - started) });
       throw error;
-    }
+    } finally { release(); }
   }
 
   forget(session) {
@@ -119,6 +134,7 @@ export class GroupHistoryAccessRegistry {
     for (const [key, request] of this.#requests) if (key.startsWith(`${id}\0`)) {
       this.#requests.delete(key);
       request.context.revoke?.();
+      request.context.readState?.close();
       for (const cleanup of request.cleanups.splice(0)) void Promise.resolve().then(cleanup).catch(() => {});
     }
   }
@@ -152,7 +168,7 @@ export function createGroupHistoryTools(registry = groupHistoryAccess) {
         const end = Math.min(context.requestedAt, query.to === undefined ? context.requestedAt : Date.parse(query.to));
         const bounded = { ...query, from: query.from ?? new Date(end - 24 * 3600000).toISOString(), to: new Date(end).toISOString() };
         const page = await context.store.query(context.groupId, bounded);
-        return boundHistoryPage(page, context.groupId, query.kind, maxChars, context.currentMessageId);
+        return boundHistoryPage(page, context.groupId, query.kind, maxChars, context.currentMessageId, context.readState);
       });
     },
   }, {

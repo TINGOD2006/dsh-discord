@@ -1,5 +1,6 @@
 import { groupHistoryAccess } from './group-history-access.mjs';
 import { cleanHistoryText, filterHistoryRows, historyQueryKey } from './history-context.mjs';
+import { ensureHistoryReadState, exposeHistory } from './history-read-state.mjs';
 
 /**
  * 讨论串摘要工具：把当前群会话最近一段时间的归档，压成一段可读的对话摘要。
@@ -123,22 +124,29 @@ export function installThreadDigestTools(ctx, {
  * @returns {Promise<{text: string, groupId: string, title: string, total: number,
  *   shown: number, dropped: number, truncated: boolean, windowHours: number}>}
  */
-export async function digestForContext({ store, groupId, requestedAt = Date.now(), currentMessageId = '' }, args, digest = normalizeDigestConfig({})) {
+export async function digestForContext(context, args, digest = normalizeDigestConfig({})) {
+  const { store, groupId, requestedAt = Date.now(), currentMessageId = '' } = context;
   const hours = clampNumber(args?.hours, 1, MAX_DIGEST_HOURS, digest.defaultHours);
   const limit = Math.trunc(clampNumber(args?.limit, 1, MAX_DIGEST_LIMIT, digest.defaultLimit));
   const maxChars = Math.trunc(clampNumber(args?.maxChars, 200, MAX_DIGEST_CHARS, digest.maxChars));
   const since = requestedAt - hours * 3_600_000;
 
-  const record = await store.recentMessages(groupId, { since, before: requestedAt, limit, keyword: cleanHistoryText(args?.keyword).slice(0, 160) });
+  const readState = ensureHistoryReadState(context);
+  const { record, cacheHit } = await readState.recent({ since, before: requestedAt, limit, keyword: cleanHistoryText(args?.keyword).slice(0, 160) });
   const rows = record.items ?? [];
-  const filtered = filterHistoryRows(rows, { currentMessageId, keyword: args?.keyword });
+  const candidates = filterHistoryRows(rows, { currentMessageId, keyword: args?.keyword });
+  const filtered = candidates.filter(row => !readState.missing(row.messageId, row.text).duplicate || row.fileCount > 0)
+    .map(row => {
+      const missing = readState.missing(row.messageId, row.text);
+      return { ...row, text: missing.prefix ? `〔前段已提供，以下續文〕${missing.text}` : row.text, exposure: missing };
+    });
   const shaped = shapeRows(filtered);
   shaped.dropped += rows.length - filtered.length;
   const budgeted = fitBudget(shaped.lines, Math.max(40, maxChars - 180));
 
   const title = cleanHistoryText(record.groupName || groupId).slice(0, 60);
   const header = `會話：${title}`
-    + `（近 ${formatHours(hours)}，共 ${shaped.total} 則，顯示 ${budgeted.shown} 則`
+    + `（近 ${formatHours(hours)}，共 ${rows.length} 則，顯示 ${budgeted.shown} 段`
     + `${budgeted.truncated || record.truncated ? '，較早的已截斷' : ''}`
     + `${shaped.dropped > 0 ? `；已過濾 ${shaped.dropped} 則機器人/指令/空訊息` : ''}）`;
 
@@ -147,7 +155,7 @@ export async function digestForContext({ store, groupId, requestedAt = Date.now(
     ? '（此範圍沒有符合條件的已存記錄；不代表從未發生。僅在仍缺必要資料時擴大一次。）'
     : '';
 
-  return {
+  const result = {
     text: [header, body || empty].filter(Boolean).join('\n').slice(0, maxChars),
     groupId,
     title,
@@ -157,6 +165,22 @@ export async function digestForContext({ store, groupId, requestedAt = Date.now(
     truncated: Boolean(budgeted.truncated || record.truncated),
     windowHours: hours,
   };
+  const exposures = [];
+  for (const line of budgeted.lines) {
+    let offset = 0;
+    for (const source of line.sources) {
+      if (offset >= line.text.length) break;
+      const end = Math.min(line.text.length, offset + source.text.length);
+      let visible = line.text.slice(offset, end);
+      if (line.clipped && end === line.text.length) visible = visible.replace(/…$/u, '');
+      if (source.exposure.prefix) visible = visible.replace(/^〔前段已提供，以下續文〕/u, '');
+      const prefix = source.exposure.prefix + visible;
+      if (source.exposure.full.startsWith(prefix)) exposures.push({ id: source.id, text: prefix });
+      offset += source.text.length + 3; // Merged messages use " / ".
+    }
+  }
+  readState.trace('cache', { source: 'digest', cacheHit, considered: rows.length, filtered: shaped.dropped });
+  return exposeHistory(result, exposures);
 }
 
 function shapeRows(rows) {
@@ -183,6 +207,7 @@ function shapeRows(rows) {
       && row.sentAt - previous.sentAt <= MERGE_WINDOW_MS
       && reply === null && previous.reply === null) {
       previous.text = [previous.text, text].filter(Boolean).join(' / ');
+      previous.sources.push({ id: row.messageId, text, exposure: row.exposure });
       previous.fileCount += Number(row.fileCount) || 0;
       previous.sentAt = row.sentAt;
       continue;
@@ -193,6 +218,7 @@ function shapeRows(rows) {
       senderName: cleanName(row.senderName) || String(row.senderId),
       sentAt: row.sentAt,
       text,
+      sources: [{ id: row.messageId, text, exposure: row.exposure }],
       fileCount: Number(row.fileCount) || 0,
       reply,
     });
@@ -226,6 +252,7 @@ function fitBudget(lines, maxChars) {
     let cost = renderLine(line).length + 1;
     if (used + cost > maxChars && kept.length > 0) break;
     if (cost > maxChars) {
+      line.clipped = true;
       const original = line.text;
       line.text = '';
       line.text = original.slice(0, Math.max(0, maxChars - renderLine(line).length - 4)) + '…';

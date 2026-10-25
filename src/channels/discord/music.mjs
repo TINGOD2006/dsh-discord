@@ -320,8 +320,13 @@ export class MusicManager {
     const fallbackLimit = `${voiceBitrate() / 1000} kbps 為上限`;
     return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps\n頻道上限：${room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : `尚無資料（暫以 ${fallbackLimit}）`}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。` };
   }
-  async volume({ channelId, senderId, percent, signal }) {
-    const { room } = await this.#context(channelId, senderId, { signal }); if (!Number.isInteger(percent) || percent < 0 || percent > 100) return { message: '用法：/music volume 0–100' };
+  async volume({ channelId, senderId, percent, deltaPercent, signal }) {
+    const { room } = await this.#context(channelId, senderId, { signal });
+    if (deltaPercent !== undefined) {
+      if (percent !== undefined || !Number.isInteger(deltaPercent) || deltaPercent === 0 || Math.abs(deltaPercent) > 100) return { message: '音量調整須選擇百分比或相對增減，不能同時指定。' };
+      percent = Math.min(100, Math.max(0, Math.round(room.volume * 100) + deltaPercent));
+    }
+    if (!Number.isInteger(percent) || percent < 0 || percent > 100) return { message: '用法：/music volume 0–100' };
     const previousVolume = room.volume; room.volume = percent / 100;
     if (room.resource?.volume) room.resource.volume.setVolume(room.volume);
     else if (room.current && room.resource && room.volume !== previousVolume) {

@@ -68,6 +68,8 @@ test('real worker keeps FFmpeg/player/UDP running while parent event loop blocks
     await sleep(130); const paused = await f.command('fixture-stats'); await sleep(100);
     assert.equal((await f.command('fixture-stats')).sent, paused.sent);
     await f.command('volume', { percent: 35 }); assert.match((await f.command('queue')).message, /已暫停/);
+    assert.match((await f.command('volume', { deltaPercent: -10 })).message, /25%/);
+    assert.match((await f.command('queue')).message, /已暫停/);
     assert.match((await f.command('bitrate', { kbps: 128 })).message, /目前輸出：128 kbps/);
     assert.match((await f.command('queue')).message, /已暫停/);
     assert.match((await f.command('status')).message, /音訊碼率：128 kbps；目標：128 kbps/);

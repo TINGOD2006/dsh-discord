@@ -17,6 +17,7 @@ import { handleApplicationCommand, syncApplicationCommands } from './discord-com
 import { MusicWorkerManager } from './music-worker.mjs';
 import { isMusicCommand } from '../shared/music-commands.mjs';
 import { cleanHistoryText, filterHistoryRows, historyContextNeeded, historyRecallRequested } from '../shared/history-context.mjs';
+import { ensureHistoryReadState } from '../shared/history-read-state.mjs';
 export { historyRecallRequested } from '../shared/history-context.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
@@ -1088,9 +1089,13 @@ export class DiscordRuntime {
       ? Math.max(grantHours, grantHours > 0 ? 0 : RECALL_DEFAULT_HOURS) * 3_600_000
       : historyWindowMs();
     const seen = recalled ? new Set() : (this.#historySeen.get(conversationKey) ?? new Set());
-    const { items } = await store.recentMessages(groupId, {
-      since: Date.now() - windowMs,
-      before: message.groupHistory?.requestedAt ?? Date.now(),
+    const started = performance.now();
+    const requestTime = message.groupHistory?.requestedAt ?? Date.now();
+    const context = message.groupHistory ?? { store, groupId, requestedAt: requestTime, logger: this.#logger };
+    const readState = ensureHistoryReadState(context, this.#logger);
+    const { record: { items }, cacheHit } = await readState.recent({
+      since: requestTime - windowMs,
+      before: requestTime,
       limit: limit + 8,
     });
     const entries = historyEntriesFrom(items, {
@@ -1137,6 +1142,10 @@ export class DiscordRuntime {
     if (message.groupHistory) message.groupHistory.suppliedHistory = {
       calls: 1, chars: this.#renderHistory(merged).text.length,
     };
+    readState.remember(entries.map(entry => ({ id: entry.eventId, text: String(entry.text ?? '').replace(/…$/u, '') })));
+    readState.trace('read', { source: 'automatic', reasonCode: recalled ? 'explicit_recall' : 'unresolved_reference', cacheHit,
+      considered: items.length, shown: entries.length, chars: message.groupHistory?.suppliedHistory?.chars ?? 0,
+      elapsedMs: Math.round(performance.now() - started) });
     return merged;
   }
 

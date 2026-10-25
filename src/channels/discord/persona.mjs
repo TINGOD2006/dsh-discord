@@ -17,10 +17,10 @@ export const DISCORD_PERSONA_PROMPT = [
 ].join('\n');
 
 /** Register the Discord persona once per injected system-prompt lifetime. */
-export function installDiscordPersona(ctx) {
+export function installDiscordPersona(ctx, { text = DISCORD_PERSONA_PROMPT } = {}) {
   ctx.systemPrompt.context({
     name: 'dsh-im:discord-persona',
     order: 120,
-    text: DISCORD_PERSONA_PROMPT,
+    text,
   });
 }

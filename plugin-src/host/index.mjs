@@ -5,6 +5,7 @@ import { installMusicTools } from '../../src/channels/shared/music-access.mjs';
 import { apply as applyDiscord } from './channels/discord/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 import { installDiscordPersona } from '../../src/channels/discord/persona.mjs';
+import { getDiscordPersonaStore } from '../../src/channels/discord/persona-store.mjs';
 import { installHostLanguage } from './host-language.mjs';
 import { installHostLanguageRpc } from './host-language-rpc.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
@@ -116,20 +117,24 @@ export function createImHostPlugin(internals = {}) {
     } else if (ctx?.sessions && typeof ctx.on === 'function') {
       startTitlePrefix(ctx);
     }
+    // Resolved once per plugin start: the settings card writes the file, and the
+    // new text is picked up on the next DSH start (re-registering prompt context
+    // at runtime is not supported).
+    const personaText = getDiscordPersonaStore(config).text();
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
         installOutboundArtifactTool(artifactCtx);
         installGroupHistoryTools(artifactCtx);
         installThreadDigestTools(artifactCtx, { config: config.digest });
         installMusicTools(artifactCtx);
-        installDiscordPersona(artifactCtx);
+        installDiscordPersona(artifactCtx, { text: personaText });
       });
     } else {
       installOutboundArtifactTool(ctx);
       installGroupHistoryTools(ctx);
       installThreadDigestTools(ctx, { config: config.digest });
       installMusicTools(ctx);
-      installDiscordPersona(ctx);
+      installDiscordPersona(ctx, { text: personaText });
     }
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)

@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveImLogFile } from '../src/channels/shared/im-log.mjs';
+import { readLogDelta } from '../src/channels/shared/incremental-log.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const COMMANDS = new Set(['play', 'music', 'join', 'next', 'pause', 'resume', 'queue', 'leave', 'stop', 'skip']);
@@ -69,16 +70,20 @@ export function classifyMusicLog(row) {
   return cause ? { ...result, kind: 'failure', cause, detail: CAUSES[cause] } : null;
 }
 
-export function consumeMusicLog(text, previous = null, now = Date.now()) {
+export function consumeMusicLog(text, previous = null, now = Date.now(), { incremental = false } = {}) {
   const lines = text.split('\n');
   lines.pop(); // Ignore an incomplete final JSONL record until the next check.
-  const signature = digest(lines[0] ?? '');
-  const reset = !previous || previous.signature !== signature || previous.cursor > lines.length;
+  const signature = incremental && previous?.signature ? previous.signature : digest(lines[0] ?? '');
+  const reset = !incremental && (!previous || previous.signature !== signature || previous.cursor > lines.length);
   const state = { milestones: {}, errors: {}, guilds: [], interactions: 0, submittedSources: 0, ...structuredClone(previous ?? {}), missingLog: false };
   const notifications = [];
-  const selected = reset ? lines : lines.slice(previous.cursor);
+  const selected = incremental || reset ? lines : lines.slice(previous?.cursor ?? 0);
+  const seen = new Set(state.seenRows ?? []);
   const bootstrapFloor = previous?.signature ? 0 : now - 30 * 60_000;
   for (const line of selected) {
+    const fingerprint = digest(line);
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
     let row;
     try { row = JSON.parse(line); } catch { continue; }
     if (Date.parse(row.ts) < bootstrapFloor) continue;
@@ -127,7 +132,8 @@ export function consumeMusicLog(text, previous = null, now = Date.now()) {
     }
   }
   state.signature = signature;
-  state.cursor = lines.length;
+  state.cursor = incremental ? (previous?.cursor ?? 0) + lines.length : lines.length;
+  state.seenRows = [...seen].slice(-512);
   state.checkedAt = new Date(now).toISOString();
   const summary = {
     checkedAt: state.checkedAt,
@@ -151,15 +157,28 @@ export function consumeMusicLog(text, previous = null, now = Date.now()) {
 export async function monitorMusic({ logFile = resolveImLogFile('discord'), stateFile = resolve(import.meta.dirname, '..', '.dsh-im', 'music-monitor', 'state.json') } = {}) {
   let previous = null;
   try { previous = JSON.parse(await readFile(stateFile, 'utf8')); } catch {}
-  let text;
-  try { text = await readFile(logFile, 'utf8'); }
+  let delta;
+  try { delta = await readLogDelta(logFile, previous?.fileCursor); }
   catch (error) {
     await mkdir(dirname(stateFile), { recursive: true });
     await writeFile(stateFile, JSON.stringify({ ...previous, missingLog: true }, null, 2));
     return { checkedAt: new Date().toISOString(), status: 'log-unavailable', changed: !previous?.missingLog,
       notifications: previous?.missingLog ? [] : [{ type: 'error', code: 'log-unavailable', detail: '目前無法讀取 Discord 本機紀錄；請確認 DSH 正在執行並啟用紀錄' }] };
   }
-  const { state, report } = consumeMusicLog(text, previous);
+  let remaining = previous?.migrationRemaining ?? (!previous?.fileCursor && previous?.signature ? previous.cursor : 0);
+  if (delta.gap) remaining = 0;
+  if (remaining && !previous.fileCursor && delta.text && digest(delta.text.split('\n', 1)[0]) !== previous.signature) remaining = 0;
+  const lines = delta.text.split('\n'); lines.pop();
+  const skipped = Math.min(remaining, lines.length);
+  const text = lines.slice(skipped).map(line => line + '\n').join('');
+  const { state, report } = consumeMusicLog(text, previous, Date.now(), { incremental: true });
+  state.migrationRemaining = Math.max(0, remaining - skipped);
+  state.fileCursor = delta.cursor;
+  report.logRead = { bytes: delta.bytesRead, gap: delta.gap, oversized: delta.oversized };
+  if (delta.gap || delta.oversized) {
+    report.notifications.push({ type: 'error', code: 'log-coverage-gap', detail: '部分日誌已輪替移除或單行超過讀取上限，診斷記錄可能不完整' });
+    report.changed = true;
+  }
   await mkdir(dirname(stateFile), { recursive: true });
   const pending = `${stateFile}.${process.pid}.tmp`;
   await writeFile(pending, JSON.stringify(state, null, 2)); await rename(pending, stateFile);
