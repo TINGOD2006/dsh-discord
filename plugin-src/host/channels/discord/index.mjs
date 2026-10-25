@@ -1,19 +1,21 @@
 import { createProductionController } from './production.mjs';
 import { createDiscordRpcHandler, installDiscordRpc, DISCORD_RPC_CHANNEL } from './rpc.mjs';
 import { installProductionChannel } from '../shared/startup.mjs';
+import { getDiscordPersonaStore } from '../../../../src/channels/discord/persona-store.mjs';
 
 export const name = 'dsh-im-discord-host';
 export const inject = ['connection', 'credentials', 'typertGateway'];
 
 export async function apply(ctx, config = {}) {
+  const persona = getDiscordPersonaStore(config);
   if (config?.controller) {
-    return installDiscordRpc(ctx, config.controller, config.rpcAuthority);
+    return installDiscordRpc(ctx, config.controller, config.rpcAuthority, { persona });
   }
   return installProductionChannel(ctx, config, {
     channel: 'discord',
     rpcChannel: DISCORD_RPC_CHANNEL,
     createProduction: () => createProductionController(ctx, config, config.internals ?? {}),
-    createHandler: controller => createDiscordRpcHandler(controller),
+    createHandler: controller => createDiscordRpcHandler(controller, { persona }),
   });
 }
 

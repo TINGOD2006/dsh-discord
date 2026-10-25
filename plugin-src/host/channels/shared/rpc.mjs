@@ -17,6 +17,7 @@ import {
 } from './agent-preset-rpc.mjs';
 import { SET_MODEL_ENDPOINT, validModelPayload } from './model-setting-rpc.mjs';
 import { SET_THINKING_TRACES_ENDPOINT, validThinkingTracesPayload } from './thinking-traces-rpc.mjs';
+import { MAX_PERSONA_CHARS, PERSONA_ENDPOINTS } from '../../../../src/channels/discord/persona-endpoints.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   status: 'connection.status',
@@ -31,6 +32,8 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setAccessPolicy: SET_ACCESS_POLICY_ENDPOINT,
   setAlias: SET_ALIAS_ENDPOINT,
   setThinkingTraces: SET_THINKING_TRACES_ENDPOINT,
+  getPersona: PERSONA_ENDPOINTS.get,
+  setPersona: PERSONA_ENDPOINTS.set,
 });
 
 const ENDPOINTS = Object.freeze(Object.values(TOKEN_BOT_ENDPOINTS));
@@ -109,6 +112,15 @@ function payloadFailure(endpoint, payload) {
     return validThinkingTracesPayload(payload)
       ? null : '请提交有效的思考过程留痕设置。';
   }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.getPersona) {
+    return exactKeys(payload, []) ? null : '读取人格设置不接受字段。';
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setPersona) {
+    if (!exactKeys(payload, ['text', 'reset'])) return '请提交人格文本。';
+    if (payload.reset === true) return null;
+    return typeof payload.text === 'string' && payload.text.length <= MAX_PERSONA_CHARS + 64
+      ? null : `人格文本需为 1-${MAX_PERSONA_CHARS} 字。`;
+  }
   return 'Unknown bot endpoint.';
 }
 
@@ -128,6 +140,9 @@ function operationError(channel, error) {
   if (error?.code === 'webhook-configured') {
     return { code: 'webhook-configured', message: error.message };
   }
+  if (error?.code === 'persona-invalid') {
+    return { code: 'persona-invalid', message: error.message };
+  }
   if (error?.code === 'telegram-401' || error?.code === 'discord-401') {
     return { code: 'invalid-token', message: `${channel} Bot Token 无效，请重新填写。` };
   }
@@ -143,7 +158,7 @@ function operationError(channel, error) {
   return { code: `${channel.toLowerCase()}-operation-failed`, message: `${channel} 操作失败，请稍后重试。` };
 }
 
-export function createTokenBotRpcHandler(controller, { channel }) {
+export function createTokenBotRpcHandler(controller, { channel, persona = null }) {
   const diagnostics = controller.diagnostics ?? createConnectionDiagnostics({ channel: channel.toLowerCase() });
   for (const method of ['status', 'bindCredentials', 'reconnectBot', 'deleteBot']) {
     if (typeof controller?.[method] !== 'function') {
@@ -212,6 +227,14 @@ export function createTokenBotRpcHandler(controller, { channel }) {
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setThinkingTraces) {
         if (typeof controller.setThinkingTraces !== 'function') throw new Error('Thinking traces update is unavailable');
         value = await controller.setThinkingTraces(payload.botId, payload.thinkingTraces);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.getPersona) {
+        if (!persona || typeof persona.snapshot !== 'function') throw new Error('Persona settings are unavailable');
+        value = persona.snapshot();
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setPersona) {
+        if (!persona || typeof persona.write !== 'function' || typeof persona.reset !== 'function') {
+          throw new Error('Persona settings are unavailable');
+        }
+        value = payload.reset === true ? persona.reset() : persona.write(payload.text);
       } else {
         value = await controller.deleteBot(payload.botId);
       }
@@ -226,10 +249,10 @@ export function createTokenBotRpcHandler(controller, { channel }) {
   };
 }
 
-export function installTokenBotRpc(ctx, controller, { channel, rpcChannel, authority }) {
+export function installTokenBotRpc(ctx, controller, { channel, rpcChannel, authority, persona = null }) {
   return registerManagementRpc(ctx,
     rpcChannel,
-    createTokenBotRpcHandler(controller, { channel }),
+    createTokenBotRpcHandler(controller, { channel, persona }),
     { authority: resolveRpcAuthority(authority) },
   );
 }
