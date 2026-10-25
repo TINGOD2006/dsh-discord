@@ -38,7 +38,17 @@ const IMAGE_FILE_TYPES = new Map([
   ['.webp', 'image/webp'],
   ['.gif', 'image/gif'],
 ]);
-const DISCORD_IMAGE_HOSTS = Object.freeze(['cdn.discordapp.com']);
+const DISCORD_IMAGE_HOSTS = Object.freeze([
+  'cdn.discordapp.com',
+  // Link previews resolve through Discord's own media proxy. A pasted GIF page
+  // (klipy, tenor, giphy) is often bot-blocked at the origin, while the proxy
+  // URL Discord already unfurled for the message stays downloadable.
+  'images-ext-1.discordapp.net',
+  'images-ext-2.discordapp.net',
+]);
+/** Embed media that carries a picture the model can look at. */
+const EMBED_IMAGE_TYPES = new Set(['gifv', 'image', 'video', 'rich', 'article', 'link']);
+const MAX_EMBED_IMAGES = 4;
 
 function socketUrl(value) {
   const url = new URL(value);
@@ -419,6 +429,55 @@ function discordImageSource(attachment, fetchImpl) {
   };
 }
 
+function imageMediaTypeFromUrl(value) {
+  let pathname;
+  try {
+    pathname = new URL(value).pathname.toLowerCase();
+  } catch {
+    return null;
+  }
+  for (const [extension, mediaType] of IMAGE_FILE_TYPES) {
+    if (pathname.endsWith(extension)) return mediaType;
+  }
+  return null;
+}
+
+/**
+ * A message that only pasted a GIF page has no attachments: Discord unfurls it
+ * into an embed whose thumbnail lives on the Discord media proxy. Read those as
+ * image sources so the model can look at the frame instead of the dead link.
+ */
+function embedImageSources(message, fetchImpl) {
+  if (!Array.isArray(message?.embeds) || message.embeds.length === 0) return [];
+  const sources = [];
+  const seen = new Set();
+  for (const embed of message.embeds) {
+    if (sources.length >= MAX_EMBED_IMAGES) break;
+    if (!embed || typeof embed !== 'object') continue;
+    const type = typeof embed.type === 'string' ? embed.type : '';
+    if (type && !EMBED_IMAGE_TYPES.has(type)) continue;
+    const media = [embed.image, embed.thumbnail]
+      .map((value) => (typeof value?.proxy_url === 'string' && value.proxy_url)
+        || (typeof value?.url === 'string' && value.url) || '')
+      .find(Boolean);
+    if (!media || seen.has(media)) continue;
+    const mediaType = imageMediaTypeFromUrl(media);
+    if (!mediaType) continue;
+    seen.add(media);
+    const title = typeof embed.title === 'string' && embed.title.trim() ? embed.title.trim() : undefined;
+    sources.push({
+      ...(title ? { name: title } : {}),
+      mediaType,
+      load: (options) => fetchImageBuffer(media, {
+        ...options,
+        fetchImpl,
+        allowedHosts: DISCORD_IMAGE_HOSTS,
+      }),
+    });
+  }
+  return sources;
+}
+
 function discordFileSource(attachment, fetchImpl) {
   if (attachmentMediaType(attachment) || typeof attachment?.url !== 'string' || !attachment.url) {
     return null;
@@ -533,6 +592,10 @@ export function normalizeDiscordMessage(message, botId, {
   const addressed = direct
     || message.mentions?.some((mention) => String(mention?.id) === String(botId));
   const replyTo = discordReplyReference(message, loadReply);
+  const attachmentImages = Array.isArray(message.attachments)
+    ? message.attachments.map((attachment) => discordImageSource(attachment, fetchImpl)).filter(Boolean)
+    : [];
+  const embedImages = embedImageSources(message, fetchImpl);
   return {
     messageId: String(message.id),
     senderId: String(message.author.id),
@@ -545,12 +608,12 @@ export function normalizeDiscordMessage(message, botId, {
     conversationId: String(message.channel_id),
     ...(message.guild_id ? { guildId: String(message.guild_id) } : {}),
     content: stripBotMention(message.content ?? '', botId),
-    plainText: (!Array.isArray(message.attachments) || message.attachments.length === 0)
+    plainText: attachmentImages.length === 0
+      && embedImages.length === 0
+      && (!Array.isArray(message.attachments) || message.attachments.length === 0)
       && (!Array.isArray(message.sticker_items) || message.sticker_items.length === 0)
       && !message.poll,
-    images: Array.isArray(message.attachments)
-      ? message.attachments.map((attachment) => discordImageSource(attachment, fetchImpl)).filter(Boolean)
-      : [],
+    images: [...attachmentImages, ...embedImages],
     files: Array.isArray(message.attachments)
       ? message.attachments.map((attachment) => discordFileSource(attachment, fetchImpl)).filter(Boolean)
       : [],

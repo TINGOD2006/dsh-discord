@@ -623,3 +623,26 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
   文案与 order（120）不变，自定义人格、设置卡片、持久化路径都不受影响。
 - 新增 `test/persona-scope.test.mjs`：请求 id 解析、配对增删、Discord/非 Discord/未知会话渲染、自定义文案、清理时机。
 
+
+## 贴进来的 GIF 链接现在能读（2026-10-25）
+
+群里有人只发了一条 GIF 网页链接（`https://klipy.com/gifs/mortis-mutsumi-3`）时，bot 回复「链接打不开」。
+排查结果与插件下载能力无关：
+
+- 那条消息**没有任何附件**，只是纯文本链接；Discord 早已把它解析成 embed（`type: gifv`，
+  `thumbnail.proxy_url` / `video.proxy_url` 都在 `images-ext-1.discordapp.net`）。
+- 插件此前只读 `message.attachments` 与 `sticker_items`，完全忽略 `message.embeds`，所以模型只拿到一段 URL 文本。
+- 模型退而调用 `web_fetch`，而 DeepSeek 的 fetch API 对 klipy 这个域名直接返回 404（同 API 对 giphy/tenor/example.com 均 200），
+  本机直连 klipy 也是 403；即网页抓取这条路对 klipy 本来就走不通。
+- 附件里的 GIF 一直是好的：群历史库 `attachments` 表里 3 个 `image/gif` 全部 `ready`（最大 2.28 MB）。
+
+修复方式（`src/channels/discord/discord-runtime.mjs`）：
+
+- 新增 `embedImageSources()`：读取 `message.embeds` 里 `image` / `thumbnail` 的 `proxy_url`（没有则用 `url`），
+  按扩展名判定媒体类型，作为普通图片源并入 `normalizeDiscordMessage()` 的 `images`；每条约 4 张上限，同一 URL 去重。
+- `DISCORD_IMAGE_HOSTS` 增加 `images-ext-1.discordapp.net` / `images-ext-2.discordapp.net`：
+  这两个 host 是 Discord 自己的链接预览代理，源站被墙或反爬时仍可下载；其它 host 仍按原规则拒绝。
+- `plainText` 把 embed 图片算作非纯文本，避免链路把它当成「只有文字」的消息。
+- 新增 `test/discord-embed-images.test.mjs`（gifv→webp 源、代理 host 下载、外域拒绝、无媒体 embed、附件与 embed 合并上限）。
+- 实测同一条真实消息：`images.length = 1`，`name = "Mortis Mutsumi Resting"`，从代理下载到 6528 字节 `image/webp`（静帧）。
+  动图本身不解码，模型看到的是 Discord 生成的首帧/封面图——足够回答「这是哪个 gif」，但看不到完整动画。
