@@ -84,7 +84,10 @@ export class DiscordAllowlistStore {
   #read() {
     try {
       if (!existsSync(this.#path)) return [];
-      const parsed = JSON.parse(readFileSync(this.#path, 'utf8'));
+      // A hand-edited file on Windows often carries a UTF-8 BOM; JSON.parse
+      // rejects it outright, which used to make a "saved" allowlist look empty.
+      const raw = readFileSync(this.#path, 'utf8').replace(/^\uFEFF/, '');
+      const parsed = JSON.parse(raw);
       return normalizeAllowlist(parsed).slice();
     } catch {
       return [];
