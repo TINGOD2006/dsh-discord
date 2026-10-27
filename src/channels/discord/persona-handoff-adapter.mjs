@@ -28,10 +28,13 @@ function previewText(content) {
  * count as user turns, and an assistant turn only counts once its `turn/end`
  * reports a completed, non-interrupted turn — a tool-step aside is not an answer.
  */
-export function visibleTurns(events) {
+export function visibleTurns(entries) {
   const turns = [];
   const assistants = new Map();
-  for (const event of events ?? []) {
+  for (const entry of entries ?? []) {
+    // `session.history` pages wrap each record as `{ event }`; the same rule has to
+    // work for bare records (tests, and any caller that already unwrapped them).
+    const event = entry?.event && typeof entry.event === 'object' ? entry.event : entry;
     const data = event?.data;
     if (event?.type === 'user/message' && event.surfaceOp === 'append'
       && data?.source?.kind === 'user') {

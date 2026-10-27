@@ -34,6 +34,20 @@ test('visibleTurns keeps completed user/assistant turns only', () => {
   ]);
 });
 
+test('visibleTurns unwraps session.history page entries', () => {
+  // The real RPC pages every record as `{ event }`; reading through the wrapper
+  // is what makes a live handoff find any turns at all.
+  const turns = visibleTurns([
+    { event: user(1, '第一句') },
+    { event: assistant(2, 0, '回答一') },
+    { event: end(0) },
+  ]);
+  assert.deepEqual(turns, [
+    { role: 'user', text: '第一句' },
+    { role: 'assistant', text: '回答一' },
+  ]);
+});
+
 function fakeHarness({ turns, answer = '摘要正文' }) {
   const created = [];
   return {
