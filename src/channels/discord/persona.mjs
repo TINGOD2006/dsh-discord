@@ -42,14 +42,21 @@ function sessionIdOf(assembly) {
  * prompted carries the persona. A Web, CLI, or subagent Session that loads the
  * same plugin keeps its own AGENT.md and stays unpersonified — the persona is
  * the bot's way of talking in a group chat, not a host-wide instruction.
+ *
+ * `text` is a string or a resolver returning one. A resolver is read on every
+ * Assemble, which is what lets a persona switch take effect without a host
+ * restart; a string is the old, frozen behaviour.
  */
 export function installDiscordPersona(ctx, { text = '' } = {}) {
+  const resolve = typeof text === 'function' ? text : () => text;
   ctx.systemPrompt.context({
     name: DISCORD_PERSONA_CONTEXT_NAME,
     order: 120,
-    text: (assembly) => (
-      sessionChannelOf(sessionIdOf(assembly)) === DISCORD_PERSONA_CHANNEL ? text : ''
-    ),
+    text: (assembly) => {
+      if (sessionChannelOf(sessionIdOf(assembly)) !== DISCORD_PERSONA_CHANNEL) return '';
+      const value = resolve();
+      return typeof value === 'string' ? value : '';
+    },
   });
   if (typeof ctx?.on === 'function') {
     // Sessions outlive a prompt, so the pairing is only dropped with its Agent.
