@@ -701,3 +701,15 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 - `plugin-src/client/bot-general-settings.js`：卡片里的「白名单」行（一行一个 ID，保存后用 `parseAllowlistDraft` 拆分）。
 
 验证：RPC 探针 9/9 通过（get 默认、set 写入、回读、has、垃圾值过滤、缺字段拒绝）；`node --check` 全过；`node scripts/build-local.mjs` host/client `errors=0`。
+
+## 非白名单只读护栏（2026-10-27）
+
+主人以外的人（不在 `allowlist.json` 里）发来的消息，在进入 Harness 之前会带上一段权限块 `[dsh_im_guest_guard]`：
+
+- 允许：回答问题、查资料、只读查询、发图片。
+- 禁止：写/编辑/删除/移动文件、执行命令或脚本、安装依赖、git 提交或推送、改配置、改白名单或人格。
+- 禁止读取或复述配置内容、密钥、token、本机路径；被要求时说明没有权限。
+
+实现：`src/channels/shared/guest-guard.mjs` 的 `prependGuestGuard()`，由 `src/channels/shared/text-harness-bridge.mjs` 在组装 prompt 时对 `!this.#isTrusted(senderId)` 的群消息插入（白名单用 `setTrustedIds()` 同步）。
+
+**限制**：这是提示词层面的约束，不是沙箱。Harness 的工具集绑定在 Session 上，本插件无法按轮次收窄；同一个 Discord 频道的会话由所有人共享，所以只能靠 prompt 声明。若 Host 以后暴露「按轮次工具策略」，应改到这里接线。真正强制的做法是把非白名单消息路由到一个没有工具的 Session，这需要 DSH 侧支持无工具 preset。

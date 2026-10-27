@@ -1,3 +1,5 @@
+import { stripInternalLeaks } from '../outbound-sanitize.mjs';
+
 export const DELIVERY_RECEIPT_SCHEMA_VERSION = 1;
 
 const ARTIFACT_OUTCOMES = new Set(['sent', 'rejected', 'failed', 'unknown']);
@@ -59,15 +61,21 @@ export function createTextDeliveryBlock(value, format = 'plain') {
     ? { kind: 'text', text: value, format }
     : value;
   if (!block || typeof block !== 'object' || Array.isArray(block)
-    || block.kind !== 'text' || typeof block.text !== 'string' || !block.text.trim()) {
+    || block.kind !== 'text' || typeof block.text !== 'string') {
     throw new TypeError('text delivery block must contain non-empty text');
   }
   if (!TEXT_FORMATS.has(block.format)) {
     throw new TypeError('text delivery format must be plain or markdown');
   }
+  // Every chat-visible text block passes here, so the prompt-tail and
+  // bookkeeping filter runs once for every channel that delivers semantics.
+  const text = stripInternalLeaks(block.text);
+  if (!text.trim()) {
+    throw new TypeError('text delivery block must contain non-empty text');
+  }
   return Object.freeze({
     kind: 'text',
-    text: block.text,
+    text,
     format: block.format,
   });
 }

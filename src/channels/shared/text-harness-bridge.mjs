@@ -86,6 +86,7 @@ import {
 } from './harness-question.mjs';
 import { deliverOutboundArtifacts } from './semantic/artifact-delivery.mjs';
 import { prependSpeakerLabel } from './speaker-label.mjs';
+import { prependGuestGuard } from './guest-guard.mjs';
 import { MessageInputWindow } from './conversation/input-window.mjs';
 import {
   hasReplyReference,
@@ -96,6 +97,7 @@ import {
   createTextDeliveryBlock,
   providerMessageIdsFor,
 } from './semantic/delivery.mjs';
+import { stripInternalLeaks } from './outbound-sanitize.mjs';
 import {
   messageFailureDiagnostic,
   channelDeliveryFailure,
@@ -1182,7 +1184,8 @@ export class TextHarnessBridge {
   }
 
   async #deliverDeferredOutcome(entry, outcome) {
-    const text = deferredOutcomeText(outcome);
+    const text = stripInternalLeaks(deferredOutcomeText(outcome));
+    if (!text) return undefined;
     return typeof this.#bot.sendDelivery === 'function'
       ? this.#bot.sendDelivery(entry.target, createTextDeliveryBlock(text, outcome.found ? 'markdown' : 'plain'))
       : this.#bot.sendText(entry.target, text);
@@ -1555,6 +1558,10 @@ export class TextHarnessBridge {
       // is labelled; the parsed control text, commands, and ledger keys keep the
       // unlabelled body they were read from.
       if (message.kind === 'group') content = prependSpeakerLabel(content, message.speakerName);
+      // Everyone outside the owner allowlist is a guest: the room's Session is
+      // shared, so the prompt states read-only reach instead of trusting the
+      // tool set, which this plugin cannot narrow per turn.
+      if (message.kind === 'group' && !this.#isTrusted(senderId)) content = prependGuestGuard(content);
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;
       if (snapshot) {
@@ -1684,8 +1691,10 @@ export class TextHarnessBridge {
               return;
             }
             if (update.type === 'reasoning') return;
-            const progress = update.type === 'text' ? update.text
-              : update.type === 'tool' ? t('正在使用{name}…', { name: update.name }) : update.text;
+            // A preview is chat-visible too: filter it exactly like the final
+            // answer, or a leaked prompt tail appears on screen mid-turn.
+            const progress = stripInternalLeaks(update.type === 'text' ? update.text
+              : update.type === 'tool' ? t('正在使用{name}…', { name: update.name }) : update.text);
             if (progress) {
               const format = update.type === 'text' ? 'markdown' : 'plain';
               await stream.update(semanticStream
@@ -1724,14 +1733,25 @@ export class TextHarnessBridge {
           this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] context consumption marking failed:`, error?.message ?? error);
         }
       }
-      const fileOnlyCompletion = !cleanText(answer) && artifacts.length > 0;
+      // A model can mistake the last prompt block (runtime context, persona,
+      // memory replay) for text it should continue, and recite it after the
+      // answer. Only what precedes the first prompt marker is the reply.
+      const cleanAnswer = stripInternalLeaks(answer);
+      const fileOnlyCompletion = !cleanText(cleanAnswer) && artifacts.length > 0;
       const visibleAnswer = fileOnlyCompletion
         ? t(FILE_ONLY_COMPLETION_TEXT)
-        : answer;
+        : cleanAnswer;
       const answerFormat = fileOnlyCompletion ? 'plain' : 'markdown';
       let textDeliveryError = null;
       let textReceipt = null;
-      if (stream) {
+      if (!visibleAnswer) {
+        // The whole reply was internal text: deliver nothing instead of an
+        // empty message or a delivery failure the user cannot act on.
+        stream?.cancel?.();
+        this.#logger.warn?.(
+          `[dsh-im:${this.#descriptor.key}] dropped an answer that held only internal prompt text.`,
+        );
+      } else if (stream) {
         try {
           const result = await stream.finish(semanticStream || thinkingStream
             ? createTextDeliveryBlock(visibleAnswer, answerFormat)
@@ -1757,7 +1777,7 @@ export class TextHarnessBridge {
           );
         }
       }
-      if (!streamFinished) {
+      if (!streamFinished && visibleAnswer) {
         try {
           const answerTarget = this.#turnDeliveryTarget(target, conversationKey);
           const result = typeof this.#bot.sendDelivery === 'function'
