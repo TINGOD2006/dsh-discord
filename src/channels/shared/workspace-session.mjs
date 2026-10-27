@@ -1,4 +1,5 @@
 import { withSessionBindingLock } from './session-binding-lock.mjs';
+import { rememberSessionConversation } from './session-channel-registry.mjs';
 import { initialSessionTitle } from './session-title.mjs';
 import { messageDiagnosticError } from './connection-error.mjs';
 
@@ -122,6 +123,9 @@ export async function askInWorkspaceSession({
         const dsBotSessionId = await harness.resolveDsBotSession?.(key);
         let sessionId = dsBotSessionId || state.sessionFor(key);
         diagnostic.sessionId = sessionId;
+        // The handoff summary is keyed by conversation, and the registry is where
+        // the persona context can find it later (it never sees the conversation key).
+        if (sessionId) rememberSessionConversation(sessionId, key);
         let session = sessionId ? workspaceSession(harness, sessionId, key) : null;
         if (!session || !(await sessionExists(session, existsOptions))) {
           if (dsBotSessionId) {

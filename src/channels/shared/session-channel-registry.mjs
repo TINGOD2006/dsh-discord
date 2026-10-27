@@ -18,6 +18,14 @@ const MAX_ENTRIES = 4096;
 const channels = new Map();
 
 /**
+ * Session id → conversation key (`group:<id>`, `direct:<id>`). Recorded by the
+ * binding layer, which is the only place that knows both; channel-agnostic on
+ * purpose, because only the channel that owns the key knows what to do with it
+ * (the Discord persona library reads `handoffs/<key>.md`).
+ */
+const conversations = new Map();
+
+/**
  * Read the channel a prompt or steer request id belongs to.
  *
  * @param rpcId - request id as the channel built it.
@@ -62,10 +70,37 @@ export function sessionChannelOf(sessionId) {
 /** Drop one Session's pairing; the Agent that carried it is gone. */
 export function forgetSessionChannel(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId) return false;
+  conversations.delete(sessionId);
   return channels.delete(sessionId);
+}
+
+/** Remember which conversation key this Session is bound to. */
+export function rememberSessionConversation(sessionId, key) {
+  if (typeof sessionId !== 'string' || !sessionId) return false;
+  if (typeof key !== 'string' || !key) return false;
+  conversations.delete(sessionId);
+  conversations.set(sessionId, key);
+  while (conversations.size > MAX_ENTRIES) {
+    const oldest = conversations.keys().next();
+    if (oldest.done) break;
+    conversations.delete(oldest.value);
+  }
+  return true;
+}
+
+/**
+ * The conversation key this Session is bound to.
+ *
+ * @returns the key, or null when the Session was created outside a conversation
+ * (a Web, CLI, or subagent Session).
+ */
+export function sessionConversationOf(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId) return null;
+  return conversations.get(sessionId) ?? null;
 }
 
 /** Drop every pairing; tests start from an empty map. */
 export function resetSessionChannels() {
+  conversations.clear();
   channels.clear();
 }

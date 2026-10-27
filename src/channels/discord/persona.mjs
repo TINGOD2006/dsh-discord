@@ -1,4 +1,8 @@
-import { forgetSessionChannel, sessionChannelOf } from '../shared/session-channel-registry.mjs';
+import { statSync } from 'node:fs';
+import {
+  forgetSessionChannel, sessionChannelOf, sessionConversationOf,
+} from '../shared/session-channel-registry.mjs';
+import { handoffFilePath, readHandoff } from './persona-handoff.mjs';
 
 /**
  * The Discord persona, injected as plugin prompt context instead of being read
@@ -62,6 +66,80 @@ export function installDiscordPersona(ctx, { text = '' } = {}) {
     // Sessions outlive a prompt, so the pairing is only dropped with its Agent.
     ctx.on('agent/disposed', ({ agent } = {}) => {
       forgetSessionChannel(agent?.session?.id ?? agent?.id);
+    }, { global: true });
+  }
+}
+
+/** The handoff summary a switched-away Session left behind. */
+export const DISCORD_HANDOFF_CONTEXT_NAME = 'dsh-im:discord-handoff';
+
+export const DISCORD_HANDOFF_TITLE = '上一段對話的檔案（第三人稱，非本人發言）';
+
+/** Read cache bound: one entry per live session is the normal case. */
+const HANDOFF_CACHE_LIMIT = 512;
+
+/** sessionId → { key, mtimeMs, text }; the stat is what lets a late summary land. */
+const handoffCache = new Map();
+
+function rememberHandoff(sessionId, entry) {
+  handoffCache.delete(sessionId);
+  handoffCache.set(sessionId, entry);
+  while (handoffCache.size > HANDOFF_CACHE_LIMIT) {
+    handoffCache.delete(handoffCache.keys().next().value);
+  }
+}
+
+/**
+ * Read `handoffs/<key>.md` once per file version.
+ *
+ * The summary is written *after* the switch (the old Session has to stop first),
+ * so a new Session may start with an empty file and get the summary one turn
+ * later. A stat per turn is cheap; re-reading on an unchanged file is not.
+ */
+function handoffTextFor(sessionId, key, config) {
+  let mtimeMs = null;
+  try {
+    mtimeMs = statSync(handoffFilePath(config, key)).mtimeMs;
+  } catch {
+    mtimeMs = null;
+  }
+  if (mtimeMs === null) {
+    handoffCache.delete(sessionId);
+    return '';
+  }
+  const cached = handoffCache.get(sessionId);
+  if (cached && cached.key === key && cached.mtimeMs === mtimeMs) return cached.text;
+  const body = readHandoff(config, key).trim();
+  if (!body) {
+    handoffCache.delete(sessionId);
+    return '';
+  }
+  const text = `${DISCORD_HANDOFF_TITLE}\n\n${body}`;
+  rememberHandoff(sessionId, { key, mtimeMs, text });
+  return text;
+}
+
+/**
+ * Register the handoff summary for Discord Sessions at order 121, right after the
+ * persona, so the new persona reads "what happened before" in someone else's
+ * voice and does not continue the retired persona from its own history.
+ */
+export function installDiscordHandoff(ctx, { config = {} } = {}) {
+  const root = config ?? {};
+  ctx.systemPrompt.context({
+    name: DISCORD_HANDOFF_CONTEXT_NAME,
+    order: 121,
+    text: (assembly) => {
+      const sessionId = sessionIdOf(assembly);
+      if (!sessionId || sessionChannelOf(sessionId) !== DISCORD_PERSONA_CHANNEL) return '';
+      const key = sessionConversationOf(sessionId);
+      return key ? handoffTextFor(sessionId, key, root) : '';
+    },
+  });
+  if (typeof ctx?.on === 'function') {
+    ctx.on('agent/disposed', ({ agent } = {}) => {
+      const sessionId = agent?.session?.id ?? agent?.id;
+      if (sessionId) handoffCache.delete(sessionId);
     }, { global: true });
   }
 }
