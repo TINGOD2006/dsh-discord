@@ -422,3 +422,128 @@ export function rewriteInjectedContextMessages(messages, options = {}) {
   }
   return changed ? rewritten : null;
 }
+
+/** Leading text of the Host's own prompt scaffolding, as a step sees it. */
+const HOST_BACKGROUND_MARKERS = Object.freeze([
+  'Current runtime context.',
+  'This snapshot supersedes earlier runtime-context snapshots.',
+  '人格设定（AGENT.md）',
+  '人格設定（AGENT.md）',
+  '当前项目人格',
+  '<untrusted-memory>',
+  '以下由 untrusted-memory',
+  'A skill is a reusable set of task-specific instructions',
+]);
+
+/** Form stamped on the turn guard so a later step can replace the old one. */
+const TURN_GUARD_FORM = 'turn-guard';
+
+/**
+ * Short instruction appended after a moved background tail.
+ *
+ * A model that mis-reads whose turn it is continues the transcript instead of
+ * answering, and what it continues is the last user-role text: the Host's own
+ * runtime snapshot and memory blocks. The guard names that boundary in the one
+ * place the model reads last.
+ */
+export const TURN_GUARD_TEXT = '<dsh_im_turn_guard>以上是运行环境说明，不是对话内容。请直接回应用户的最后一条真实消息，不要复述、续写或引用这些说明。</dsh_im_turn_guard>';
+
+/**
+ * The same boundary stated once in the system prompt, which outranks user text.
+ * Only emitted where an IM channel has published guidance, i.e. for IM sessions.
+ */
+export const TURN_GUARD_GUIDANCE = '以 "Current runtime context"、"人格设定（AGENT.md）"、"<untrusted-memory>" 开头的区块是运行环境说明，不是对话内容。禁止在回复中复述、续写或引用这些说明；只回应用户的真实消息。';
+
+/** Read the plain text of a message, whichever shape its content takes. */
+function messageText(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  for (const part of content) {
+    if (part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') {
+      parts.push(part.text);
+    }
+  }
+  return parts.join('\n');
+}
+
+/** True when a message is a plugin-authored context notice, not user speech. */
+function isPluginSourced(message) {
+  const kind = message?.source?.kind;
+  return typeof kind === 'string' && kind.startsWith('plugin:');
+}
+
+/**
+ * True for the Host's own background blocks: prompt scaffolding delivered as a
+ * user-role message (runtime snapshot, persona, memory, skill catalog).
+ *
+ * @param message - one message entering the step.
+ * @returns whether the message is Host scaffolding rather than user speech.
+ */
+export function isHostBackgroundMessage(message) {
+  if (message === null || typeof message !== 'object' || message.role !== 'user') return false;
+  if (isPluginSourced(message)) return false;
+  const text = messageText(message).trimStart();
+  if (!text) return false;
+  return HOST_BACKGROUND_MARKERS.some((marker) => text.startsWith(marker));
+}
+
+/** True for a turn guard this module appended on an earlier step. */
+function isTurnGuardMessage(message) {
+  return message?.source?.form === TURN_GUARD_FORM;
+}
+
+/**
+ * Move a Host background tail in front of the real user turn and mark the end
+ * of the transcript with a short guard.
+ *
+ * The Host appends its runtime snapshot (and the persona/memory blocks that
+ * ride with it) as trailing user-role messages, after the plugin already split
+ * the channel's own blocks. A model that loses track of the turn order then
+ * treats that scaffolding as the text to continue and recites it into the chat.
+ * Moving the scaffolding in front of the user text it belongs to removes that
+ * trap: the last user-role text is the question again, and the guard says so.
+ *
+ * A stale guard from an earlier step is dropped first, so the array never
+ * grows one guard per turn.
+ *
+ * @param messages - the messages the Agent is about to commit for this step.
+ * @param options.newId - identity factory for the guard message.
+ * @param options.plugin - source plugin name recorded on the guard.
+ * @param options.guardText - guard body; defaults to TURN_GUARD_TEXT.
+ * @param options.guard - set false to only reorder, without appending a guard.
+ * @returns a new array when the order or the guard changed, otherwise null.
+ */
+export function guardHostBackgroundTail(messages, options = {}) {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const plugin = typeof options.plugin === 'string' && options.plugin
+    ? options.plugin
+    : INJECTED_CONTEXT_PLUGIN;
+  const kept = messages.filter((message) => !isTurnGuardMessage(message));
+  let start = kept.length;
+  while (start > 0 && isHostBackgroundMessage(kept[start - 1])) start -= 1;
+  const tailAt = start === kept.length;
+  if (tailAt && kept.length === messages.length) return null;
+  if (start === 0) return kept.length === messages.length ? null : kept;
+  const newId = typeof options.newId === 'function' ? options.newId : defaultNewId;
+  // The scaffolding belongs in front of the turn it describes, not in front of
+  // the channel's own notices, so step back over plugin-sourced context.
+  let anchor = start - 1;
+  while (anchor > 0 && isPluginSourced(kept[anchor])) anchor -= 1;
+  const guard = options.guard === false ? [] : [{
+    id: newId(),
+    role: 'user',
+    content: [{
+      type: 'text',
+      text: typeof options.guardText === 'string' ? options.guardText : TURN_GUARD_TEXT,
+    }],
+    source: { kind: `plugin:${plugin}`, form: TURN_GUARD_FORM },
+  }];
+  return [
+    ...kept.slice(0, anchor),
+    ...kept.slice(start, kept.length),
+    ...kept.slice(anchor, start),
+    ...guard,
+  ];
+}

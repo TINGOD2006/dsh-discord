@@ -1,5 +1,10 @@
 import { getImHostLanguage } from '../../src/channels/shared/i18n.mjs';
-import { rewriteInjectedContextMessages } from '../../src/channels/shared/injected-context.mjs';
+import {
+  INJECTED_CONTEXT_PLUGIN,
+  rewriteInjectedContextMessages,
+  guardHostBackgroundTail,
+  TURN_GUARD_GUIDANCE,
+} from '../../src/channels/shared/injected-context.mjs';
 import {
   IM_SOURCE_GUIDANCE_CONTEXT,
   IM_SOURCE_GUIDANCE_ORDER,
@@ -14,6 +19,9 @@ const SOURCE_LABELS = Object.freeze({ zh: '\u6765\u6e90', en: 'Source' });
 
 /** Row label prefix for one collected conversation-context block. */
 const CONTEXT_LABELS = Object.freeze({ zh: '\u4e0a\u4e0b\u4e0b', en: 'Context' });
+
+/** Name of the system-prompt context that states the transcript boundary. */
+const IM_TURN_GUARD_CONTEXT = 'dsh-im:turn-guard';
 
 /** Read the current reply-row label; an unknown language falls back to English. */
 function replyLabel() {
@@ -77,12 +85,31 @@ export function installInjectedContext(ctx, { logger, registry = imSourceGuidanc
       text: (assembly) => registry.get(assembly?.agent?.session?.id) ?? '',
     });
   };
+  // The same boundary in the system prompt, which outranks user-role text: the
+  // Host's runtime snapshot, persona and memory blocks are environment notes,
+  // never something a reply may recite.
+  const startTurnGuardContext = (promptCtx) => {
+    if (typeof promptCtx?.systemPrompt?.context !== 'function') return null;
+    return promptCtx.systemPrompt.context({
+      name: IM_TURN_GUARD_CONTEXT,
+      order: IM_SOURCE_GUIDANCE_ORDER + 1,
+      text: (assembly) => (registry.get(assembly?.agent?.session?.id) ? TURN_GUARD_GUIDANCE : ''),
+    });
+  };
+  const startPromptContext = (promptCtx) => {
+    const disposeGuidance = startGuidanceContext(promptCtx);
+    const disposeGuard = startTurnGuardContext(promptCtx);
+    return () => {
+      disposeGuidance?.();
+      disposeGuard?.();
+    };
+  };
   if (typeof ctx.inject === 'function') {
     // Same gating the outbound artifact tool uses: register once the service
     // exists instead of requiring it at load time.
-    ctx.inject(['systemPrompt'], startGuidanceContext);
+    ctx.inject(['systemPrompt'], startPromptContext);
   } else {
-    startGuidanceContext(ctx);
+    startPromptContext(ctx);
   }
 
   const disposeDisposed = ctx.on('agent/disposed', ({ agent }) => {
@@ -100,7 +127,14 @@ export function installInjectedContext(ctx, { logger, registry = imSourceGuidanc
         labels: { reply: replyLabel(), source: sourceLabel(), context: contextLabel() },
         ownedGuidance: registry.get(agent?.session?.id),
       });
-      return rewritten === null ? decision : { ...decision, messages: rewritten };
+      const messages = rewritten ?? decision.messages;
+      // The Host appends its runtime snapshot and memory blocks as trailing
+      // user-role messages; a model that mis-reads the turn order then recites
+      // them instead of answering. Move that scaffolding in front of the real
+      // user turn and close the transcript with a short guard.
+      const guarded = guardHostBackgroundTail(messages, { plugin: INJECTED_CONTEXT_PLUGIN });
+      if (guarded === null) return rewritten === null ? decision : { ...decision, messages: rewritten };
+      return { ...decision, messages: guarded };
     } catch (error) {
       // A failed split must never cost the user their message: the blocks then
       // stay inline, which is the same fallback a Host without Agents uses.

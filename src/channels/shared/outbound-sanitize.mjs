@@ -50,7 +50,7 @@ const PROMPT_LINE = new RegExp([
 // line, which the line-anchored marker above already covers; this one catches
 // the case where they are the very first thing on a line without punctuation.
 const INLINE_PROMPT_TAG = new RegExp(
-  String.raw`${LT}\s*\/?\s*(?:dsh_im_source|dsh_im_reply_to|untrusted-memory|system-reminder|available_skills)${GT}`,
+  String.raw`${LT}\s*\/?\s*(?:dsh_im_source|dsh_im_reply_to|dsh_im_turn_guard|untrusted-memory|system-reminder|available_skills)${GT}`,
   'gi',
 );
 
