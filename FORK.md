@@ -11,6 +11,10 @@
 `resolveDiscordMessageRoute` 取不到；換掉 host 工廠等於自己重寫整個儀式）。因此改成
 「保留全部功能、只改行為與身分」的自有副本。
 
+## 人格庫（多個人格）
+
+Discord 的人格不再是單一 `persona.md`，而是可命名、可切換的庫（`<DSH_HOME>/integrations/dsh-discord/personas/`）。設定卡「目前人格」列可開兩欄彈窗編輯；切換從**下一則訊息**生效，舊對話會生成第三人稱交接摘要注入新會話。使用說明見 [docs/persona-library.md](docs/persona-library.md)，設計見 [docs/superpowers/specs/2026-10-27-discord-persona-library-design.md](docs/superpowers/specs/2026-10-27-discord-persona-library-design.md)。
+
 ## 改了什麼（相對上游 5.4.0）
 
 | 檔案 | 改動 |

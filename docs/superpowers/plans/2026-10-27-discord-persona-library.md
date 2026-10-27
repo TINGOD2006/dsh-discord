@@ -176,3 +176,23 @@
 **3. 取回摘要文字（可行，比預期簡單）**：`ask(sessionId, prompt, { timeoutMs })` 在 `:1801`，回傳**字串**（`tracker.answer` → `get answer()` `:624-626` 的 `#latestText.trim()`）。不需要再用 `readSessionHistory` 回讀。摘要用 `timeoutMs: 120_000`。
 
 **風險結論**：三項原語都在，Phase 2 不需要降級設計；唯一新增的接受面是「工作區多一條臨時 session」。
+
+## 執行結果（2026-10-27 完成）
+
+| 任務 | commit |
+| --- | --- |
+| 1.1 epoch 決策 | `1e8f204` |
+| 1.2 人格庫 | `4e7bebd` |
+| 1.3 每輪解析注入 | `3a521c7` |
+| 1.4 宿主接線 | `0f0cb03` |
+| 1.5 RPC 七端點 | `7725e4d` |
+| 1.6 state 記 epoch | `c562d5c` |
+| 1.7 訊息路徑清綁 | `358ad91` |
+| 1.8 兩欄設定卡片 | `aad4fb1` |
+| 2.1+2.2 摘要提示與產生器 | `88510c0` |
+| 2.3 真實 adapter | `c01e429` |
+| 2.4 摘注入 order 121 | `aeb7f9a` |
+| 1.9+2.5 驗證腳本與延後狀態 | `8747831` |
+
+測試：`node --test test/*.test.mjs` → 236 pass；`node scripts/verify-persona-library.mjs` → 7 passed。
+與計劃的偏差（`generateHandoff` 改 async、摘要狀態不做 per-key 清單）已記在 spec §7 的修訂段。
