@@ -1463,10 +1463,12 @@ export class DiscordRuntime {
         signal: controller.signal,
       });
       // The settings card writes the allowlist file directly, so pick it up on a
-      // slow tick instead of requiring a bot restart.
+      // short tick instead of requiring a bot restart. Five seconds keeps the
+      // "I just saved, why is it not working" window tiny; the file is a few
+      // hundred bytes, so the read cost is irrelevant.
       this.#allowlistWatcher = setInterval(() => {
         this.#bridge?.setTrustedIds(this.#trustedIds());
-      }, 30_000);
+      }, 5_000);
       this.#allowlistWatcher.unref?.();
       // #openSocket owns its own connect deadline, so a stalled handshake can
       // never leave this await pending forever.

@@ -113,22 +113,30 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
     }
   };
 
-  const saveAllowlist = async () => {
-    if (allowlistBusy || allowlist === null) return;
-    const ids = parseAllowlistDraft(allowlistDraft);
-    setAllowlistBusy(true);
-    setAllowlistFeedback(null);
-    try {
-      const saved = allowlistFromResult(await rpcCall(ALLOWLIST_ENDPOINTS.set, { ids }));
-      if (!mounted.current) return;
-      setAllowlist(saved);
-      setAllowlistDraft(saved.ids.join('\n'));
-      setAllowlistFeedback('白名单已保存，30 秒内生效。');
-    } catch (error) {
-      if (mounted.current) setAllowlistFeedback(error.message);
-    } finally {
-      if (mounted.current) setAllowlistBusy(false);
-    }
+  // Saves are serialized: toggling several members quickly must not drop the
+  // first click (an early return while busy used to swallow it silently).
+  const allowlistQueue = React.useRef(Promise.resolve());
+  const saveAllowlist = (draft = allowlistDraft) => {
+    if (allowlist === null) return allowlistQueue.current;
+    const ids = parseAllowlistDraft(draft);
+    allowlistQueue.current = allowlistQueue.current.then(async () => {
+      if (mounted.current) {
+        setAllowlistBusy(true);
+        setAllowlistFeedback(null);
+      }
+      try {
+        const saved = allowlistFromResult(await rpcCall(ALLOWLIST_ENDPOINTS.set, { ids }));
+        if (!mounted.current) return;
+        setAllowlist(saved);
+        setAllowlistDraft(saved.ids.join('\n'));
+        setAllowlistFeedback('白名单已保存，5 秒内生效。');
+      } catch (error) {
+        if (mounted.current) setAllowlistFeedback(error.message);
+      } finally {
+        if (mounted.current) setAllowlistBusy(false);
+      }
+    });
+    return allowlistQueue.current;
   };
 
   return h('section', { className: 'dim-botGeneralSettings', 'aria-label': '机器人通用设置', 'aria-busy': busy },
@@ -172,12 +180,16 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
     isDiscord && allowlist !== null ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow dim-botGeneralStack' },
       h('label', { className: 'dim-botGeneralTitle', htmlFor: `${modeId}-allowlist` }, '白名单'),
       h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-allowlist-help` },
-        `名单里的人可以像主人一样使用完整指令，最多 ${MAX_ALLOWLIST_SIZE} 个，保存后 30 秒内生效。点开成员开关即加入，勾选只改本地，按「保存白名单」一起提交。`),
+        `名单里的人可以像主人一样使用完整指令，最多 ${MAX_ALLOWLIST_SIZE} 个，保存后 5 秒内生效。点成员开关即保存；也可以直接在下面的框里一行一个贴 ID，再按「保存白名单」。`),
       h(MemberAllowlist, {
         account,
         rpcCall,
         selectedIds: new Set(parseAllowlistDraft(allowlistDraft)),
-        onToggle: (id) => setAllowlistDraft((draft) => toggleAllowlistId(draft, id)),
+        onToggle: (id) => {
+          const next = toggleAllowlistId(allowlistDraft, id);
+          setAllowlistDraft(next);
+          void saveAllowlist(next);
+        },
         max: MAX_ALLOWLIST_SIZE,
         disabled: allowlistBusy,
       }),
