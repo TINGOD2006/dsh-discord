@@ -52,8 +52,9 @@
   `MODEL_QUOTA`、`MODEL_RATE_LIMIT`、`MODEL_TRANSPORT`、`MODEL_TIMEOUT`、`MODEL_REPLY_TIMEOUT`、
   `MODEL_UNAVAILABLE`、`MODEL_STREAM`、`MODEL_EMPTY_REPLY`。內容超長、內容被拒、設定錯誤這類
   「訊息本身的問題」不會排程重試。
-- 重試間隔 30s → 2min → 5min → 10min → 15min → 30min ×3（總耐心約 100 分鐘），每次把整份
-  暫存佇列重放一次；佇列清空（＝供應商已恢復、積壓已消化）就立刻停止，不會殘留計時器。
+- 重試間隔 30s → 2min → 5min → 10min → 15min → 30min ×3（總耐心約 100 分鐘），每次把
+  「已經失敗過一輪」的暫存訊息重放一次（還沒輪到執行的排隊訊息不動，避免同一則被跑兩次）；
+  佇列清空（＝供應商已恢復、積壓已消化）就立刻停止，不會殘留計時器。
 - 共用層只多了兩個中性機制，預設行為不變：`TextHarnessBridge#retryStagedMessages()`
   （公開；不傳 `maxAttempts` 時仍是原本的一次性、`MAX_PENDING_REPLAY_ATTEMPTS` 預算）與失敗
   路徑上的可選鉤子 `onTurnFailed`（只有 `DiscordHarnessBridge` 定義它，其餘通道沒有這個方法

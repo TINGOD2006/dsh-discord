@@ -1043,9 +1043,14 @@ export class TextHarnessBridge {
    * outage, so it calls this from its own backoff until the backlog drains. The
    * attempt budget belongs to the caller: it only decides when a staged message
    * is reported instead of replayed.
+   *
+   * `onlyAttempted` skips entries that have never failed a turn. At startup the
+   * list only holds messages a restart interrupted, but a live process also
+   * stages messages that are merely queued behind another turn; replaying those
+   * would run the same message twice. A caller retrying mid-process must set it.
    */
-  retryStagedMessages({ maxAttempts = MAX_PENDING_REPLAY_ATTEMPTS } = {}) {
-    return this.#recoverPendingMessages({ maxAttempts }).catch((error) => {
+  retryStagedMessages({ maxAttempts = MAX_PENDING_REPLAY_ATTEMPTS, onlyAttempted = false } = {}) {
+    return this.#recoverPendingMessages({ maxAttempts, onlyAttempted }).catch((error) => {
       this.#logger.warn?.(
         `[dsh-im:${this.#descriptor.key}] queued-message retry failed:`,
         error?.message ?? error,
@@ -1053,13 +1058,23 @@ export class TextHarnessBridge {
     });
   }
 
-  async #recoverPendingMessages({ maxAttempts = MAX_PENDING_REPLAY_ATTEMPTS } = {}) {
+  async #recoverPendingMessages({
+    maxAttempts = MAX_PENDING_REPLAY_ATTEMPTS,
+    onlyAttempted = false,
+  } = {}) {
     if (typeof this.#state?.pendingMessages !== 'function') return;
     const entries = this.#state.pendingMessages();
     if (!Array.isArray(entries) || entries.length === 0) return;
     // Oldest first: a restart replays the backlog in the order people asked,
     // not in whatever order the state file happened to list.
-    const ordered = [...entries].sort((left, right) => (
+    const candidates = onlyAttempted
+      // Mid-process retry: "has attempts" means a turn already failed for it.
+      // A row with no attempts is a message merely waiting its turn, and
+      // replaying it now would run it twice.
+      ? entries.filter((entry) => Number.isSafeInteger(entry?.attempts) && entry.attempts > 0)
+      : entries;
+    if (candidates.length === 0) return;
+    const ordered = [...candidates].sort((left, right) => (
       String(left?.createdAt ?? '').localeCompare(String(right?.createdAt ?? ''))
     ));
     const maxAgeMs = pendingReplayMaxAgeMs();
@@ -1074,7 +1089,7 @@ export class TextHarnessBridge {
           continue;
         }
         this.#logger.warn?.(
-          `[dsh-im:${this.#descriptor.key}] replaying a queued message that a restart interrupted:`,
+          `[dsh-im:${this.#descriptor.key}] replaying a staged message that never got an answer:`,
           entry.messageId,
           `attempt=${attempts + 1}`,
         );

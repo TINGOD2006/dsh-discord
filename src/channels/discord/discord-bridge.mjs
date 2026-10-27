@@ -21,10 +21,16 @@ export class DiscordHarnessBridge extends TextHarnessBridge {
     this.#recovery = createProviderRecovery({
       logger: options?.logger,
       signal: options?.signal,
-      retry: (args) => this.retryStagedMessages(args),
-      pendingCount: () => (typeof state?.pendingMessages === 'function'
-        ? state.pendingMessages()?.length ?? 0
-        : 0),
+      // Mid-process retry: only rows whose turn already failed (attempts > 0).
+      // A row without attempts is a message merely queued behind another turn;
+      // replaying it here would run it twice.
+      retry: (args) => this.retryStagedMessages({ ...args, onlyAttempted: true }),
+      pendingCount: () => {
+        if (typeof state?.pendingMessages !== 'function') return 0;
+        const entries = state.pendingMessages();
+        if (!Array.isArray(entries)) return 0;
+        return entries.filter((entry) => Number.isSafeInteger(entry?.attempts) && entry.attempts > 0).length;
+      },
     });
   }
 

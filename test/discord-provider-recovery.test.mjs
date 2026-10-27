@@ -216,3 +216,62 @@ test('the shared bridge defines no onTurnFailed hook, so other channels are unch
 test('the Discord bridge is the one that defines the hook', () => {
   assert.equal(typeof DiscordHarnessBridge.prototype.onTurnFailed, 'function');
 });
+
+/**
+ * A staging store good enough for the sweep: it records what the bridge asks
+ * for, so a skipped row is visible as "never removed". It starts empty because
+ * constructing a bridge already fires the one-shot startup sweep; tests add
+ * their rows afterwards, the way a failed turn would.
+ */
+function stagedStore() {
+  const entries = [];
+  const removed = [];
+  const unmarked = [];
+  return {
+    entries,
+    removed,
+    unmarked,
+    pendingMessages: () => entries.map((entry) => ({ ...entry })),
+    removePendingMessage: async (id) => { removed.push(id); },
+    unmarkSeen: async (messageId) => { unmarked.push(messageId); },
+    patchPendingMessage: async () => {},
+    markSeen: async () => {},
+  };
+}
+
+function plainBridge(state) {
+  return new TextHarnessBridge({
+    descriptor: { key: 'test', label: 'Test' },
+    bot: { sendText: async () => {} },
+    harness: {},
+    state,
+    logger: { warn() {}, error() {}, info() {} },
+  });
+}
+
+test('a mid-process sweep leaves messages that never failed a turn alone', async () => {
+  const state = stagedStore();
+  const bridge = plainBridge(state);
+  state.entries.push(
+    { id: 'a', messageId: 'a', createdAt: '2026-01-01T00:00:00.000Z', attempts: 99, target: null },
+    { id: 'b', messageId: 'b', createdAt: '2026-01-02T00:00:00.000Z', target: null },
+  );
+
+  await bridge.retryStagedMessages({ onlyAttempted: true });
+
+  assert.deepEqual(state.removed, ['a'], 'the failed row is reported out of attempts');
+  assert.deepEqual(state.unmarked, [], 'nothing is replayed, so nothing is unmarked');
+});
+
+test('a sweep without the flag still walks every staged row', async () => {
+  const state = stagedStore();
+  const bridge = plainBridge(state);
+  state.entries.push(
+    { id: 'a', messageId: 'a', createdAt: '2026-01-01T00:00:00.000Z', attempts: 99, target: null },
+    { id: 'b', messageId: 'b', createdAt: '2026-01-02T00:00:00.000Z', attempts: 99, target: null },
+  );
+
+  await bridge.retryStagedMessages();
+
+  assert.deepEqual(state.removed, ['a', 'b']);
+});
