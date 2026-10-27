@@ -345,7 +345,30 @@ const CSS = String.raw`
 .dim-contextFooter .dim-contextSave, .dim-contextFooter .dim-contextSave:hover:not(:disabled) { border-color: var(--dsw-alias-state-business-primary, #3370ff); color: #fff; background: var(--dsw-alias-state-business-primary, #3370ff); }
 .dim-contextEntry:focus-visible, .dim-contextDialog button:focus-visible, .dim-contextDialog input:focus-visible, .dim-contextDialog textarea:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 2px; }
 .dim-contextEntry:disabled, .dim-contextDialog button:disabled, .dim-contextDialog input:disabled, .dim-contextDialog textarea:disabled { opacity: .55; cursor: not-allowed; }
+.dim-contextPersonaDialog { width: min(760px, 100%); }
+.dim-contextPersonaLayout { display: grid; grid-template-columns: minmax(150px, 200px) minmax(0, 1fr); gap: 12px; margin-top: 12px; align-items: start; }
+.dim-contextPersonaSide { min-width: 0; }
+.dim-contextPersonaSideHeader { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 0 0 6px; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; }
+.dim-contextPersonaAdd { display: inline-flex; align-items: center; gap: 3px; min-height: 26px; padding: 2px 8px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 6px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-1, #fff); font: inherit; font-size: 12px; cursor: pointer; }
+.dim-contextPersonaAdd:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, #eef0f3); }
+.dim-contextPersonaList { display: flex; flex-direction: column; gap: 3px; max-height: 340px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.dim-contextPersonaItem { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 34px; padding: 5px 8px; border: 1px solid transparent; border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: transparent; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.dim-contextPersonaItem:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, #eef0f3); }
+.dim-contextPersonaItem[data-selected="true"] { border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #3370ff) 40%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #3370ff) 8%, transparent); }
+.dim-contextPersonaName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dim-contextPersonaMeta { display: inline-flex; align-items: center; gap: 5px; flex: none; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 11px; line-height: 16px; }
+.dim-contextPersonaMain { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.dim-contextPersonaInput { width: 100%; min-height: 34px; padding: 6px 9px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f7f8fa); font: inherit; font-size: 13px; }
+.dim-contextPersonaText { display: block; width: 100%; min-height: 200px; padding: 9px 10px; resize: vertical; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f7f8fa); font: inherit; font-size: 12px; line-height: 1.6; }
+.dim-contextNotice { margin: 10px 0 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; }
+.dim-contextFooter .dim-contextActivate, .dim-contextFooter .dim-contextActivate:hover:not(:disabled) { border-color: var(--dsw-alias-state-business-primary, #3370ff); color: var(--dsw-alias-state-business-primary, #3370ff); }
+.dim-contextFooter .dim-contextActivate:disabled { opacity: .55; }
+@media (max-width: 560px) {
+  .dim-contextPersonaLayout { grid-template-columns: minmax(0, 1fr); }
+}
 @media (pointer: coarse) {
+  .dim-contextPersonaAdd, .dim-contextPersonaItem, .dim-contextFooter .dim-contextActivate { min-height: 40px; }
+  .dim-contextPersonaText { font-size: 16px; }
   .dim-contextEntry, .dim-contextTab, .dim-contextClose, .dim-contextFooter button, .dim-contextTextActions button, .dim-contextField, .dim-contextSwitchRow { min-height: 44px; }
   .dim-contextClose, .dim-contextTextActions button { min-width: 44px; }
   .dim-contextGuidance textarea { font-size: 16px; }

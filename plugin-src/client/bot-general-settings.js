@@ -3,9 +3,9 @@ import { h } from './i18n.js';
 import { SET_MESSAGE_MODE_ENDPOINT, normalizeBusyMessageMode } from '../../src/channels/shared/message-mode.mjs';
 import { normalizeFeishuStepCardPanels } from '../../src/channels/feishu/step-push-mode.mjs';
 import { FEISHU_ENDPOINTS } from './channels/feishu/api.js';
-import { PERSONA_ENDPOINTS, MAX_PERSONA_CHARS } from '../../src/channels/discord/persona-endpoints.mjs';
 import { MAX_ALLOWLIST_SIZE, ALLOWLIST_ENDPOINTS } from '../../src/channels/discord/allowlist-endpoints.mjs';
 import { MemberAllowlist } from './member-allowlist.js';
+import { PersonaEditor } from './persona-editor.js';
 
 function allowlistFromResult(result) {
   if (result?.ok !== true) throw new Error(result?.error?.message || '无法读取白名单，请稍后重试。');
@@ -27,18 +27,6 @@ function toggleAllowlistId(draft, id) {
   return next.join('\n');
 }
 
-function personaFromResult(result) {
-  if (result?.ok !== true) throw new Error(result?.error?.message || '无法读取人格设置，请稍后重试。');
-  const value = result.value ?? {};
-  const text = typeof value.text === 'string' ? value.text : '';
-  return {
-    text,
-    defaultText: typeof value.defaultText === 'string' ? value.defaultText : text,
-    customized: value.customized === true,
-    empty: value.empty === true || (value.customized === true && text === ''),
-  };
-}
-
 function settingsFromResult(result, botId) {
   if (result?.ok !== true) throw new Error(result?.error?.message || '无法读取通用设置，请稍后重试。');
   const bot = result.value?.bots?.find((entry) => entry.botId === botId);
@@ -58,10 +46,6 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
   const [busy, setBusy] = React.useState(false);
   const [feedback, setFeedback] = React.useState(null);
   const isDiscord = channel === 'discord';
-  const [persona, setPersona] = React.useState(null);
-  const [personaDraft, setPersonaDraft] = React.useState('');
-  const [personaBusy, setPersonaBusy] = React.useState(false);
-  const [personaFeedback, setPersonaFeedback] = React.useState(null);
   const [allowlist, setAllowlist] = React.useState(null);
   const [allowlistDraft, setAllowlistDraft] = React.useState('');
   const [allowlistBusy, setAllowlistBusy] = React.useState(false);
@@ -81,14 +65,6 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
       setSettings(value);
       setSavedSettings(value);
       if (isDiscord) {
-        try {
-          const loaded = personaFromResult(await rpcCall(PERSONA_ENDPOINTS.get, {}));
-          if (!mounted.current) return;
-          setPersona(loaded);
-          setPersonaDraft(loaded.text);
-        } catch (error) {
-          if (mounted.current) setPersonaFeedback(error.message);
-        }
         try {
           const loaded = allowlistFromResult(await rpcCall(ALLOWLIST_ENDPOINTS.get, {}));
           if (!mounted.current) return;
@@ -134,40 +110,6 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
     } finally {
       inFlight.current = false;
       if (mounted.current) setBusy(false);
-    }
-  };
-
-  const savePersona = async () => {
-    if (personaBusy || persona === null || personaDraft === persona.text) return;
-    setPersonaBusy(true);
-    setPersonaFeedback(null);
-    try {
-      const saved = personaFromResult(await rpcCall(PERSONA_ENDPOINTS.set, { text: personaDraft }));
-      if (!mounted.current) return;
-      setPersona(saved);
-      setPersonaDraft(saved.text);
-      setPersonaFeedback('人格已保存，重启 DSH 后生效。');
-    } catch (error) {
-      if (mounted.current) setPersonaFeedback(error.message);
-    } finally {
-      if (mounted.current) setPersonaBusy(false);
-    }
-  };
-
-  const resetPersona = async () => {
-    if (personaBusy) return;
-    setPersonaBusy(true);
-    setPersonaFeedback(null);
-    try {
-      const saved = personaFromResult(await rpcCall(PERSONA_ENDPOINTS.set, { reset: true }));
-      if (!mounted.current) return;
-      setPersona(saved);
-      setPersonaDraft(saved.text);
-      setPersonaFeedback('已清空人格，重启 DSH 后生效。');
-    } catch (error) {
-      if (mounted.current) setPersonaFeedback(error.message);
-    } finally {
-      if (mounted.current) setPersonaBusy(false);
     }
   };
 
@@ -224,31 +166,9 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
           })))) : null),
     channel === 'feishu' ? h('p', { className: 'dim-botGeneralHelp dim-botGeneralPanelHelp', id: `${modeId}-panels-description` },
       '仅对实时过程卡生效，任务结束后自动收起。') : null,
-    isDiscord && persona !== null ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow dim-botGeneralStack' },
-      h('label', { className: 'dim-botGeneralTitle', htmlFor: `${modeId}-persona` }, '人格'),
-      h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-persona-help` },
-        `${persona.text ? '当前为自定义人格' : '当前不注入人格'}，最多 ${MAX_PERSONA_CHARS} 字；空白保存即不注入；保存后重启 DSH 生效。`),
-      h('textarea', {
-        id: `${modeId}-persona`, className: 'dim-botGeneralTextarea', 'aria-label': '人格文本',
-        'aria-describedby': `${modeId}-persona-help`, rows: 10,
-        placeholder: '留空则不注入任何人格',
-        value: personaDraft, disabled: personaBusy, spellCheck: false,
-        onChange: (event) => setPersonaDraft(event.target.value),
-      }),
-      h('div', { className: 'dim-botGeneralActions' },
-        h('button', {
-          type: 'button', className: 'dim-deliveryButton', 'aria-busy': personaBusy,
-          disabled: personaBusy || personaDraft === persona.text,
-          onClick: () => void savePersona(),
-        }, '保存人格'),
-        h('button', {
-          type: 'button', className: 'dim-deliveryButton', 'aria-busy': personaBusy,
-          disabled: personaBusy || !persona.customized, onClick: () => void resetPersona(),
-        }, '清空')),
-      personaFeedback ? h('p', {
-        className: 'dim-accessFeedback', role: 'alert',
-        'data-tone': /已/.test(personaFeedback) ? 'success' : 'error',
-      }, personaFeedback) : null) : null,
+    isDiscord ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow dim-botGeneralStack' },
+      h('label', { className: 'dim-botGeneralTitle' }, '人格'),
+      h(PersonaEditor, { rpcCall })) : null,
     isDiscord && allowlist !== null ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow dim-botGeneralStack' },
       h('label', { className: 'dim-botGeneralTitle', htmlFor: `${modeId}-allowlist` }, '白名单'),
       h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-allowlist-help` },
