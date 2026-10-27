@@ -89,6 +89,11 @@ function normalizeState(value) {
       ? value.seenMessageIds.filter((id) => typeof id === 'string' && id).slice(-1_000)
       : [],
     cursor: Number.isSafeInteger(value.cursor) && value.cursor >= 0 ? value.cursor : null,
+    // Only written once a persona is switched, so untouched bots keep the old
+    // file shape.
+    ...(Number.isSafeInteger(value.personaEpochSeen) && value.personaEpochSeen >= 0
+      ? { personaEpochSeen: value.personaEpochSeen }
+      : {}),
   };
   // Channel-specific extensions survive a reload; each is normalized by the
   // subclass that owns it (see extensionKeys()).
@@ -185,6 +190,24 @@ export class ConversationStateStore {
 
   async clearSessions() {
     this.#state.sessions = {};
+    await this.#persist();
+  }
+
+  /**
+   * Which persona epoch the bound Sessions were last answering as. The message
+   * path compares this with the library's epoch to decide whether the binding
+   * belongs to a retired persona.
+   */
+  personaEpochSeen() {
+    const seen = this.#state.personaEpochSeen;
+    return Number.isSafeInteger(seen) && seen >= 0 ? seen : 0;
+  }
+
+  async setPersonaEpochSeen(epoch) {
+    if (!Number.isSafeInteger(epoch) || epoch < 0) {
+      throw new TypeError('personaEpochSeen must be a non-negative safe integer');
+    }
+    this.#state.personaEpochSeen = epoch;
     await this.#persist();
   }
 
