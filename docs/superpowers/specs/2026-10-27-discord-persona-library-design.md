@@ -32,23 +32,25 @@
 ## 3. 名詞
 
 - **人格庫**：`personas/index.json` + `<id>.md` 的集合。
-- **啟用中人格**：`config.json` 的 `personaActiveId` 指向的項目。
-- **epoch**：`config.json` 的 `personaEpoch` 整數。每次切換 +1，用來讓每條會話知道「我的人格版本過期了」。
+- **啟用中人格**：`personas/active.json` 的 `activeId` 指向的項目。
+- **epoch**：`personas/active.json` 的 `epoch` 整數。每次切換 +1，用來讓每條會話知道「我的人格版本過期了」。
 - **交接摘要**：切換時生成的第三人稱事實檔案 `handoffs/<key>.md`。
 
 ## 4. 資料模型
 
 ```
 <DSH_HOME>/integrations/dsh-discord/
-  config.json                     # 新增 personaActiveId: "p_default", personaEpoch: 0
   personas/
-    index.json
+    index.json                    # 清單
+    active.json                   # { "activeId": "p_default", "epoch": 0 }
     p_default.md
     p_a3f91c.md
   handoffs/
     group-1562556899214499910.md
   persona.md                      # 遷移後改名 persona.md.migrated
 ```
+
+> 修訂（實作 Task 1.2 時）：啟用指標與 epoch 放在 `personas/active.json`，不放 `config.json`。理由是 `config.json` 由控制器的設定寫入流程管理，RPC handler 拿不到那個寫入器；把兩者放進人格庫自己的目錄，`activate` 就能在 handler 內完成，不必改 `TokenBotController` 的介面。
 
 `personas/index.json`：
 
@@ -110,7 +112,7 @@ text: (assembly) => sessionChannelOf(sessionIdOf(assembly)) === DISCORD_PERSONA_
 
 ## 6. 切換語義：epoch + 惰性清綁
 
-RPC 的 `activate` 只做兩件事：寫 `personaActiveId`、`personaEpoch += 1`、立刻回 `{ ok, epoch }`。**不動任何 session 映射，也不阻塞正在執行的回合**（當前回合照常結束，重置只影響後續訊息；比「先拒絕切換」少一套狀態機）。
+RPC 的 `activate` 只做兩件事：寫 `activeId`、`epoch += 1`（皆在 `personas/active.json`）、立刻回 `{ ok, epoch }`。**不動任何 session 映射，也不阻塞正在執行的回合**（當前回合照常結束，重置只影響後續訊息；比「先拒絕切換」少一套狀態機）。
 
 每條入站訊息在 `TextHarnessBridge` 處理前比對：
 
