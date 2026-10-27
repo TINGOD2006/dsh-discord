@@ -9,7 +9,7 @@ import { DiscordPersonaLibrary } from '../src/channels/discord/persona-library.m
 import { createPersonaRpcHandler } from '../plugin-src/host/persona-rpc.mjs';
 
 async function withHome(run) {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-persona-empty-'));
+  const home = await mkdtemp(join(tmpdir(), 'dsh-persona-blank-'));
   try {
     return await run(home);
   } finally {
@@ -17,30 +17,29 @@ async function withHome(run) {
   }
 }
 
-test('a blank persona cannot be activated', () => withHome(async (home) => {
+test('a blank persona can be activated on purpose', () => withHome(async (home) => {
   const library = new DiscordPersonaLibrary({ dshHome: home });
-  const blank = library.create({ name: '空白', text: '' });
-  assert.throws(() => library.activate(blank.id), (error) => error.code === 'persona-empty');
-  assert.equal(library.snapshot().activeId, null);
-}));
-
-test('the refusal leaves an already active persona in place', () => withHome(async (home) => {
-  const library = new DiscordPersonaLibrary({ dshHome: home });
-  const good = library.create({ name: 'A', text: '温和一点' });
-  const blank = library.create({ name: '空白', text: '' });
+  const good = library.create({ name: 'A', text: '温柔一点' });
   library.activate(good.id);
-  const before = library.snapshot();
-  assert.throws(() => library.activate(blank.id), (error) => error.code === 'persona-empty');
-  assert.deepEqual(library.snapshot(), before);
+  const blank = library.create({ name: '空白', text: '' });
+  const next = library.activate(blank.id);
+  assert.equal(next.activeId, blank.id);
+  // "No persona" is the state itself: nothing is injected until a body is written.
+  assert.equal(library.activeText(), '');
 }));
 
-test('the rpc answers with a readable message instead of a generic failure', () => withHome(async (home) => {
+test('the snapshot lets the card label a blank persona without reading it', () => withHome(async (home) => {
+  const library = new DiscordPersonaLibrary({ dshHome: home });
+  library.create({ name: '空白', text: '' });
+  const [item] = library.snapshot().items;
+  assert.equal(item.chars, 0);
+}));
+
+test('the rpc reports a blank activation as success', () => withHome(async (home) => {
   const library = new DiscordPersonaLibrary({ dshHome: home });
   const handler = createPersonaRpcHandler(library);
   const created = await handler(PERSONA_ENDPOINTS.create, { name: '空白', text: '' }, undefined);
-  assert.equal(created.ok, true);
   const activated = await handler(PERSONA_ENDPOINTS.activate, { id: created.value.id }, undefined);
-  assert.equal(activated.ok, false);
-  assert.equal(activated.error.code, 'persona-empty');
-  assert.match(activated.error.message, /内容/u);
+  assert.equal(activated.ok, true);
+  assert.equal(activated.value.handoff, 'deferred');
 }));

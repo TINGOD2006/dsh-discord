@@ -140,7 +140,13 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
   }, '人格保存失败，请重试。', selectedId);
 
   const activateSelected = () => mutate(async () => {
-    if (text.trim() === '') throw new Error('這個人物還沒有內容，先寫點內容再切換。');
+    // Switching to a blank body is allowed — it means "no persona段" — but it is
+    // announced first, because the effect is the bot losing its voice.
+    if (text.trim() === '' && activeId !== null && activeId !== selectedId
+      && globalThis.confirm
+      && !globalThis.confirm('切成「無人格」？切換後不再注入任何人設。')) {
+      return null;
+    }
     if (dirty) unwrap(await rpcCall(PERSONA_ENDPOINTS.save, { id: selectedId, name, text }), '人格保存失败，请重试。');
     setBaseline({ name, text });
     unwrap(await rpcCall(PERSONA_ENDPOINTS.activate, { id: selectedId }), '切换人格失败，请重试。');
@@ -194,7 +200,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
       h('h3', { id: titleId }, '人格'),
       h('span', { id: helpId, className: 'dim-contextHelp dim-contextHeaderHelp' },
         'Discord 群里使用的人格文本，最多 ', String(MAX_PERSONA_CHARS),
-        ' 字；空白行不注入人格。切换后从下一条消息起生效。')),
+        ' 字；0 字代表「無人格」，不注入任何人設。切换后从下一条消息起生效。')),
     h('button', {
       type: 'button', className: 'dim-contextClose', 'aria-label': '关闭弹窗',
       disabled: busy, onClick: onClose,
@@ -223,7 +229,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
               }
             })(); },
           },
-          h('span', { className: 'dim-contextPersonaName' }, item.name),
+          h('span', { className: 'dim-contextPersonaName' }, item.chars === 0 ? '無人格（不注入）' : item.name),
           h('span', { className: 'dim-contextPersonaMeta' },
             item.id === activeId ? h('span', { className: 'dim-contextStatus', 'data-active': 'true' }, '使用中') : null,
             String(item.chars))))))) ,
@@ -246,9 +252,11 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
         maxLength: MAX_PERSONA_CHARS,
         spellCheck: false,
         disabled: !loaded || selectedId === null || busy,
-        placeholder: loaded ? '寫上這個人物的設定；空白的人物不能切換。' : '正在读取人格…',
+        placeholder: loaded ? '寫上這個人物的設定；留空就是「無人格」，不注入任何人設。' : '正在读取人格…',
         onChange: (event) => setText(event.target.value),
       }))) ,
+  blank ? h('p', { className: 'dim-contextPersonaEmptyHint' },
+    '這個人物是空的：切成它等於「無人格」，下一句起不再帶任何人設。') : null,
   error ? h('p', { className: 'dim-contextError', role: 'alert' }, error) : null,
   notice ? h('p', { className: 'dim-contextNotice', role: 'status' }, notice) : null,
   h('footer', { className: 'dim-contextFooter' },
@@ -259,9 +267,9 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
     h('button', { type: 'button', disabled: busy, onClick: onClose }, '关闭'),
     h('button', {
       type: 'button', className: 'dim-contextActivate',
-      disabled: busy || selectedId === null || isActive || blank,
+      disabled: busy || selectedId === null || isActive,
       onClick: () => { void activateSelected(); },
-    }, isActive ? '使用中' : blank ? '尚無內容' : '切換到這個人'),
+    }, isActive ? '使用中' : blank ? '切成無人格' : '切換到這個人'),
     h('button', {
       type: 'button', className: 'dim-contextSave',
       disabled: busy || !loaded || !dirty,

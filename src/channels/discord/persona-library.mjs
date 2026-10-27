@@ -163,17 +163,17 @@ export class DiscordPersonaLibrary {
     return { ok: true };
   }
 
-  /** Point the bot at `id` and bump the epoch so bound Sessions reset. */
+  /**
+   * Point the bot at `id` and bump the epoch so bound Sessions reset.
+   *
+   * A blank persona is a legitimate choice: it means "no persona段", which is
+   * how an operator turns the voice off on purpose. The card labels that option
+   * instead of hiding it, so the state is always visible before it is entered.
+   */
   activate(id) {
     this.#assertId(id);
     if (!this.#items().some((entry) => entry.id === id)) {
       throw libraryError('persona-not-found', '人格不存在。');
-    }
-    // Activating a blank persona silently retires the bound Session and leaves
-    // the bot with no personality at all — which reads as "the switch broke the
-    // bot". Refusing here keeps that state out of reach.
-    if (this.read(id).text.trim() === '') {
-      throw libraryError('persona-empty', '这个人物还没有内容，先写点内容再切换。');
     }
     const { epoch } = this.#active();
     const next = { activeId: id, epoch: epoch + 1 };

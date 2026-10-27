@@ -361,6 +361,7 @@ const CSS = String.raw`
 .dim-contextPersonaInput { width: 100%; min-height: 34px; padding: 6px 9px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f7f8fa); font: inherit; font-size: 13px; }
 .dim-contextPersonaText { display: block; width: 100%; min-height: 200px; padding: 9px 10px; resize: vertical; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f7f8fa); font: inherit; font-size: 12px; line-height: 1.6; }
 .dim-contextNotice { margin: 10px 0 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; }
+.dim-contextPersonaEmptyHint { margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; color: var(--dsw-alias-label-secondary, #646a73); background: var(--dsw-alias-bg-module-platform, #f7f8fa); font-size: 12px; line-height: 1.5; }
 .dim-contextFooter .dim-contextActivate, .dim-contextFooter .dim-contextActivate:hover:not(:disabled) { border-color: var(--dsw-alias-state-business-primary, #3370ff); color: var(--dsw-alias-state-business-primary, #3370ff); }
 .dim-contextFooter .dim-contextActivate:disabled { opacity: .55; }
 @media (max-width: 560px) {
