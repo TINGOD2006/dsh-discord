@@ -134,6 +134,10 @@ export class HarnessApprovalQueue {
     return this.#routes.get(key)?.items.some((pending) => !pending.inactive) === true;
   }
 
+  expectsReplyFrom(key, actor) {
+    return this.#routes.get(key)?.items.find(pending => !pending.inactive)?.actor === actor;
+  }
+
   /**
    * Reject the active approvals of one route: the sender moved on to a new
    * addressed request instead of deciding the tool call, and the conversation

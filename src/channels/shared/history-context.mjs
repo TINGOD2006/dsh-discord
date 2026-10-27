@@ -2,15 +2,22 @@
 // stays intact; only the model-facing view is filtered.
 export const HISTORY_EXPOSURES = Symbol('history-exposures');
 const STATUS = /^(?:(?:正在(?:处理|處理|思考|回覆|回覆中)|处理中|處理中|thinking|typing|已取消|已停止)(?:中)?[\s.…!！。]*|正在使用.{1,40}(?:…|\.{3,}))$/iu;
-const CONTROL = /^\/(?:help|status|new|stop|skip|steer|digest|recall|thread|mute|unmute|play|join|next|pause|resume|queue|leave|music|model|workspace|clear|reset|cancel|think)(?=$|\s)/iu;
-const RECALL = /(?:(?:上面|前文|前面|刚才|剛才|剛剛|刚刚|刚说|剛才說|之前|先前|昨天|昨日|上次)[^，,。！？!?；;\n]{0,6}(?:说|說|讲|講|聊|提(?:到|過|过|起|及|的|了|問|问)|问|問|(?:发|發)(?:的|了|過|过|送|言|訊息|消息|文件|圖片|图片|檔案)|内容|內容|圖片|图片|檔案|文件))|(?:(?:翻|找|查|看|回溯|回顧|回顾|往前|總結|总结).{0,6}(?:记录|紀錄|历史|歷史|聊天|日志|日誌|對話|对话))|(?:更早的.{0,4}(?:消息|訊息|记录|紀錄|聊天))|\b(?:earlier|previous|past)\s+(?:messages?|chat|conversation|discussion|files?)\b|\b(?:what|who).{0,30}\b(?:say|said|discussed|mentioned)\b/iu;
+const CONTROL = /^\/(?:help|status|new|stop|skip|steer|digest|recall|thread|autoreply|mute|unmute|play|join|next|pause|resume|queue|leave|music|model|workspace|clear|reset|cancel|think)(?=$|\s)/iu;
+const RECALL = /(?:(?:上面|前文|前面|刚才|剛才|剛剛|刚刚|刚说|剛才說|之前|先前|昨天|昨日|上次)[^，,。！？!?；;\n]{0,6}(?:说|說|讲|講|聊|提(?:到|過|过|起|及|的|了|問|问)|问|問|(?:发|發)(?:的|了|過|过|送|言|訊息|消息|文件|圖片|图片|檔案)|内容|內容|圖片|图片|檔案|文件))|(?:(?:翻|讀取|读取|讀|读|找|查|看|回溯|回顧|回顾|往前|總結|总结).{0,6}(?:记录|紀錄|历史|歷史|聊天|日志|日誌|對話|对话))|(?:更早的.{0,4}(?:消息|訊息|记录|紀錄|聊天))|\b(?:earlier|previous|past)\s+(?:messages?|chat|conversation|discussion|files?)\b|\b(?:what|who).{0,30}\b(?:say|said|discussed|mentioned)\b.{0,30}\b(?:earlier|previously)\b/iu;
+const NEGATED_HISTORY = /(?:不要|不用|不必|不需要|無須|无需|別|别|do not|don't|no need to)\s*(?:再|先|去|額外|额外)?\s*(?:讀取|读取|讀|读|查(?:詢|询|找)?|翻(?:閱|阅)?|看|搜尋|搜索|回顧|回顾|read|search|look up|review).{0,16}(?:歷史|历史|記錄|记录|紀錄|messages?|history|archive|之前|先前|聊天)/iu;
 // An unresolved object or discussion is a reference. A bare time/place word
 // ("剛剛下雨", "上面印著 hello") does not justify reading the archive.
 const REFERENCE = /(?:那(?:張|张|份)(?:圖片|图片|圖像|图像|照片|截圖|截图|檔案|文件|資料|资料|報告|报告)?)|(?:那(?:個|个)(?:問題|问题|方案|方法|檔案|文件|結論|结论|連結|链接|公式))|(?:那(?:個|个)(?=\s*(?:$|是|呢|怎|在|要|能|可以|代表|指)))|(?:(?:上面|前面)(?:這|这|那)(?:段|句|條|条)(?:文字|話|话|訊息|消息|內容|内容))|(?:(?:上面|前面|剛剛|刚刚|剛才|刚才)(?:的)?(?:訊息|消息|發言|发言|內容|内容|討論|讨论|圖片|图片|檔案|文件|結論|结论|問題|问题))|(?:(?:繼續|继续)(?:剛才|刚才|剛剛|刚刚|上次|之前|前面))|\b(?:that (?:image|file|message)|what about (?:that|it)|as (?:mentioned|discussed))\b/iu;
 const PROVIDED_TEXT = /(?:這|这)(?:段|句)(?:文字|話|话|內容|内容)(?:是|為|为|[:：])\s*(?:「[^」]+」|“[^”]+”|"[^"\n]+"|`[^`]+`)/u;
 
+function historyRequestText(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/```[\s\S]*?```|`[^`]*`|「[^」]*」|“[^”]*”|"[^"\n]*"/gu, ' ')
+    .split(/[，,。！？!?；;\n]|但是|但|而是|\bbut\b/iu).filter(part => !NEGATED_HISTORY.test(part)).join('，');
+}
+
 export function historyRecallRequested(text) {
-  return typeof text === 'string' && RECALL.test(text);
+  return RECALL.test(historyRequestText(text));
 }
 
 export function historyContextNeeded(message) {
@@ -20,7 +27,7 @@ export function historyContextNeeded(message) {
   if (message?.images?.length || message?.files?.length
     || (typeof message?.replyTo?.content === 'string' && message.replyTo.content.trim())
     || PROVIDED_TEXT.test(message?.content ?? '')) return false;
-  return typeof message?.content === 'string' && REFERENCE.test(message.content);
+  return REFERENCE.test(historyRequestText(message?.content));
 }
 
 export function cleanHistoryText(value) {

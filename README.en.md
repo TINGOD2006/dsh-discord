@@ -7,6 +7,7 @@ A DeepSeek Harness (DSH) plugin for Discord chat and voice music playback, forke
 ## Features
 
 - Connect Discord conversations to DSH with existing workspace, session and access policies.
+- Use `/autoreply smart` for selective replies and a short input window; `on` answers every message, `off` disables automatic replies, and `status` checks the mode. Each location saves its setting across restarts. New questions reuse the current Session without reading archived chat; history tools require a historical request or missing reference. Controls and music bypass the input window.
 - Search YouTube from song keywords, let a separate DSH music session select a verified candidate, and queue it for voice playback.
 - Download the full track and apply constant loudness gain toward −20 LUFS with a −3 dB true-peak target before playback. Default player volume is 60%.
 - Use 32 kbps mono playback with decoding, gain and low-complexity encoding in an FFmpeg child process. Prefetch tracks, share caches, prebuffer packets and retry temporary voice disconnections.

@@ -9,6 +9,7 @@ import { dirname } from 'node:path';
 const EXTENSION_KEYS = Object.freeze([
   'emailBindings', 'mailCursor', 'pendingAuth', 'threadIds', 'rootAnchors',
   'whatsappBotMessageIds',
+  'discordThreadAutoReplies',
 ]);
 
 const PENDING_MESSAGE_LIMIT = 200;
@@ -42,6 +43,9 @@ function normalizePendingMessage(value) {
     submitted: value.submitted === true,
   };
   if (typeof value.senderId === 'string' && value.senderId) entry.senderId = value.senderId;
+  if (Array.isArray(value.coalescedMessageIds)) {
+    entry.coalescedMessageIds = [...new Set(value.coalescedMessageIds.filter(id => typeof id === 'string' && id && id !== value.messageId))].slice(0, 9);
+  }
   if (typeof value.createdAt === 'string' && value.createdAt) entry.createdAt = value.createdAt;
   // How many times a failed turn has been put back for another try. Bounded by
   // the bridge; persisted so a restart does not reset the counter to zero.
@@ -194,6 +198,13 @@ export class ConversationStateStore {
     if (this.#state.seenMessageIds.length > 1_000) {
       this.#state.seenMessageIds.splice(0, this.#state.seenMessageIds.length - 1_000);
     }
+    await this.#persist();
+  }
+
+  async markSeenMany(messageIds) {
+    const ids = messageIds.filter(id => typeof id === 'string' && id && !this.hasSeen(id));
+    if (!ids.length) return;
+    this.#state.seenMessageIds = [...new Set([...this.#state.seenMessageIds, ...ids])].slice(-1000);
     await this.#persist();
   }
 

@@ -646,3 +646,39 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 - 新增 `test/discord-embed-images.test.mjs`（gifv→webp 源、代理 host 下载、外域拒绝、无媒体 embed、附件与 embed 合并上限）。
 - 实测同一条真实消息：`images.length = 1`，`name = "Mortis Mutsumi Resting"`，从代理下载到 6528 字节 `image/webp`（静帧）。
   动图本身不解码，模型看到的是 Discord 生成的首帧/封面图——足够回答「这是哪个 gif」，但看不到完整动画。
+
+## 連線靜默偵測與自我修復（2026-10-26）
+
+2026-10-26 20:57:41 之後機器人「在線但完全收不到事件」：訊息與斜線指令都沒反應，
+日誌卻沒有任何 close / error / reconnect 記錄。排查結論是 Gateway 連線可以停在
+**半死狀態**——socket 還開著、close 握手永遠不完成，於是 close 監聽不執行、重連不觸發，
+看起來一切正常但事件流已經斷了；重連路徑的握手本身也沒有逾時，卡住就永遠 pending。
+本次把「靜默」變成可偵測、可自癒的狀態：
+
+- 常數：`WATCHDOG_TICK_MS = 30_000`、`WATCHDOG_STALE_MS = 120_000`、`WATCHDOG_ALIVE_LOG_MS = 600_000`
+  （建構子可用 `watchdogTickMs` / `watchdogStaleMs` / `watchdogAliveLogMs` 覆寫，測試用毫秒級短值）。
+- 看門狗（`#startWatchdog` / `#inspectGatewayLiveness` / `#repair`）：`start()` 成功與否都啟動，
+  `stop()` 時清除。每 tick 判斷三件事：
+  1. **未連上**：`connectionState === 'failed'` 不插手（憑證/intents 需要人工）；
+     否則在沒有排定的重連、也不在連線窗口內時 `#repair('not-connected')`，
+     避免「第一次連線沒完成」與「重連握手卡住」這兩種同樣靜默的狀態。
+  2. **連上但靜默**：距最後一個 Gateway 幀（含 op 11 ACK）超過 `watchdogStaleMs` → `#repair('silent-gateway')`。
+  3. **健康**：每 `watchdogAliveLogMs` 寫一次 `connection.alive` 事件（含 `silentForMs`），
+     讓「行程還活著、連線還活著」在日誌裡留下痕跡。
+- 心跳未被 ack 時不再只呼叫可能卡住的 `socket.close(4000, ...)`，改走 `#repair('heartbeat-timeout')`。
+- `#repair()` 先遞增 `#generation` 再丟掉 socket，所以舊 socket 遲到的 close/error 不會再觸發第二次重連；
+  同時清心跳、`ready=false`、`connectionState='connecting'`、把 `#reconnectAttempt` 歸零（立刻重試而不是等 30s 退避），
+  並寫 `warn` + `connection.watchdog` 事件（`reason` / `silentForMs` / `connectionState`）。
+- `#openSocket()` 自帶連線截止計時（`connectTimeoutMs`，預設 20s，`.unref()`）：
+  逾時就遞增 generation 並以 `Discord Gateway did not become ready in time` 拒絕，
+  重連路徑因此能落到 `.catch` 再排下一次，不會永久 pending。`start()` 不再自己包一層 Promise.race。
+- `#openingAt` 記錄「正在握手」的時間窗；看門狗不會在窗口內再開第二條連線。
+- 新增 `test/discord-watchdog.test.mjs` 5 項（全程由測試手動發 Gateway 幀的假 socket）：
+  靜默連線被修復、心跳未 ack 觸發重連、重連握手卡住會重試、健康連線留下 `connection.alive`、
+  首次連線逾時會明確失敗而不是靜默卡住。
+
+驗證記錄：`node test/discord-watchdog.test.mjs` 5/5 通過；全套 12 個測試檔逐一 `node test/<file>`
+共 88 項全過（沙箱禁止 `node --test` 與 esbuild 直接 spawn，故測試需逐檔直跑、建置需放寬沙箱）；
+`scripts/build-local.mjs` `errors=0 warnings=0`，`lib/index.js` 981311 字节（bundle 內含
+`connection.watchdog`、`connection.alive`、`silent-gateway`、`heartbeat-timeout`、`Watchdog reconnect`）。
+**需重啟 DSH 才會載入新 bundle。**

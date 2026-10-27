@@ -2,6 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { discordReplyTargetId, groupHistoryEntry } from '../src/channels/shared/group-history.mjs';
+import { normalizeDiscordMessage } from '../src/channels/discord/discord-runtime.mjs';
+import { promptContentForInboundMessage } from '../src/channels/shared/semantic/reply-reference.mjs';
+import { historyContextNeeded } from '../src/channels/shared/history-context.mjs';
+
+test('a lazy direct quote is fetched once and does not authorize another archive read after it is supplied', async () => {
+  let loads = 0;
+  const message = normalizeDiscordMessage({ id: '100', channel_id: 'room', guild_id: 'guild', author: { id: 'user' },
+    content: '那個方案可以嗎？', message_reference: { message_id: '90', channel_id: 'room' } }, 'bot', {
+    loadReply: async () => { loads++; return { id: '90', channel_id: 'room', author: { id: 'other' }, content: '完整方案已在這裡' }; },
+  });
+  await promptContentForInboundMessage(message);
+  await message.replyTo.load();
+  assert.equal(loads, 1);
+  assert.equal(historyContextNeeded(message), false);
+});
 
 test('reads the plain gateway reference', () => {
   assert.equal(

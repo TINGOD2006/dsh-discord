@@ -140,6 +140,26 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
   },
   {
     type: APPLICATION_COMMAND,
+    name: 'autoreply',
+    name_localizations: zh('自动回复'),
+    description: 'Set smart or full automatic replies for this channel or thread (owner only)',
+    description_localizations: zh('设置当前频道或讨论串的智能接话／逐条回复（仅主人）'),
+    options: [{
+      type: STRING_OPTION,
+      name: 'mode',
+      description: 'smart: selective replies; on: every message; off; status (default)',
+      description_localizations: zh('smart 智能接话、on 逐条回复、off 关闭、status 查询（默认）'),
+      required: false,
+      choices: [
+        { name: 'smart', value: 'smart' },
+        { name: 'on', value: 'on' },
+        { name: 'off', value: 'off' },
+        { name: 'status', value: 'status' },
+      ],
+    }],
+  },
+  {
+    type: APPLICATION_COMMAND,
     name: 'unmute',
     name_localizations: zh('取消静音'),
     description: 'Resume automatic replies in this channel',

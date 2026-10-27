@@ -19,8 +19,32 @@ function scope(context, registry = new GroupHistoryAccessRegistry()) {
 }
 const row = (id, text, extra = {}) => ({ id, messageId: id, senderId: 'user', senderName: 'User', text, sentAt: 100000 + Number(id || 0) * 1000, fileCount: 0, attachments: [], ...extra });
 
+test('self-contained Discord turns cannot read any archive tool merely by inventing a reason', async () => {
+  let reads = 0;
+  const f = scope({ groupId: 'g', historyReadAllowed: false,
+    store: { query: async () => { reads++; return { items: [] }; }, recentMessages: async () => { reads++; return { items: [] }; }, materialize: async () => { reads++; } } });
+  try {
+    const tools = [...createGroupHistoryTools(f.registry), createThreadDigestTool(f.registry)];
+    for (const tool of tools) await assert.rejects(tool.execute({ reason: 'I want extra background', attachmentId: 'guessed' }, f.exec), /self-contained|disabled|not request/i);
+    assert.equal(reads, 0);
+  } finally { f.close(); }
+});
+
+test('a self-contained input mixed into the same turn cannot borrow an earlier history grant', async () => {
+  let reads = 0;
+  const context = { groupId: 'g', store: { query: async () => { reads++; return { items: [] }; } } };
+  const f = scope({ ...context, historyReadAllowed: true });
+  const close = f.registry.open(f.session.id, 'self-contained', { ...context, historyReadAllowed: false });
+  try {
+    f.registry.claim(f.session, { source: { rpcId: 'self-contained' } }, 1);
+    assert.equal(f.registry.canRead(f.session), false);
+    await assert.rejects(createGroupHistoryTools(f.registry)[0].execute({ reason: 'Read optional background' }, f.exec), /disabled/);
+    assert.equal(reads, 0);
+  } finally { close(); f.close(); }
+});
+
 test('history is optional for self-contained chat/music and available for concrete prior references', () => {
-  for (const content of ['你好', '2+2是多少', '播放周杰倫的晴天', 'Tell me about music', '我想更早睡']) assert.equal(historyContextNeeded({ content }), false, content);
+  for (const content of ['你好', '2+2是多少', '播放周杰倫的晴天', 'Tell me about music', '我想更早睡', 'What does this error say?', '不要查聊天記錄，直接回答', '翻譯「找聊天記錄」']) assert.equal(historyContextNeeded({ content }), false, content);
   for (const content of ['總結之前聊的內容', '找聊天記錄', '那張圖片在說什麼', 'What did Alice say earlier?', 'review previous messages']) assert.equal(historyContextNeeded({ content }), true, content);
   assert(!DIGEST_GUIDANCE.includes('Before answering, call'));
   assert.deepEqual(normalizeDigestConfig({}), { enabled: true, defaultHours: 1, defaultLimit: 12, maxChars: 2000 });
@@ -155,7 +179,7 @@ test('real Gateway chat reads no archive for self-contained requests and filters
   const until = async count => { const deadline = Date.now() + 2000; while (prompts.length < count && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(prompts.length, count, JSON.stringify(errors)); };
   try {
     await runtime.start(); deliver('1', '你好'); await until(1); assert.equal(reads, 0);
-    deliver('2', '那張圖片是什麼'); await until(2); assert.equal(reads, 1); assert.match(prompts[1], /旋律分析/);
+    deliver('2', '回顧之前發的圖片'); await until(2); assert.equal(reads, 1); assert.match(prompts[1], /旋律分析/);
     assert(!prompts[1].includes('/music stop')); assert(!prompts[1].includes('正在處理'));
     assert.equal(options[1].groupHistory.suppliedHistory.calls, 1); assert(options[1].groupHistory.suppliedHistory.chars > 0);
     deliver('3', '請播放晴天'); await until(3); assert.equal(reads, 1); assert(options[2].music);

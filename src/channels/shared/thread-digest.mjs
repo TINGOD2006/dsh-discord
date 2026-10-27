@@ -115,7 +115,7 @@ export function installThreadDigestTools(ctx, {
   ctx.systemPrompt?.context?.({
     name: 'dsh-im:thread-digest',
     order: 118,
-    text: (assembly) => (registry.resolve(assembly?.agent?.session) ? DIGEST_GUIDANCE : ''),
+    text: (assembly) => (registry.canRead(assembly?.agent?.session) ? DIGEST_GUIDANCE : ''),
   });
   return true;
 }

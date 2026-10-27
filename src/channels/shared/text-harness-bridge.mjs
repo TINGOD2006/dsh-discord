@@ -86,6 +86,7 @@ import {
 } from './harness-question.mjs';
 import { deliverOutboundArtifacts } from './semantic/artifact-delivery.mjs';
 import { prependSpeakerLabel } from './speaker-label.mjs';
+import { MessageInputWindow } from './conversation/input-window.mjs';
 import {
   hasReplyReference,
   promptContentForInboundMessage,
@@ -287,6 +288,7 @@ export class TextHarnessBridge {
   #autoSteerSameSender = false;
   #autoSteerLimit = 0;
   #coalesceWindowMs = 0;
+  #inputWindows = new Map();
   #fifo = false;
   // Owner-only commands: adapter-supplied handlers plus the saved owner id, so
   // a muted conversation still lets the owner reach `/unmute` while everything
@@ -374,6 +376,24 @@ export class TextHarnessBridge {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  canAppendInput(message) {
+    return this.#inputWindows.get(`${message.kind}:${message.conversationId}`)?.canAppend(message) === true;
+  }
+
+  flushInput(message) {
+    this.#finishInputWindow(`${message.kind}:${message.conversationId}`);
+  }
+
+  expectsInteractionReply(message) {
+    const key = `${message.kind}:${message.conversationId}`;
+    return this.#pendingInteractions.get(key)?.actor === message.senderId
+      || this.#approvals.expectsReplyFrom(key, message.senderId);
+  }
+
+  #finishInputWindow(key, cancel = false) {
+    this.#inputWindows.get(key)?.finish({ cancel });
   }
 
   accept(message, { contextSnapshot, accessDecision, busyMessageMode } = {}) {
@@ -480,6 +500,7 @@ export class TextHarnessBridge {
     const key = `${normalized.kind}:${normalized.conversationId}`;
     const pending = this.#pendingInteractions.get(key);
     const text = controlTextOf(normalized);
+    if (/^\/(?:new|clear)(?=$|\s)/iu.test(text)) this.#finishInputWindow(key, true);
     // Explicit music requests never become batch input, approval replies, chat
     // bursts, steering text or model prompts. Voice authorization stays with music.
     if (isMusicCommand(text)) {
@@ -718,6 +739,35 @@ export class TextHarnessBridge {
     const plainText = !hasInboundImages(message) && !hasInboundFiles(message)
       && message.plainText !== false
       && Boolean(controlTextOf(message));
+    const input = this.#inputWindows.get(key);
+    if (message.replyDelay && plainText && input?.canAppend(message)) {
+      input.append(message);
+      const release = () => this.#acceptedMessageIds.delete(messageId);
+      void input.completion.then(release, release);
+      return input.completion;
+    }
+    if (input) input.finish();
+    if (message.replyDelay && plainText && !this.#pendingInteractions.has(key) && !this.#approvals.hasPending(key)) {
+      const window = new MessageInputWindow(message, {
+        ...message.replyDelay, signal: this.#signal,
+        persist: updated => this.#recordPendingMessage(updated, messageId, senderId, key),
+      });
+      this.#inputWindows.set(key, window);
+      void window.ready.then(() => { if (this.#inputWindows.get(key) === window) this.#inputWindows.delete(key); });
+      // Reserve the FIFO slot immediately; another actor cannot overtake a
+      // message while its author is completing the short input window.
+      window.completion = this.#enqueueMessage(message, messageId, senderId, key, {
+        beforeProcess: async () => {
+          if (await window.ready) return true;
+          if (window.aborted) return 'preserve';
+          const ids = [messageId, ...(message.coalescedEventIds ?? [])];
+          if (this.#state.markSeenMany) await this.#state.markSeenMany(ids);
+          else for (const id of ids) await this.#state.markSeen(id);
+          return false;
+        },
+      });
+      return window.completion;
+    }
     const author = this.#turnAuthors.get(key);
     if (author !== undefined && plainText
       && this.#autoSteerSameSender && this.#autoSteerLimit > 0
@@ -880,6 +930,7 @@ export class TextHarnessBridge {
     releaseMessageId = true,
     alreadyRecorded = false,
     pendingAttempts = 0,
+    beforeProcess,
   } = {}) {
     const body = typeof message?.content === 'string' ? message.content : '';
     const pendingKey = pendingMessageId(key, messageId);
@@ -922,6 +973,9 @@ export class TextHarnessBridge {
       record: () => pending,
       run: async () => {
         try {
+          const admission = beforeProcess ? await beforeProcess() : true;
+          if (admission === 'preserve') { keepForReplay = true; return; }
+          if (admission === false) return;
           return await this.#process(message, messageId, senderId, key, { alreadyRecorded });
         } catch (error) {
           keepForReplay = await this.#bumpPendingAttempt(key, messageId, pendingAttempts);
@@ -1006,6 +1060,7 @@ export class TextHarnessBridge {
       createdAt: new Date().toISOString(),
       ...(attempts > 0 ? { attempts } : {}),
       ...(senderId ? { senderId } : {}),
+      ...(message.coalescedEventIds?.length ? { coalescedMessageIds: message.coalescedEventIds } : {}),
       ...(message.replyTarget !== undefined ? { target: message.replyTarget } : {}),
     };
     return this.#state.putPendingMessage(entry).catch((error) => {
@@ -1084,6 +1139,7 @@ export class TextHarnessBridge {
       controlText: entry.text,
       addressed: true,
       plainText: true,
+      ...(entry.coalescedMessageIds?.length ? { coalescedEventIds: entry.coalescedMessageIds } : {}),
       ...(entry.target !== undefined ? { replyTarget: entry.target } : {}),
     };
   }
@@ -1146,6 +1202,7 @@ export class TextHarnessBridge {
   async #processFastCommand(message, messageId, key, runner, senderId) {
     if (this.#state.hasSeen(messageId)) return;
     const target = message.replyTarget;
+    if (/^\/(?:stop|skip)(?=$|\s)/iu.test(controlTextOf(message))) this.#finishInputWindow(key, true);
     // A slow durable markSeen must not let a later native stop overtake an
     // earlier text play and then have that old play start again afterwards.
     const reservation = runner === runMusicCommand && message.kind === 'group'
@@ -1170,6 +1227,7 @@ export class TextHarnessBridge {
           pendingInteraction: this.#pendingInteractions.has(key)
             || this.#approvals.hasPending(key),
           ownerTools: this.#ownerTools,
+          conversationId: message.conversationId,
           music: this.#musicTools,
           ...(runner === runMusicCommand ? { conversationId: message.conversationId, senderId, guildId: message.guildId } : {}),
           control: { owner: this, key },
@@ -1245,6 +1303,7 @@ export class TextHarnessBridge {
     if (!command) return null;
     const kind = conversationType === 'direct' ? 'direct' : 'group';
     const key = `${kind}:${conversationId}`;
+    if (/^\/(?:stop|skip)(?=$|\s)/iu.test(command)) this.#finishInputWindow(key, true);
     const runner = isControlCommand(command) ? runControlCommand
       : isOwnerCommand(command) ? runOwnerCommand
         : isMusicCommand(command) ? runMusicCommand
@@ -1333,8 +1392,10 @@ export class TextHarnessBridge {
   } = {}) {
     if (!alreadyRecorded) {
       if (this.#state.hasSeen(messageId)) return;
-      await this.#state.markSeen(messageId);
-      this.#status.messagesReceived += 1;
+      const ids = [messageId, ...(message.coalescedEventIds ?? [])];
+      if (ids.length > 1 && this.#state.markSeenMany) await this.#state.markSeenMany(ids);
+      else for (const id of ids) await this.#state.markSeen(id);
+      this.#status.messagesReceived += ids.length;
       this.#status.lastMessageAt = new Date().toISOString();
     }
 
@@ -1491,44 +1552,51 @@ export class TextHarnessBridge {
         contextEnhanced = content !== originalContent;
       }
       // Collected after command handling so control commands never pay for a
-      // context lookup, and only for a plain-text prompt: a composed or media
-      // payload already carries its own structure and stays untouched.
+      // context lookup. Channels may opt in for media/quoted prompts when their
+      // context also provides a first-turn topic or other missing background.
       let contextEntries = null;
-      if (this.#contextHooks?.collect && this.#contextHooks.enabled?.() !== false && !batchSubmission
-        && (content === undefined || typeof content === 'string') && !hasImages && !hasFiles) {
-        try {
-          const collected = await this.#contextHooks.collect({
-            message,
-            conversationKey,
-            sessionIdHint: this.#state.sessionFor?.(conversationKey) ?? null,
-          });
-          if (Array.isArray(collected) && collected.length > 0) {
-            contextEntries = collected;
-            const rendered = this.#contextHooks.render?.(collected) ?? '';
-            // Render may return text alone, or text plus the pictures a replayed
-            // message carried; without the parts a replayed screenshot is invisible.
-            const block = typeof rendered === 'string' ? rendered : rendered?.text ?? '';
-            const imagePaths = typeof rendered === 'object' && rendered
-              ? rendered.images ?? [] : [];
-            if (block) content = `${block}\n\n${content ?? ''}`;
-            if (imagePaths.length > 0) {
-              const parts = [{ type: 'text', text: content ?? '' }];
-              for (const path of imagePaths.slice(0, 2)) {
-                try {
-                  const part = await historyImagePart(path);
-                  if (part) parts.push(part);
-                } catch (error) {
-                  this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] replayed image failed; continuing with text:`, error?.message ?? error);
+      const collectContext = async (sessionIdHint = this.#state.sessionFor?.(conversationKey) ?? null) => {
+        let prepared = content;
+        contextEntries = null;
+        if (this.#contextHooks?.collect && this.#contextHooks.enabled?.() !== false && !batchSubmission
+          && (this.#contextHooks.collectRichContent === true
+            || ((prepared === undefined || typeof prepared === 'string') && !hasImages && !hasFiles))) {
+          try {
+            const collected = await this.#contextHooks.collect({ message, conversationKey, sessionIdHint });
+            if (Array.isArray(collected) && collected.length > 0) {
+              contextEntries = collected;
+              const rendered = this.#contextHooks.render?.(collected) ?? '';
+              // Keep media and direct-quote blocks structured while prepending
+              // any missing background the channel collected for this session.
+              const block = typeof rendered === 'string' ? rendered : rendered?.text ?? '';
+              const imagePaths = typeof rendered === 'object' && rendered ? rendered.images ?? [] : [];
+              if (block) prepared = Array.isArray(prepared)
+                ? [{ type: 'text', text: block }, ...prepared]
+                : `${block}\n\n${prepared ?? ''}`;
+              if (imagePaths.length > 0) {
+                const parts = Array.isArray(prepared) ? [...prepared] : [{ type: 'text', text: prepared ?? '' }];
+                for (const path of imagePaths.slice(0, 2)) {
+                  try {
+                    const part = await historyImagePart(path);
+                    if (part) parts.push(part);
+                  } catch (error) {
+                    this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] replayed image failed; continuing with text:`, error?.message ?? error);
+                  }
                 }
+                if (parts.length > 1) prepared = parts;
               }
-              if (parts.length > 1) content = parts;
             }
+          } catch (error) {
+            // Context is an enhancement: a collector failure must not lose the user's own turn.
+            contextEntries = null;
+            prepared = content;
+            this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] context collection failed; prompting without context:`, error?.message ?? error);
           }
-        } catch (error) {
-          // Context is an enhancement: a collector failure must not lose the user's own turn.
-          this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] context collection failed; prompting without context:`, error?.message ?? error);
         }
-      }
+        return prepared;
+      };
+      const prepareForSession = this.#contextHooks?.prepareForSession === true;
+      if (!prepareForSession) content = await collectContext();
       // Start the keepalive only after the inbound payload is ready, so a
       // pre-prompt failure (image parsing, context building) cannot leave the
       // timer running; the outermost finally below clears it on every path.
@@ -1570,6 +1638,7 @@ export class TextHarnessBridge {
         titleText: batchSubmission?.title,
         sourceGuidance: snapshot?.config?.guidance,
         contextEnhanced,
+        prepareContent: prepareForSession ? ({ sessionId }) => collectContext(sessionId) : undefined,
         createOptions: this.#signal ? { signal: this.#signal } : undefined,
         existsOptions: this.#signal ? { signal: this.#signal } : undefined,
         askOptions: {
@@ -1629,9 +1698,9 @@ export class TextHarnessBridge {
       // The completed turn consumed its context: ambient records stop being offered
       // and a thread-root anchor is stamped for this session. A failed ask throws
       // past this point, so a failed turn re-offers its context on the next message.
-      if (contextEntries && this.#contextHooks?.onConsumed) {
+      if ((contextEntries || this.#contextHooks?.consumeAllPrompts === true) && this.#contextHooks?.onConsumed) {
         try {
-          await this.#contextHooks.onConsumed({ conversationKey, sessionId, entries: contextEntries });
+          await this.#contextHooks.onConsumed({ conversationKey, sessionId, entries: contextEntries ?? [], message });
         } catch (error) {
           this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] context consumption marking failed:`, error?.message ?? error);
         }

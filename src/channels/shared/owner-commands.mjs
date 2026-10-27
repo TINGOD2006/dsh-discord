@@ -4,7 +4,7 @@ import { t } from './i18n.mjs';
 // adapter passes `ownerTools` plus the saved owner id, and every command here
 // stays out of the ordinary prompt lane either way. `/skip` lives with the
 // other control commands because it is just the short spelling of `/stop`.
-const OWNER_COMMAND = /^\/(?:digest|thread|recall|mute|unmute|block|unblock|blocklist)(?=$|\s)/iu;
+const OWNER_COMMAND = /^\/(?:digest|thread|autoreply|recall|mute|unmute|block|unblock|blocklist)(?=$|\s)/iu;
 const MUTE_MAX_MINUTES = 7 * 24 * 60;
 const BLOCK_DEFAULT_MINUTES = 60;
 const BLOCK_MAX_MINUTES = 7 * 24 * 60;
@@ -126,6 +126,11 @@ export function takeRecallGrant(conversationId, now = Date.now()) {
   return now <= grant.expiresAt ? grant.hours : 0;
 }
 
+export function hasRecallGrant(conversationId, now = Date.now()) {
+  const grant = recallGrants.get(String(conversationId ?? '').trim());
+  return Boolean(grant && now <= grant.expiresAt);
+}
+
 export function muteConversation(conversationId, minutes) {
   const id = typeof conversationId === 'string' ? conversationId.trim() : '';
   if (!id) return false;
@@ -166,14 +171,35 @@ function mentionUserId(raw) {
 }
 
 export async function runOwnerCommand(text, harness, state, key, {
-  signal, ownerTools, enhancement,
+  signal, ownerTools, enhancement, conversationId: sourceConversationId,
 } = {}) {
   if (!isOwnerCommand(text)) return null;
   const command = text.trim();
   const [rawName, ...rest] = command.slice(1).split(/\s+/u);
   const name = String(rawName ?? '').toLowerCase();
   const args = rest.join(' ').trim();
-  const conversationId = conversationOf(enhancement);
+  const conversationId = sourceConversationId || conversationOf(enhancement);
+
+  if (name === 'autoreply') {
+    const mode = args.toLowerCase() || 'status';
+    if (!['on', 'smart', 'off', 'status'].includes(mode)) return commandResult(t('用法：/autoreply smart、on、off 或 status。'));
+    if (typeof ownerTools?.autoReply !== 'function') return commandResult(t('当前通道不支持自动回复设置。'));
+    let result;
+    try {
+      result = await ownerTools.autoReply({ conversationId, mode, signal });
+    } catch (error) {
+      if (error?.code === 'turn-stopped' || signal?.aborted) throw error;
+      return commandResult(t('读取或保存自动回复设置失败，请稍后重试。'));
+    }
+    if (!result?.supported) return commandResult(t('请在要设置的 Discord 文字频道或讨论串内使用 /autoreply。'));
+    if (result.mode === 'smart') return commandResult(t('本对话已开启智能接话：按问题和请求回复，连续文字会稍等合并；控制和音乐指令立即处理。'));
+    if (mode === 'status') return commandResult(result.enabled
+      ? t('本对话已开启自动回复，发送消息无需 @机器人。')
+      : t('本对话未开启自动回复，需要 @机器人。'));
+    return commandResult(result.enabled
+      ? t('已开启本对话自动回复，之后无需 @机器人；设置会在重启后保留。')
+      : t('已关闭本对话自动回复，之后需要 @机器人；设置会在重启后保留。'));
+  }
 
   if (name === 'mute') {
     if (!conversationId) return commandResult(t('无法识别当前对话，暂停自动回复失败。'));
