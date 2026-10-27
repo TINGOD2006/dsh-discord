@@ -13,6 +13,7 @@ import { digestForContext, normalizeDigestConfig } from '../shared/thread-digest
 import { takeRecallGrant, hasRecallGrant, isOwnerCommand } from '../shared/owner-commands.mjs';
 import { getDiscordAllowlistStore } from './allowlist.mjs';
 import { getDiscordPersonaLibrary } from './persona-library.mjs';
+import { createHandoffAdapter } from './persona-handoff-adapter.mjs';
 import { createMemberDirectory } from './member-directory.mjs';
 import { isControlCommand } from '../shared/control-command.mjs';
 import { DiscordApi } from './discord-api.mjs';
@@ -1454,6 +1455,11 @@ export class DiscordRuntime {
         // persona while the bot is running, and that has to retire the Session
         // bound to the old one.
         personaEpoch: () => getDiscordPersonaLibrary(this.#config).snapshot().epoch,
+        // Runs detached after the old Session is unbound: the summary is written
+        // for the *next* Session and must never delay or fail the current turn.
+        personaHandoff: ({ key, oldSessionId }) => createHandoffAdapter({
+          harness: this.#harness, config: this.#config, logger: this.#logger,
+        }).generate({ key, sessionId: oldSessionId }),
         signal: controller.signal,
       });
       // The settings card writes the allowlist file directly, so pick it up on a

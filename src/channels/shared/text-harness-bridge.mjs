@@ -307,6 +307,8 @@ export class TextHarnessBridge {
   // binding before the next turn opens a Session.
   #personaEpoch = null;
 
+  #personaHandoff = null;
+
   constructor({
     descriptor,
     bot,
@@ -331,6 +333,7 @@ export class TextHarnessBridge {
     ownerUserId = '',
     trustedIds = [],
     personaEpoch = null,
+    personaHandoff = null,
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -348,6 +351,7 @@ export class TextHarnessBridge {
     this.#signal = signal;
     this.#keepaliveIntervalMs = keepaliveIntervalMs;
     this.#personaEpoch = typeof personaEpoch === 'function' ? personaEpoch : null;
+    this.#personaHandoff = typeof personaHandoff === 'function' ? personaHandoff : null;
     this.#interactionCard = interactionCard ?? null;
     // Opt-in follow-up lanes for channels whose groups run on rapid consecutive
     // posts: fold a same sender's burst into one dispatch, and steer that
@@ -1707,7 +1711,10 @@ export class TextHarnessBridge {
       // still contains the old voice.
       if (this.#personaEpoch) {
         try {
-          await applyPersonaEpoch({ epoch: this.#personaEpoch(), state: this.#state, key: conversationKey });
+          await applyPersonaEpoch({
+            epoch: this.#personaEpoch(), state: this.#state, key: conversationKey,
+            handoff: this.#personaHandoff,
+          });
         } catch (error) {
           this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] persona epoch check failed:`, error?.message ?? error);
         }
