@@ -25,3 +25,27 @@ export function planPersonaEpoch({ epoch, seenEpoch = 0, sessionId = null } = {}
   // Session bound under the newer persona must not keep answering as it.
   return { changed: true, clearSession: bound, enqueueHandoff: bound, seenEpoch: epoch };
 }
+
+/**
+ * Apply an epoch change to the binding of one conversation.
+ *
+ * The binding is dropped before the record is advanced on purpose: a crash
+ * between the two leaves `seen` stale, so the next message repeats the (now
+ * harmless) clear instead of resurrecting the retired persona.
+ *
+ * `handoff` is Phase 2's summary job. It runs detached, so a slow or failing
+ * summary can never delay or fail the user's turn.
+ */
+export async function applyPersonaEpoch({ epoch, state, key, handoff = null } = {}) {
+  const oldSessionId = state.sessionFor(key) ?? null;
+  const plan = planPersonaEpoch({ epoch, seenEpoch: state.personaEpochSeen(), sessionId: oldSessionId });
+  if (!plan.changed) return { ...plan, oldSessionId };
+  if (plan.clearSession) await state.clearSession(key);
+  await state.setPersonaEpochSeen(plan.seenEpoch);
+  if (plan.enqueueHandoff && typeof handoff === 'function') {
+    Promise.resolve()
+      .then(() => handoff({ key, oldSessionId }))
+      .catch(() => undefined);
+  }
+  return { ...plan, oldSessionId };
+}

@@ -63,6 +63,7 @@ import {
   runPresetCommand,
 } from './preset-command.mjs';
 import { askInWorkspaceSession } from './workspace-session.mjs';
+import { applyPersonaEpoch } from '../discord/persona-epoch.mjs';
 import { HarnessApprovalQueue, harnessApprovalDecision } from './harness-approval.mjs';
 import {
   BatchInputManager,
@@ -302,6 +303,9 @@ export class TextHarnessBridge {
   // the mute bypass and the top scheduler priority, refreshed in place when the
   // settings card saves a new list.
   #trustedIds = new Set();
+  // Discord only: reads the persona library epoch so a switch can retire the
+  // binding before the next turn opens a Session.
+  #personaEpoch = null;
 
   constructor({
     descriptor,
@@ -326,6 +330,7 @@ export class TextHarnessBridge {
     musicTools = null,
     ownerUserId = '',
     trustedIds = [],
+    personaEpoch = null,
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -342,6 +347,7 @@ export class TextHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#signal = signal;
     this.#keepaliveIntervalMs = keepaliveIntervalMs;
+    this.#personaEpoch = typeof personaEpoch === 'function' ? personaEpoch : null;
     this.#interactionCard = interactionCard ?? null;
     // Opt-in follow-up lanes for channels whose groups run on rapid consecutive
     // posts: fold a same sender's burst into one dispatch, and steer that
@@ -1696,6 +1702,16 @@ export class TextHarnessBridge {
       // The prompt is about to enter the Harness inbox, which is itself durable.
       // Marking the entry submitted first means a crash after this point reports
       // the message instead of replaying a turn the Harness may already own.
+      // A persona switch retires the binding before this turn opens a Session:
+      // otherwise the new persona would keep answering inside a history that
+      // still contains the old voice.
+      if (this.#personaEpoch) {
+        try {
+          await applyPersonaEpoch({ epoch: this.#personaEpoch(), state: this.#state, key: conversationKey });
+        } catch (error) {
+          this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] persona epoch check failed:`, error?.message ?? error);
+        }
+      }
       await this.#markPendingSubmitted(conversationKey, messageId);
       const { sessionId, answer, artifacts = [] } = await askInWorkspaceSession({
         deferredDelivery: () => ({ coordinator: this.#deferred, target: this.#descriptor.key === 'whatsapp' ? { jid: target.jid, selfChat: target.selfChat } : target }),

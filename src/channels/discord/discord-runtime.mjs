@@ -12,6 +12,8 @@ import { stripInternalLeaks } from '../shared/outbound-sanitize.mjs';
 import { digestForContext, normalizeDigestConfig } from '../shared/thread-digest.mjs';
 import { takeRecallGrant, hasRecallGrant, isOwnerCommand } from '../shared/owner-commands.mjs';
 import { getDiscordAllowlistStore } from './allowlist.mjs';
+import { getDiscordPersonaLibrary } from './persona-library.mjs';
+import { createMemberDirectory } from './member-directory.mjs';
 import { isControlCommand } from '../shared/control-command.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { handleApplicationCommand, syncApplicationCommands } from './discord-commands.mjs';
@@ -986,6 +988,8 @@ export class DiscordRuntime {
   #random;
   #status = createDiscordRuntimeStatus();
   #api = null;
+  // Cached member directory; dropped whenever the REST api is replaced.
+  #memberDirectory = null;
   #bridge = null;
   #music = null;
   // Discord ids the owner allowed to use the full command set and environment.
@@ -1072,6 +1076,20 @@ export class DiscordRuntime {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  /**
+   * Merged member list for the whitelist panel. Read-only and cached briefly by
+   * the directory; it deliberately does not take the per-bot lifecycle lock.
+   */
+  async listMembers({ force = false } = {}) {
+    if (!this.#api) {
+      const error = new Error('Discord bot is not connected');
+      error.code = 'members-unavailable';
+      throw error;
+    }
+    this.#memberDirectory ??= createMemberDirectory({ api: this.#api });
+    return this.#memberDirectory.list({ force });
   }
 
   async sendConnectionTest(text) {
@@ -1377,6 +1395,7 @@ export class DiscordRuntime {
     this.#abortController = controller;
     const api = this.#createApi({ token: this.#token });
     this.#api = api;
+    this.#memberDirectory = null;
     try {
       const [bot, gateway, application] = await Promise.all([
         api.getCurrentUser({ signal: controller.signal }),
@@ -1431,6 +1450,10 @@ export class DiscordRuntime {
         // turn log, so messages the bot never saw arrive here as a rendered
         // <dsh_im_recent_chat> block ahead of the prompt.
         contextHooks: this.#createContextHooks(),
+        // Read lazily per message: the settings card can activate another
+        // persona while the bot is running, and that has to retire the Session
+        // bound to the old one.
+        personaEpoch: () => getDiscordPersonaLibrary(this.#config).snapshot().epoch,
         signal: controller.signal,
       });
       // The settings card writes the allowlist file directly, so pick it up on a
@@ -2067,6 +2090,7 @@ export class DiscordRuntime {
     this.#bridge = null;
     this.#music = null;
     this.#api = null;
+    this.#memberDirectory = null;
     void music?.destroy().catch(error => this.#logger.warn?.('[dsh-im:discord] music shutdown failed:', error?.name ?? 'Error'));
     this.#interactions.clear(); this.#musicNotes.clear();
     this.#routing.clear();
