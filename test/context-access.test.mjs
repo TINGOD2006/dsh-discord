@@ -10,6 +10,13 @@ import { GroupHistoryStore } from '../src/channels/shared/group-history-store.mj
 import { DiscordRuntime } from '../src/channels/discord/discord-runtime.mjs';
 import { EventEmitter } from 'node:events';
 
+/** Prompts reach the bridge as content blocks; these assertions care about text. */
+const promptText = (prompt) => (
+  typeof prompt === 'string'
+    ? prompt
+    : Array.isArray(prompt) ? prompt.map((block) => block?.text ?? '').join('\n') : String(prompt ?? '')
+);
+
 function scope(context, registry = new GroupHistoryAccessRegistry()) {
   const session = { id: 'test-session', header: { cwd: resolve('work') }, events: [{ type: 'turn/start', data: { turn: 1 } }] };
   const close = registry.open(session.id, 'request', context);
@@ -179,8 +186,8 @@ test('real Gateway chat reads no archive for self-contained requests and filters
   const until = async count => { const deadline = Date.now() + 2000; while (prompts.length < count && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(prompts.length, count, JSON.stringify(errors)); };
   try {
     await runtime.start(); deliver('1', '你好'); await until(1); assert.equal(reads, 0);
-    deliver('2', '回顧之前發的圖片'); await until(2); assert.equal(reads, 1); assert.match(prompts[1], /旋律分析/);
-    assert(!prompts[1].includes('/music stop')); assert(!prompts[1].includes('正在處理'));
+    deliver('2', '回顧之前發的圖片'); await until(2); assert.equal(reads, 1); assert.match(promptText(prompts[1]), /旋律分析/);
+    assert(!promptText(prompts[1]).includes('/music stop')); assert(!promptText(prompts[1]).includes('正在處理'));
     assert.equal(options[1].groupHistory.suppliedHistory.calls, 1); assert(options[1].groupHistory.suppliedHistory.chars > 0);
     deliver('3', '請播放晴天'); await until(3); assert.equal(reads, 1); assert(options[2].music);
   } finally { await runtime.stop(); }

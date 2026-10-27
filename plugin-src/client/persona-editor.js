@@ -22,6 +22,7 @@ function readResult(result) {
     text,
     defaultText: typeof value.defaultText === 'string' ? value.defaultText : text,
     customized: value.customized === true,
+    empty: value.empty === true || (value.customized === true && text === ''),
   };
 }
 
@@ -107,7 +108,8 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef }) {
     h('div', { className: 'dim-contextHeaderTitle' },
       h('h3', { id: titleId }, '人格'),
       h('span', { id: helpId, className: 'dim-contextHelp dim-contextHeaderHelp' },
-        'Discord 群里使用的人格文本，最多 ', String(MAX_PERSONA_CHARS), ' 字；保存后重启 DSH 生效。')),
+        'Discord 群里使用的人格文本，最多 ', String(MAX_PERSONA_CHARS),
+        ' 字；留空则不注入任何人格；保存后重启 DSH 生效。')),
     h('button', {
       type: 'button', className: 'dim-contextClose', 'aria-label': '关闭弹窗',
       disabled: busy, onClick: onClose,
@@ -121,7 +123,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef }) {
       maxLength: MAX_PERSONA_CHARS,
       spellCheck: false,
       disabled: !ready || busy,
-      placeholder: ready ? '' : '正在读取人格…',
+      placeholder: ready ? '留空则不注入任何人格，Discord 回合不再带人格段。' : '正在读取人格…',
       onChange: (event) => setDraft(event.target.value),
     })),
   error ? h('p', { className: 'dim-contextError', role: 'alert' }, error) : null,
@@ -133,7 +135,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef }) {
     h('button', { type: 'button', disabled: busy, onClick: onClose }, '取消'),
     h('button', {
       type: 'button', className: 'dim-contextSave',
-      disabled: busy || !ready || !dirty || !draft.trim(),
+      disabled: busy || !ready || !dirty,
       onClick: () => { void save({ text: draft }); },
     }, busy ? '保存中…' : '保存'))));
 
@@ -153,7 +155,7 @@ export function PersonaEditor({ rpcCall }) {
     void (async () => {
       try {
         const loaded = readResult(await rpcCall(PERSONA_ENDPOINTS.get, {}));
-        if (!cancelled) setLabel(loaded.customized ? '自定义' : '内置默认');
+        if (!cancelled) setLabel(loaded.empty ? '已清空' : loaded.customized ? '自定义' : '内置默认');
       } catch {
         if (!cancelled) setLabel('读取失败');
       }
@@ -171,7 +173,7 @@ export function PersonaEditor({ rpcCall }) {
     h('span', { className: 'dim-contextLabel' }, '人格'),
     h('span', {
       id: statusId, className: 'dim-contextStatus',
-      'data-active': label === '自定义', 'aria-live': 'polite',
+      'data-active': label === '自定义' || label === '已清空', 'aria-live': 'polite',
     }, label),
     h(PersonaIcon, { kind: 'chevron' })),
     open ? h(PersonaDialog, {

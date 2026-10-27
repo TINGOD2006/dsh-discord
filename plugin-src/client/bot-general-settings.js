@@ -28,6 +28,7 @@ function personaFromResult(result) {
     text,
     defaultText: typeof value.defaultText === 'string' ? value.defaultText : text,
     customized: value.customized === true,
+    empty: value.empty === true || (value.customized === true && text === ''),
   };
 }
 
@@ -219,17 +220,18 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
     isDiscord && persona !== null ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow' },
       h('label', { className: 'dim-botGeneralTitle', htmlFor: `${modeId}-persona` }, '人格'),
       h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-persona-help` },
-        `${persona.customized ? '当前为自定义人格' : '当前为内置默认人格'}，最多 ${MAX_PERSONA_CHARS} 字；保存后重启 DSH 生效。`),
+        `${persona.empty ? '已清空，当前不注入人格' : persona.customized ? '当前为自定义人格' : '当前为内置默认人格'}，最多 ${MAX_PERSONA_CHARS} 字；留空即不注入；保存后重启 DSH 生效。`),
       h('textarea', {
         id: `${modeId}-persona`, className: 'dim-updateCommand', 'aria-label': '人格文本',
         'aria-describedby': `${modeId}-persona-help`, rows: 10,
+        placeholder: '留空则不注入任何人格',
         value: personaDraft, disabled: personaBusy, spellCheck: false,
         onChange: (event) => setPersonaDraft(event.target.value),
       }),
       h('div', { className: 'dim-botGeneralActions' },
         h('button', {
           type: 'button', className: 'dim-deliveryButton', 'aria-busy': personaBusy,
-          disabled: personaBusy || !personaDraft.trim() || personaDraft === persona.text,
+          disabled: personaBusy || personaDraft === persona.text,
           onClick: () => void savePersona(),
         }, '保存人格'),
         h('button', {

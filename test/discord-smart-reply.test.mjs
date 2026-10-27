@@ -10,6 +10,13 @@ import { DiscordHarnessBridge } from '../src/channels/discord/discord-bridge.mjs
 const base = { messageId: 'one', senderId: 'user', kind: 'group', conversationId: 'room', content: '', plainText: true, images: [], files: [] };
 const decide = (content, extra = {}, options = {}) => decideSmartReply({ ...base, content, ...extra }, { botId: 'bot', ...options });
 
+/** Prompts reach the bridge as content blocks; these assertions care about text. */
+const promptText = (prompt) => (
+  typeof prompt === 'string'
+    ? prompt
+    : Array.isArray(prompt) ? prompt.map((block) => block?.text ?? '').join('\n') : String(prompt ?? '')
+);
+
 test('smart replies answer direct requests and bot replies while keeping member conversations quiet', () => {
   for (const text of ['幫我', '請分析這個程式', '2+2是多少？', '如何改善速度', 'What is this?', '幫我查聊天記錄']) assert.equal(decide(text).reply, true, text);
   for (const text of ['好', '謝謝', '收到！', '👍', '哈哈', '我剛下班', '今天吃了麵']) assert.equal(decide(text).reply, false, text);
@@ -128,7 +135,8 @@ test('a restart during an input window recovers the merged text once, with all m
     const recovered = await new DiscordStateStore(statePath).load();
     const next = new DiscordHarnessBridge({ state: recovered, harness, bot, signal: recoveryLifetime.signal, chatOrder: 'fifo', logger: { warn() {}, error() {} } });
     await next.waitForIdle();
-    assert.deepEqual(prompts, ['幫我\n\n分析這段']);
+    assert.equal(prompts.length, 1, 'the staged turn is recovered exactly once');
+    assert.match(promptText(prompts[0]), /幫我\n\n分析這段/);
     assert.equal(recovered.hasSeen('one'), true); assert.equal(recovered.hasSeen('two'), true);
     assert.equal(recovered.pendingMessages().length, 0);
     assert.equal(targets.at(-1).replyToMessageId, 'two');

@@ -732,3 +732,22 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 实现：`src/channels/shared/guest-guard.mjs` 的 `prependGuestGuard()`，由 `src/channels/shared/text-harness-bridge.mjs` 在组装 prompt 时对 `!this.#isTrusted(senderId)` 的群消息插入（白名单用 `setTrustedIds()` 同步）。
 
 **限制**：这是提示词层面的约束，不是沙箱。Harness 的工具集绑定在 Session 上，本插件无法按轮次收窄；同一个 Discord 频道的会话由所有人共享，所以只能靠 prompt 声明。若 Host 以后暴露「按轮次工具策略」，应改到这里接线。真正强制的做法是把非白名单消息路由到一个没有工具的 Session，这需要 DSH 侧支持无工具 preset。
+
+## 人格可以清空（2026-10-25）
+
+以前「人格」最少要 1 个字，想彻底不要人格只能删文件——而删文件等于**回到内置默认**，两者分不开。
+现在空文本本身就是一个明确状态。
+
+- `persona.md` 存在但内容为空 → `snapshot()` 返回 `{ text: "", customized: true, empty: true }`，
+  Discord 回合不再拼人格段（空的 prompt context 会被 `renderContextSections` 过滤掉）。
+- 文件缺失仍是「用内置默认」，所以「清空」与「恢复默认」是两件不同的事。
+- `normalizePersonaText(value, { allowEmpty })`：保存与读取时允许空串；不传 `allowEmpty` 的调用方
+  （例如把外部输入当文本验证时）仍把空串视为无效，语义不被稀释。
+- 校验错误文案改为「人格文本最多 8000 字，且不能包含控制字符」，去掉至少 1 字的限制；
+  `write()` 传非字符串仍报 `persona-invalid`，不会把已有的人格误清空。
+- 设置卡片两处入口都放开空保存：通用设置里的内联文本框与「人格」弹窗，提示改为「留空则不注入任何人格」，
+  状态显示「已清空」。
+- 新增 `test/persona-store.test.mjs`（10 例）：空串/纯空白/空文件都算「已清空」，文件缺失回退默认，
+  空人格对 Discord 与非 Discord 会话都渲染为空串，重置后恢复内置默认且文件被删除。
+- 顺手修了两个早就红着的测试：`context-access` 与 `discord-smart-reply` 之前把 prompt 当字符串断言，
+  但入站 prompt 早已是内容块数组（guest guard 块 + 正文块），改成先拼文本再断言。
