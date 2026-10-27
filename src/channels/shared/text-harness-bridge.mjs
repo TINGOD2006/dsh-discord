@@ -951,6 +951,10 @@ export class TextHarnessBridge {
     releaseMessageId = true,
     alreadyRecorded = false,
     pendingAttempts = 0,
+    // How many replays this message may still spend. A caller that retries on
+    // its own schedule (Discord waits out provider outages) passes its budget
+    // here; everybody else keeps the startup default.
+    replayAttemptLimit = MAX_PENDING_REPLAY_ATTEMPTS,
     beforeProcess,
   } = {}) {
     const body = typeof message?.content === 'string' ? message.content : '';
@@ -999,7 +1003,12 @@ export class TextHarnessBridge {
           if (admission === false) return;
           return await this.#process(message, messageId, senderId, key, { alreadyRecorded });
         } catch (error) {
-          keepForReplay = await this.#bumpPendingAttempt(key, messageId, pendingAttempts);
+          keepForReplay = await this.#bumpPendingAttempt(
+            key,
+            messageId,
+            pendingAttempts,
+            replayAttemptLimit,
+          );
           throw error;
         }
       },
@@ -1026,7 +1035,25 @@ export class TextHarnessBridge {
     return this.#pendingRecovery;
   }
 
-  async #recoverPendingMessages() {
+  /**
+   * Retry the staged backlog right now, on top of the one-shot startup sweep.
+   *
+   * `recoverPendingMessages()` runs once per process by design. A channel whose
+   * transport is event driven has nothing left to wake it up after a provider
+   * outage, so it calls this from its own backoff until the backlog drains. The
+   * attempt budget belongs to the caller: it only decides when a staged message
+   * is reported instead of replayed.
+   */
+  retryStagedMessages({ maxAttempts = MAX_PENDING_REPLAY_ATTEMPTS } = {}) {
+    return this.#recoverPendingMessages({ maxAttempts }).catch((error) => {
+      this.#logger.warn?.(
+        `[dsh-im:${this.#descriptor.key}] queued-message retry failed:`,
+        error?.message ?? error,
+      );
+    });
+  }
+
+  async #recoverPendingMessages({ maxAttempts = MAX_PENDING_REPLAY_ATTEMPTS } = {}) {
     if (typeof this.#state?.pendingMessages !== 'function') return;
     const entries = this.#state.pendingMessages();
     if (!Array.isArray(entries) || entries.length === 0) return;
@@ -1040,7 +1067,7 @@ export class TextHarnessBridge {
       if (!entry || this.#signal?.aborted) return;
       try {
         const attempts = Number.isSafeInteger(entry.attempts) ? entry.attempts : 0;
-        if (pendingReplayDecision(entry, { maxAgeMs }) === 'report') {
+        if (pendingReplayDecision(entry, { maxAgeMs, maxAttempts }) === 'report') {
           // Out of attempts, or too stale to be worth answering again.
           await this.#notifyInterruptedPending(entry);
           await this.#removePendingMessage(entry.id);
@@ -1056,7 +1083,7 @@ export class TextHarnessBridge {
         if (typeof this.#state.unmarkSeen === 'function') {
           await this.#state.unmarkSeen(entry.messageId).catch(() => undefined);
         }
-        await this.#replayPendingMessage(entry, attempts + 1);
+        await this.#replayPendingMessage(entry, attempts + 1, maxAttempts);
       } catch (error) {
         this.#logger.warn?.(
           `[dsh-im:${this.#descriptor.key}] failed to recover a queued message:`,
@@ -1109,11 +1136,12 @@ export class TextHarnessBridge {
     }
   }
 
-  #replayPendingMessage(entry, attempts = 1) {
+  #replayPendingMessage(entry, attempts = 1, replayAttemptLimit = MAX_PENDING_REPLAY_ATTEMPTS) {
     const message = this.#pendingReplayMessage(entry);
     if (!message) return Promise.resolve();
     return this.#enqueueMessage(message, entry.messageId, entry.senderId ?? '', entry.key, {
       pendingAttempts: attempts,
+      replayAttemptLimit,
     });
   }
 
@@ -1121,10 +1149,10 @@ export class TextHarnessBridge {
    * Bump the persisted attempt counter for a staged message. Returns true when
    * the entry may be retried again, false once it has exhausted its attempts.
    */
-  async #bumpPendingAttempt(key, messageId, previousAttempts = 0) {
+  async #bumpPendingAttempt(key, messageId, previousAttempts = 0, limit = MAX_PENDING_REPLAY_ATTEMPTS) {
     const id = pendingMessageId(key, messageId);
     const next = previousAttempts + 1;
-    if (next >= MAX_PENDING_REPLAY_ATTEMPTS) {
+    if (next >= limit) {
       if (typeof this.#state?.patchPendingMessage === 'function') {
         await this.#state.patchPendingMessage(id, { attempts: next }).catch(() => undefined);
       }
@@ -1903,6 +1931,27 @@ export class TextHarnessBridge {
         `[dsh-im:${this.#descriptor.key}] failed to process a message [${failure.referenceId}]:`,
         messageFailureDiagnostic(error, failure),
       );
+      // Extension point. A subclass may define `onTurnFailed` to react to a
+      // failed turn (Discord uses it to keep retrying the backlog while the
+      // model provider is down). No other channel defines it, so this is a
+      // no-op there and the failure path stays exactly as it was.
+      if (typeof this.onTurnFailed === 'function') {
+        try {
+          await this.onTurnFailed({
+            code: failure.code,
+            reason: failure.reason,
+            messageId,
+            senderId,
+            conversationKey,
+            error,
+          });
+        } catch (hookError) {
+          this.#logger.warn?.(
+            `[dsh-im:${this.#descriptor.key}] onTurnFailed hook failed:`,
+            hookError?.message ?? hookError,
+          );
+        }
+      }
       if (await presentStreamFailure(failureText)) {
         return error.deliveryReceipt;
       }

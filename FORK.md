@@ -41,6 +41,24 @@
 | 私訊 | 直接回 | 不變 |
 | 想要上游行為 | — | 啟動前設 `DSK_DISCORD_THREAD_ON_MENTION=1` |
 
+### API 失效後自動續跑（Discord 專屬）
+
+模型供應商 503（例如澳大 GenAI 網關的 `no healthy upstream`）或金鑰過期時，回合失敗的那則訊息
+會留在暫存佇列裡，但 Discord 通道是事件驅動的：沒人再講話就沒有「下一次輪詢」，於是積壓只能
+等人重啟行程。本 fork 只在 Discord 這一側補上重試排程
+（`src/channels/discord/provider-recovery.mjs`），其他通道行為不變：
+
+- 只有供應商類失敗會啟動排程：`MODEL_SERVICE`（5xx）、`MODEL_AUTH`（金鑰失效／過期）、
+  `MODEL_QUOTA`、`MODEL_RATE_LIMIT`、`MODEL_TRANSPORT`、`MODEL_TIMEOUT`、`MODEL_REPLY_TIMEOUT`、
+  `MODEL_UNAVAILABLE`、`MODEL_STREAM`、`MODEL_EMPTY_REPLY`。內容超長、內容被拒、設定錯誤這類
+  「訊息本身的問題」不會排程重試。
+- 重試間隔 30s → 2min → 5min → 10min → 15min → 30min ×3（總耐心約 100 分鐘），每次把整份
+  暫存佇列重放一次；佇列清空（＝供應商已恢復、積壓已消化）就立刻停止，不會殘留計時器。
+- 共用層只多了兩個中性機制，預設行為不變：`TextHarnessBridge#retryStagedMessages()`
+  （公開；不傳 `maxAttempts` 時仍是原本的一次性、`MAX_PENDING_REPLAY_ATTEMPTS` 預算）與失敗
+  路徑上的可選鉤子 `onTurnFailed`（只有 `DiscordHarnessBridge` 定義它，其餘通道沒有這個方法
+  ＝完全無作用）。
+
 ## 設定在哪裡改
 
 DSH → 設定 → **IM 機器人** → 左側 `Discord`：Bot Token、模型、工作區、
