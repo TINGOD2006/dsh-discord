@@ -682,3 +682,22 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 `scripts/build-local.mjs` `errors=0 warnings=0`，`lib/index.js` 981311 字节（bundle 內含
 `connection.watchdog`、`connection.alive`、`silent-gateway`、`heartbeat-timeout`、`Watchdog reconnect`）。
 **需重啟 DSH 才會載入新 bundle。**
+
+## Discord 白名单（2026-10-27）
+
+主人可以在设置卡片里维护一份 Discord 用户 ID 白名单，名单里的人与主人同权：
+
+- **完整指令**：owner/control 命令（`/digest`、`/recall`、`/mute`、`/block` …）一律放行。
+- **访问策略放行**：频道级 `accessPolicies` 判定失败时，白名单发送者的 `accessDecision` 被改写为 `allowed: true, canExecuteCommands: true`。
+- **排队优先级**：排序表把白名单发送者按主人优先级（`TURN_PRIORITY.owner`）排队。
+
+实现位置：
+
+- `src/channels/discord/allowlist.mjs`：`normalizeAllowlistId` / `normalizeAllowlist`（去重、上限 50、校验失败抛 `allowlist-invalid`）、`DiscordAllowlistStore`（`<DSH_HOME>/integrations/dsh-discord/allowlist.json`，坏文件读成空）、`getDiscordAllowlistStore`。
+- `src/channels/discord/allowlist-endpoints.mjs`：`ALLOWLIST_ENDPOINTS` 与浏览器安全的 `MAX_ALLOWLIST_SIZE`（客户端 bundle 不能 import `node:fs`）。
+- `src/channels/shared/text-harness-bridge.mjs`：`setTrustedIds()` / `#isTrusted()`，替换原来三处 `senderId === ownerUserId` 判定。
+- `src/channels/discord/discord-runtime.mjs`：启动时建 store、每 30 秒把文件同步进 bridge、访问判定后对白名单放行。
+- `plugin-src/host/channels/shared/rpc.mjs` + `discord/rpc.mjs` + `discord/index.mjs`：`bot.allowlist.get/set` 端点，透传到 Discord 渠道。
+- `plugin-src/client/bot-general-settings.js`：卡片里的「白名单」行（一行一个 ID，保存后用 `parseAllowlistDraft` 拆分）。
+
+验证：RPC 探针 9/9 通过（get 默认、set 写入、回读、has、垃圾值过滤、缺字段拒绝）；`node --check` 全过；`node scripts/build-local.mjs` host/client `errors=0`。

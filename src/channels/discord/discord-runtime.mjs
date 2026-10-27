@@ -11,6 +11,7 @@ import { evaluateInboundAccess } from '../shared/inbound-access.mjs';
 import { stripInternalLeaks } from '../shared/outbound-sanitize.mjs';
 import { digestForContext, normalizeDigestConfig } from '../shared/thread-digest.mjs';
 import { takeRecallGrant, hasRecallGrant, isOwnerCommand } from '../shared/owner-commands.mjs';
+import { getDiscordAllowlistStore } from './allowlist.mjs';
 import { isControlCommand } from '../shared/control-command.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { handleApplicationCommand, syncApplicationCommands } from './discord-commands.mjs';
@@ -987,6 +988,9 @@ export class DiscordRuntime {
   #api = null;
   #bridge = null;
   #music = null;
+  // Discord ids the owner allowed to use the full command set and environment.
+  #allowlist = null;
+  #allowlistWatcher = null;
   // Music commands answer on their own lane; the turn scheduler never sees
   // them, so without a note they are invisible in the session and a burst of
   // @chat buries what the player was told. Notes replay like chat lines.
@@ -1398,6 +1402,7 @@ export class DiscordRuntime {
         });
       }
       const client = new DiscordBotClient({ api, signal: controller.signal });
+      this.#allowlist = getDiscordAllowlistStore(this.#config);
       this.#bridge = new DiscordHarnessBridge({
         bot: client,
         harness: this.#harness,
@@ -1416,6 +1421,7 @@ export class DiscordRuntime {
         // runtime's own voice client rather than in the bridge.
         musicTools: this.#music ? this.#musicTools(this.#music, controller.signal) : null,
         ownerUserId: this.#config.ownerUserId,
+        trustedIds: this.#trustedIds(),
         status: this.#status,
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
@@ -1427,6 +1433,12 @@ export class DiscordRuntime {
         contextHooks: this.#createContextHooks(),
         signal: controller.signal,
       });
+      // The settings card writes the allowlist file directly, so pick it up on a
+      // slow tick instead of requiring a bot restart.
+      this.#allowlistWatcher = setInterval(() => {
+        this.#bridge?.setTrustedIds(this.#trustedIds());
+      }, 30_000);
+      this.#allowlistWatcher.unref?.();
       // #openSocket owns its own connect deadline, so a stalled handshake can
       // never leave this await pending forever.
       await this.#openSocket(false);
@@ -1783,6 +1795,16 @@ export class DiscordRuntime {
         hasImages: preflight.images.length > 0,
         hasFiles: preflight.files.length > 0,
       });
+      // Allowlisted ids bypass the per-conversation access policy entirely:
+      // they get the owner's reach, including the full command set.
+      if (this.#trustedIds().includes(String(preflight.senderId))) {
+        accessDecision = {
+          ...accessDecision,
+          allowed: true,
+          canExecuteCommands: true,
+          reason: accessDecision.allowed === true ? accessDecision.reason : 'allowlisted',
+        };
+      }
       this.#logger.event?.('access.decided', {
         messageId,
         allowed: accessDecision.allowed === true,
@@ -2017,9 +2039,20 @@ export class DiscordRuntime {
     this.#reconnectTimer?.unref?.();
   }
 
+  /** Current allowlist; empty when the file is missing or unreadable. */
+  #trustedIds() {
+    try {
+      return this.#allowlist?.list() ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   async stop() {
     this.#stopped = true;
     this.#generation += 1;
+    if (this.#allowlistWatcher !== null) clearInterval(this.#allowlistWatcher);
+    this.#allowlistWatcher = null;
     this.#stopWatchdog();
     this.#abortController?.abort();
     this.#abortController = null;

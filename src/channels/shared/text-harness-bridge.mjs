@@ -296,6 +296,10 @@ export class TextHarnessBridge {
   #ownerTools = null;
   #musicTools = null;
   #ownerUserId = '';
+  // Allowlisted Discord ids get the same reach as the owner: owner commands,
+  // the mute bypass and the top scheduler priority, refreshed in place when the
+  // settings card saves a new list.
+  #trustedIds = new Set();
 
   constructor({
     descriptor,
@@ -319,6 +323,7 @@ export class TextHarnessBridge {
     ownerTools = null,
     musicTools = null,
     ownerUserId = '',
+    trustedIds = [],
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -361,6 +366,7 @@ export class TextHarnessBridge {
     this.#ownerTools = ownerTools && typeof ownerTools === 'object' ? ownerTools : null;
     this.#musicTools = musicTools && typeof musicTools === 'object' ? musicTools : null;
     this.#ownerUserId = typeof ownerUserId === 'string' ? ownerUserId.trim() : '';
+    this.setTrustedIds(trustedIds);
     this.#deferred = createDeferredDeliveryCoordinator({ harness, state, signal, logger,
       deliver: (entry, outcome) => this.#deliverDeferredOutcome(entry, outcome),
     });
@@ -376,6 +382,19 @@ export class TextHarnessBridge {
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  /** Replace the allowlist without rebuilding the bridge (settings card save). */
+  setTrustedIds(value) {
+    const ids = Array.isArray(value) ? value : [];
+    this.#trustedIds = new Set(
+      ids.filter((id) => typeof id === 'string' && /^\d{5,30}$/.test(id.trim())).map((id) => id.trim()),
+    );
+  }
+
+  #isTrusted(senderId) {
+    const id = typeof senderId === 'string' ? senderId.trim() : '';
+    return id !== '' && (id === this.#ownerUserId || this.#trustedIds.has(id));
   }
 
   canAppendInput(message) {
@@ -420,7 +439,7 @@ export class TextHarnessBridge {
     // The owner's chat commands stay reachable so /unmute still works.
     if (!discordMusic && isConversationMuted(conversationId)) {
       const commandText = controlTextOf(normalized);
-      const ownerReachable = senderId === this.#ownerUserId
+      const ownerReachable = this.#isTrusted(senderId)
         && (isOwnerCommand(commandText) || isControlCommand(commandText));
       if (!ownerReachable) {
         this.#status.messagesRejected += 1;
@@ -430,7 +449,7 @@ export class TextHarnessBridge {
       }
     }
     // A per-user pause silences that sender's AI conversation until lifted.
-    if (!discordMusic && senderId !== this.#ownerUserId && isUserBlocked(conversationId, senderId)) {
+    if (!discordMusic && !this.#isTrusted(senderId) && isUserBlocked(conversationId, senderId)) {
       this.#status.messagesRejected += 1;
       this.#status.lastRejectedAt = new Date().toISOString();
       this.#acceptedMessageIds.set(messageId, null);
@@ -945,7 +964,7 @@ export class TextHarnessBridge {
     // then the room. Fairness and burst folding live in the scheduler; this
     // only states who each message is.
     const author = this.#turnAuthors.get(key);
-    const priority = senderId !== '' && senderId === this.#ownerUserId
+    const priority = this.#isTrusted(senderId)
       ? TURN_PRIORITY.owner
       : author && senderId !== '' && author.senderId === senderId
         ? TURN_PRIORITY.followup

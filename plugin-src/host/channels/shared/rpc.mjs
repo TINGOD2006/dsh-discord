@@ -18,6 +18,8 @@ import {
 import { SET_MODEL_ENDPOINT, validModelPayload } from './model-setting-rpc.mjs';
 import { SET_THINKING_TRACES_ENDPOINT, validThinkingTracesPayload } from './thinking-traces-rpc.mjs';
 import { MAX_PERSONA_CHARS, PERSONA_ENDPOINTS } from '../../../../src/channels/discord/persona-endpoints.mjs';
+import { ALLOWLIST_ENDPOINTS } from '../../../../src/channels/discord/allowlist-endpoints.mjs';
+import { MAX_ALLOWLIST_SIZE, normalizeAllowlist } from '../../../../src/channels/discord/allowlist.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   status: 'connection.status',
@@ -34,6 +36,8 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setThinkingTraces: SET_THINKING_TRACES_ENDPOINT,
   getPersona: PERSONA_ENDPOINTS.get,
   setPersona: PERSONA_ENDPOINTS.set,
+  getAllowlist: ALLOWLIST_ENDPOINTS.get,
+  setAllowlist: ALLOWLIST_ENDPOINTS.set,
 });
 
 const ENDPOINTS = Object.freeze(Object.values(TOKEN_BOT_ENDPOINTS));
@@ -121,6 +125,19 @@ function payloadFailure(endpoint, payload) {
     return typeof payload.text === 'string' && payload.text.length <= MAX_PERSONA_CHARS + 64
       ? null : `人格文本需为 1-${MAX_PERSONA_CHARS} 字。`;
   }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.getAllowlist) {
+    return exactKeys(payload, []) ? null : '读取白名单不接受字段。';
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.setAllowlist) {
+    if (!exactKeys(payload, ['ids'])) return '请提交白名单 ID 列表。';
+    if (!Array.isArray(payload.ids)) return '白名单需要是 ID 数组。';
+    try {
+      normalizeAllowlist(payload.ids);
+      return null;
+    } catch {
+      return `白名单最多 ${MAX_ALLOWLIST_SIZE} 个 Discord ID。`;
+    }
+  }
   return 'Unknown bot endpoint.';
 }
 
@@ -143,6 +160,9 @@ function operationError(channel, error) {
   if (error?.code === 'persona-invalid') {
     return { code: 'persona-invalid', message: error.message };
   }
+  if (error?.code === 'allowlist-invalid') {
+    return { code: 'allowlist-invalid', message: error.message };
+  }
   if (error?.code === 'telegram-401' || error?.code === 'discord-401') {
     return { code: 'invalid-token', message: `${channel} Bot Token 无效，请重新填写。` };
   }
@@ -158,7 +178,7 @@ function operationError(channel, error) {
   return { code: `${channel.toLowerCase()}-operation-failed`, message: `${channel} 操作失败，请稍后重试。` };
 }
 
-export function createTokenBotRpcHandler(controller, { channel, persona = null }) {
+export function createTokenBotRpcHandler(controller, { channel, persona = null, allowlist = null }) {
   const diagnostics = controller.diagnostics ?? createConnectionDiagnostics({ channel: channel.toLowerCase() });
   for (const method of ['status', 'bindCredentials', 'reconnectBot', 'deleteBot']) {
     if (typeof controller?.[method] !== 'function') {
@@ -235,6 +255,12 @@ export function createTokenBotRpcHandler(controller, { channel, persona = null }
           throw new Error('Persona settings are unavailable');
         }
         value = payload.reset === true ? persona.reset() : persona.write(payload.text);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.getAllowlist) {
+        if (!allowlist || typeof allowlist.snapshot !== 'function') throw new Error('Allowlist settings are unavailable');
+        value = allowlist.snapshot();
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAllowlist) {
+        if (!allowlist || typeof allowlist.write !== 'function') throw new Error('Allowlist settings are unavailable');
+        value = allowlist.write(payload.ids);
       } else {
         value = await controller.deleteBot(payload.botId);
       }
@@ -249,10 +275,10 @@ export function createTokenBotRpcHandler(controller, { channel, persona = null }
   };
 }
 
-export function installTokenBotRpc(ctx, controller, { channel, rpcChannel, authority, persona = null }) {
+export function installTokenBotRpc(ctx, controller, { channel, rpcChannel, authority, persona = null, allowlist = null }) {
   return registerManagementRpc(ctx,
     rpcChannel,
-    createTokenBotRpcHandler(controller, { channel, persona }),
+    createTokenBotRpcHandler(controller, { channel, persona, allowlist }),
     { authority: resolveRpcAuthority(authority) },
   );
 }

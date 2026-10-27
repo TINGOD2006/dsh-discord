@@ -4,6 +4,21 @@ import { SET_MESSAGE_MODE_ENDPOINT, normalizeBusyMessageMode } from '../../src/c
 import { normalizeFeishuStepCardPanels } from '../../src/channels/feishu/step-push-mode.mjs';
 import { FEISHU_ENDPOINTS } from './channels/feishu/api.js';
 import { PERSONA_ENDPOINTS, MAX_PERSONA_CHARS } from '../../src/channels/discord/persona-endpoints.mjs';
+import { MAX_ALLOWLIST_SIZE, ALLOWLIST_ENDPOINTS } from '../../src/channels/discord/allowlist-endpoints.mjs';
+
+function allowlistFromResult(result) {
+  if (result?.ok !== true) throw new Error(result?.error?.message || '无法读取白名单，请稍后重试。');
+  const value = result.value ?? {};
+  const ids = Array.isArray(value.ids) ? value.ids.filter((id) => typeof id === 'string') : [];
+  return { ids, customized: value.customized === true };
+}
+
+function parseAllowlistDraft(draft) {
+  return String(draft ?? '')
+    .split(/[\s,，;；]+/)
+    .map((id) => id.trim())
+    .filter((id) => id !== '');
+}
 
 function personaFromResult(result) {
   if (result?.ok !== true) throw new Error(result?.error?.message || '无法读取人格设置，请稍后重试。');
@@ -39,6 +54,10 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
   const [personaDraft, setPersonaDraft] = React.useState('');
   const [personaBusy, setPersonaBusy] = React.useState(false);
   const [personaFeedback, setPersonaFeedback] = React.useState(null);
+  const [allowlist, setAllowlist] = React.useState(null);
+  const [allowlistDraft, setAllowlistDraft] = React.useState('');
+  const [allowlistBusy, setAllowlistBusy] = React.useState(false);
+  const [allowlistFeedback, setAllowlistFeedback] = React.useState(null);
   const mounted = React.useRef(false);
   const inFlight = React.useRef(false);
   const mode = settings.busyMessageMode;
@@ -61,6 +80,14 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
           setPersonaDraft(loaded.text);
         } catch (error) {
           if (mounted.current) setPersonaFeedback(error.message);
+        }
+        try {
+          const loaded = allowlistFromResult(await rpcCall(ALLOWLIST_ENDPOINTS.get, {}));
+          if (!mounted.current) return;
+          setAllowlist(loaded);
+          setAllowlistDraft(loaded.ids.join('\n'));
+        } catch (error) {
+          if (mounted.current) setAllowlistFeedback(error.message);
         }
       }
     } catch (error) {
@@ -136,6 +163,24 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
     }
   };
 
+  const saveAllowlist = async () => {
+    if (allowlistBusy || allowlist === null) return;
+    const ids = parseAllowlistDraft(allowlistDraft);
+    setAllowlistBusy(true);
+    setAllowlistFeedback(null);
+    try {
+      const saved = allowlistFromResult(await rpcCall(ALLOWLIST_ENDPOINTS.set, { ids }));
+      if (!mounted.current) return;
+      setAllowlist(saved);
+      setAllowlistDraft(saved.ids.join('\n'));
+      setAllowlistFeedback('白名单已保存，30 秒内生效。');
+    } catch (error) {
+      if (mounted.current) setAllowlistFeedback(error.message);
+    } finally {
+      if (mounted.current) setAllowlistBusy(false);
+    }
+  };
+
   return h('section', { className: 'dim-botGeneralSettings', 'aria-label': '机器人通用设置', 'aria-busy': busy },
     h('div', { className: 'dim-botGeneralList' },
       h('div', { className: 'dim-botGeneralRow' },
@@ -195,6 +240,27 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
         className: 'dim-accessFeedback', role: 'alert',
         'data-tone': /已/.test(personaFeedback) ? 'success' : 'error',
       }, personaFeedback) : null) : null,
+    isDiscord && allowlist !== null ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow' },
+      h('label', { className: 'dim-botGeneralTitle', htmlFor: `${modeId}-allowlist` }, '白名单'),
+      h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-allowlist-help` },
+        `一行一个 Discord 用户 ID，最多 ${MAX_ALLOWLIST_SIZE} 个；名单里的人可以像主人一样使用完整指令，保存后 30 秒内生效。`),
+      h('textarea', {
+        id: `${modeId}-allowlist`, className: 'dim-updateCommand', 'aria-label': '白名单用户 ID',
+        'aria-describedby': `${modeId}-allowlist-help`, rows: 5,
+        value: allowlistDraft, disabled: allowlistBusy, spellCheck: false,
+        placeholder: '123456789012345678',
+        onChange: (event) => setAllowlistDraft(event.target.value),
+      }),
+      h('div', { className: 'dim-botGeneralActions' },
+        h('button', {
+          type: 'button', className: 'dim-deliveryButton', 'aria-busy': allowlistBusy,
+          disabled: allowlistBusy || parseAllowlistDraft(allowlistDraft).join(',') === allowlist.ids.join(','),
+          onClick: () => void saveAllowlist(),
+        }, '保存白名单')),
+      allowlistFeedback ? h('p', {
+        className: 'dim-accessFeedback', role: 'alert',
+        'data-tone': /已/.test(allowlistFeedback) ? 'success' : 'error',
+      }, allowlistFeedback) : null) : null,
     feedback ? h('p', {
       className: 'dim-accessFeedback', 'data-tone': 'error', role: 'alert',
     }, feedback) : null,
