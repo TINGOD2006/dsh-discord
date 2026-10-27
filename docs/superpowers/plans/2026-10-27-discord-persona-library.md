@@ -162,6 +162,17 @@
 
 按 Phase 1 → 2 順序寫，驗收通過後一次性交付；中間不推 `npm run push` 給使用者試。
 
-## Phase 0 結論
+## Phase 0 結論（2026-10-27 執行）
 
-（執行 Task 0.1 後填寫）
+**1. 讀歷史（可行）**：`readSessionHistory(sessionId, { maxMessages })` 在 `src/channels/shared/harness-client.mjs:1386`，走 `session.history`，回傳 `{ events, hasMore }`；事件形如 `{ type, seq, surfaceOp, data }`。可見訊息的抽取照 `src/channels/shared/history-command.mjs:29-58`：
+- 使用者：`type === 'user/message'` && `surfaceOp === 'append'` && `data.source.kind === 'user'`，文字由 `previewText(data.content)` 拼接 `{type:'text'}` 區塊（`:18-27`）；
+- 助手：記住 `assistant/message`，只在 `turn/end` 且 `data.reason.kind === 'completed'`、`interrupted !== true` 時才收，content 取 `data.message.content`。
+
+→ `persona-handoff.mjs` 內自帶這兩個純函式（不 import `history-command`，避免把 `/history` 的呈現邏輯綁進摘要），單元測試覆盖上述四種排除條件。
+
+**2. 隔離會話（可行，但有可見副作用）**：`createSession(options)` 在 `:1344`，走 `session.create` 回 sessionId，**不碰 bot state**——綁定只發生在 `src/channels/shared/workspace-session.mjs:135` 的 `state.setSession(key, sessionId)`。所以「建了不綁」天然就是隔離，不需要額外機制。
+副作用：該 session 會出現在工作區的 session 清單裡。本 fork 的客戶端沒有 `session.delete` / `session.archive`（grep 只找到 feishu 過濾 `archived`），所以用 `renameSession(sessionId, title)`（`:1362`）標成 `[人格交接] 臨時`，讓使用者能認出來並自己刪，不自動清。
+
+**3. 取回摘要文字（可行，比預期簡單）**：`ask(sessionId, prompt, { timeoutMs })` 在 `:1801`，回傳**字串**（`tracker.answer` → `get answer()` `:624-626` 的 `#latestText.trim()`）。不需要再用 `readSessionHistory` 回讀。摘要用 `timeoutMs: 120_000`。
+
+**風險結論**：三項原語都在，Phase 2 不需要降級設計；唯一新增的接受面是「工作區多一條臨時 session」。

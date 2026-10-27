@@ -83,7 +83,9 @@ export function createPersonaRpcHandler(library) {
       if (endpoint === PERSONA_ENDPOINTS.activate) {
         if (!shape(payload, ['id'], ['id'])) return invalid('人格切换请求无效。');
         const { epoch } = library.activate(payload.id);
-        return { ok: true, value: { ok: true, epoch } };
+        // The handoff summary is generated after the next message retires the old
+        // Session, so activation itself can only promise that it is deferred.
+        return { ok: true, value: { ok: true, epoch, handoff: 'deferred' } };
       }
       if (endpoint === PERSONA_ENDPOINTS.set) {
         // Old card: { text } saves the active persona, { reset: true } clears it.

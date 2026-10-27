@@ -157,6 +157,12 @@ if (library.epoch() !== seen) {
 
 不必「重寫歷史」：摘要在新會話有效，舊會話原封不動。
 
+> 修訂（實作 Task 2.1–2.5 時）：
+> 1. `generateHandoff` 是 async——真實依賴是 `session.history` RPC、一次隔離會話的模型調用與檔案寫入；同步介面會把注入的 Promise 當成「太短」而靜默失敗（實作時踩到，測試改 `await`）。
+> 2. 不把摘要狀態做成 per-key 的 pending/ready/failed 清單：摘要是在**下一則訊息**退休舊會話之後才生成的，切換當下必然 pending，而設定卡是全域的、拿不到各群的 key。`activate` 改回傳 `handoff: 'deferred'`，卡片顯示「已切換 · 上一段對話的摘要會在下一則訊息後生成」；生成失敗只記 warn，不影響切換與回覆。
+> 3. session → conversation key 的映射放 `session-channel-registry.mjs`（`rememberSessionConversation`），由 `workspace-session.mjs` 綁定時寫入；人格上下文只讀不寫。
+> 4. 隔離會話用完只標題為「[人格交接] 临时」而不刪除——本 fork 沒有 session.delete/archive 客戶端方法。
+
 ## 8. RPC 介面
 
 `plugin-src/host/persona-rpc.mjs` 的 `createPersonaRpcHandler(store)` 擴成接受人格庫；端點在 `src/channels/discord/persona-endpoints.mjs` 集中宣告（客戶端可 import，該檔已禁止 `node:fs`）。

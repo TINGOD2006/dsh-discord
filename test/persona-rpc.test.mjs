@@ -90,7 +90,7 @@ test('delete refuses the active persona and removes the others', () => withHandl
 test('activate bumps the epoch', () => withHandler(async (handler, library) => {
   const created = library.create({ name: 'G', text: 'g' });
   const first = await call(handler, PERSONA_ENDPOINTS.activate, { id: created.id });
-  assert.deepEqual(first.value, { ok: true, epoch: 1 });
+  assert.deepEqual(first.value, { ok: true, epoch: 1, handoff: 'deferred' });
   const second = await call(handler, PERSONA_ENDPOINTS.activate, { id: created.id });
   assert.equal(second.value.epoch, 2);
   const missing = await call(handler, PERSONA_ENDPOINTS.activate, { id: 'p_ffffff' });

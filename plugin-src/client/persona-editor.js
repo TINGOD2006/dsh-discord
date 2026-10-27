@@ -138,10 +138,9 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
   const activateSelected = () => mutate(async () => {
     if (dirty) unwrap(await rpcCall(PERSONA_ENDPOINTS.save, { id: selectedId, name, text }), '人格保存失败，请重试。');
     setBaseline({ name, text });
-    const value = unwrap(await rpcCall(PERSONA_ENDPOINTS.activate, { id: selectedId }), '切换人格失败，请重试。');
-    const epoch = Number.isSafeInteger(value.epoch) ? value.epoch : 0;
+    unwrap(await rpcCall(PERSONA_ENDPOINTS.activate, { id: selectedId }), '切换人格失败，请重试。');
     setActiveId(selectedId);
-    setNotice(`已切換 · epoch ${epoch}`);
+    setNotice(`已切換 · 上一段對話的摘要會在下一則訊息後生成`);
     onActivated?.(name);
     return true;
   }, '切换人格失败，请重试。', selectedId);
