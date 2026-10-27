@@ -17,8 +17,10 @@ import {
 } from './agent-preset-rpc.mjs';
 import { SET_MODEL_ENDPOINT, validModelPayload } from './model-setting-rpc.mjs';
 import { SET_THINKING_TRACES_ENDPOINT, validThinkingTracesPayload } from './thinking-traces-rpc.mjs';
-import { MAX_PERSONA_CHARS, PERSONA_ENDPOINTS } from '../../../../src/channels/discord/persona-endpoints.mjs';
+import { PERSONA_ENDPOINTS } from '../../../../src/channels/discord/persona-endpoints.mjs';
+import { createPersonaRpcHandler } from '../../persona-rpc.mjs';
 import { ALLOWLIST_ENDPOINTS } from '../../../../src/channels/discord/allowlist-endpoints.mjs';
+import { MEMBER_ENDPOINTS } from '../../../../src/channels/discord/member-endpoints.mjs';
 import { MAX_ALLOWLIST_SIZE, normalizeAllowlist } from '../../../../src/channels/discord/allowlist.mjs';
 
 export const TOKEN_BOT_ENDPOINTS = Object.freeze({
@@ -36,11 +38,19 @@ export const TOKEN_BOT_ENDPOINTS = Object.freeze({
   setThinkingTraces: SET_THINKING_TRACES_ENDPOINT,
   getPersona: PERSONA_ENDPOINTS.get,
   setPersona: PERSONA_ENDPOINTS.set,
+  listPersonas: PERSONA_ENDPOINTS.list,
+  getPersonaById: PERSONA_ENDPOINTS.get,
+  createPersona: PERSONA_ENDPOINTS.create,
+  savePersona: PERSONA_ENDPOINTS.save,
+  deletePersona: PERSONA_ENDPOINTS.delete,
+  activatePersona: PERSONA_ENDPOINTS.activate,
   getAllowlist: ALLOWLIST_ENDPOINTS.get,
   setAllowlist: ALLOWLIST_ENDPOINTS.set,
+  listMembers: MEMBER_ENDPOINTS.list,
 });
 
 const ENDPOINTS = Object.freeze(Object.values(TOKEN_BOT_ENDPOINTS));
+const PERSONA_ENDPOINT_VALUES = Object.freeze(Object.values(PERSONA_ENDPOINTS));
 const FORBIDDEN_PUBLIC_KEYS = new Set([
   'token', 'botToken', 'tokenRef', 'platformId', 'secret', 'secretRef',
 ]);
@@ -116,14 +126,10 @@ function payloadFailure(endpoint, payload) {
     return validThinkingTracesPayload(payload)
       ? null : '请提交有效的思考过程留痕设置。';
   }
-  if (endpoint === TOKEN_BOT_ENDPOINTS.getPersona) {
-    return exactKeys(payload, []) ? null : '读取人格设置不接受字段。';
-  }
-  if (endpoint === TOKEN_BOT_ENDPOINTS.setPersona) {
-    if (!exactKeys(payload, ['text', 'reset'])) return '请提交人格文本。';
-    if (payload.reset === true) return null;
-    return typeof payload.text === 'string' && payload.text.length <= MAX_PERSONA_CHARS + 64
-      ? null : `人格文本需为 1-${MAX_PERSONA_CHARS} 字。`;
+  if (Object.values(PERSONA_ENDPOINTS).includes(endpoint)) {
+    // Personality payloads are validated by the persona handler itself (it
+    // knows the difference between "no id" and "unknown id").
+    return null;
   }
   if (endpoint === TOKEN_BOT_ENDPOINTS.getAllowlist) {
     return exactKeys(payload, []) ? null : '读取白名单不接受字段。';
@@ -137,6 +143,11 @@ function payloadFailure(endpoint, payload) {
     } catch {
       return `白名单最多 ${MAX_ALLOWLIST_SIZE} 个 Discord ID。`;
     }
+  }
+  if (endpoint === TOKEN_BOT_ENDPOINTS.listMembers) {
+    return exactKeys(payload, ['botId', 'force']) && validId(payload.botId)
+      && (payload.force === undefined || typeof payload.force === 'boolean')
+      ? null : 'bot.members.list requires a botId and an optional boolean force.';
   }
   return 'Unknown bot endpoint.';
 }
@@ -175,22 +186,45 @@ function operationError(channel, error) {
   if (error?.code === 'discord-intents') {
     return { code: 'discord-intents', message: error.message };
   }
+  if (error?.code === 'members-unavailable') {
+    return { code: 'members-unavailable', message: 'Discord 机器人尚未连接，请先连接后再读取成员。' };
+  }
+  if (error?.code === 'members-intent-required') {
+    return {
+      code: 'members-intent-required',
+      message: '读取成员需要 Server Members Intent：请在 Discord 开发者后台的 Bot 页面打开 Server Members Intent，保存后重启 dsh web。',
+    };
+  }
+  if (error?.code === 'members-rate-limited') {
+    return { code: 'members-rate-limited', message: 'Discord 限流了成员读取，请稍后点「刷新」重试。' };
+  }
+  if (error?.code === 'members-fetch-failed') {
+    return { code: 'members-fetch-failed', message: error.message || '读取 Discord 成员失败，请稍后重试。' };
+  }
   return { code: `${channel.toLowerCase()}-operation-failed`, message: `${channel} 操作失败，请稍后重试。` };
 }
 
-export function createTokenBotRpcHandler(controller, { channel, persona = null, allowlist = null }) {
+export function createTokenBotRpcHandler(controller, { channel, persona = null, allowlist = null, members = null }) {
   const diagnostics = controller.diagnostics ?? createConnectionDiagnostics({ channel: channel.toLowerCase() });
   for (const method of ['status', 'bindCredentials', 'reconnectBot', 'deleteBot']) {
     if (typeof controller?.[method] !== 'function') {
       throw new TypeError(`A complete ${channel} controller is required (${method})`);
     }
   }
+  const personaHandler = persona ? createPersonaRpcHandler(persona) : null;
   return async (endpoint, payload, signal) => {
     if (signal?.aborted) {
       return { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.' } };
     }
     if (!ENDPOINTS.includes(endpoint)) {
       return { ok: false, error: { code: 'bad-request', message: `Unknown ${channel} endpoint.` } };
+    }
+    if (PERSONA_ENDPOINT_VALUES.includes(endpoint)) {
+      if (!personaHandler) {
+        return { ok: false, error: { code: 'bad-request', message: 'Persona settings are unavailable.' } };
+      }
+      const result = await personaHandler(endpoint, payload, signal);
+      return result.ok ? { ok: true, value: sanitizePublic(result.value) } : result;
     }
     const invalid = payloadFailure(endpoint, payload);
     if (invalid) return { ok: false, error: { code: 'bad-request', message: invalid } };
@@ -247,20 +281,15 @@ export function createTokenBotRpcHandler(controller, { channel, persona = null, 
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setThinkingTraces) {
         if (typeof controller.setThinkingTraces !== 'function') throw new Error('Thinking traces update is unavailable');
         value = await controller.setThinkingTraces(payload.botId, payload.thinkingTraces);
-      } else if (endpoint === TOKEN_BOT_ENDPOINTS.getPersona) {
-        if (!persona || typeof persona.snapshot !== 'function') throw new Error('Persona settings are unavailable');
-        value = persona.snapshot();
-      } else if (endpoint === TOKEN_BOT_ENDPOINTS.setPersona) {
-        if (!persona || typeof persona.write !== 'function' || typeof persona.reset !== 'function') {
-          throw new Error('Persona settings are unavailable');
-        }
-        value = payload.reset === true ? persona.reset() : persona.write(payload.text);
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.getAllowlist) {
         if (!allowlist || typeof allowlist.snapshot !== 'function') throw new Error('Allowlist settings are unavailable');
         value = allowlist.snapshot();
       } else if (endpoint === TOKEN_BOT_ENDPOINTS.setAllowlist) {
         if (!allowlist || typeof allowlist.write !== 'function') throw new Error('Allowlist settings are unavailable');
         value = allowlist.write(payload.ids);
+      } else if (endpoint === TOKEN_BOT_ENDPOINTS.listMembers) {
+        if (!members || typeof members.list !== 'function') throw new Error('Member directory is unavailable');
+        value = await members.list({ botId: payload.botId, force: payload.force === true });
       } else {
         value = await controller.deleteBot(payload.botId);
       }
@@ -275,10 +304,12 @@ export function createTokenBotRpcHandler(controller, { channel, persona = null, 
   };
 }
 
-export function installTokenBotRpc(ctx, controller, { channel, rpcChannel, authority, persona = null, allowlist = null }) {
+export function installTokenBotRpc(ctx, controller, {
+  channel, rpcChannel, authority, persona = null, allowlist = null, members = null,
+}) {
   return registerManagementRpc(ctx,
     rpcChannel,
-    createTokenBotRpcHandler(controller, { channel, persona, allowlist }),
+    createTokenBotRpcHandler(controller, { channel, persona, allowlist, members }),
     { authority: resolveRpcAuthority(authority) },
   );
 }

@@ -7,7 +7,7 @@ import { getGroupHistoryStore } from './group-history-runtime.mjs';
 import { createGroupHistoryRpcHandler, GROUP_HISTORY_ENDPOINTS } from './group-history-rpc.mjs';
 import { createPersonaRpcHandler } from './persona-rpc.mjs';
 import { PERSONA_ENDPOINTS } from '../../src/channels/discord/persona-endpoints.mjs';
-import { getDiscordPersonaStore } from '../../src/channels/discord/persona-store.mjs';
+import { getDiscordPersonaLibrary } from '../../src/channels/discord/persona-library.mjs';
 
 export const INBOUND_TTL_RPC_CHANNEL = '/dsh-im-settings';
 export const INBOUND_TTL_ENDPOINTS = Object.freeze({
@@ -83,7 +83,7 @@ export function installInboundTtlRpc(ctx, options = {}) {
   const ttl = createInboundTtlRpcHandler({ ...runtime, logger });
   const image = createImageInputRpcHandler(getImageInputSettingsStore(options.config));
   const history = createGroupHistoryRpcHandler(options.groupHistory ?? getGroupHistoryStore(ctx, options.config));
-  const persona = createPersonaRpcHandler(options.persona ?? getDiscordPersonaStore(options.config));
+  const persona = createPersonaRpcHandler(options.persona ?? getDiscordPersonaLibrary(options.config));
   return registerManagementRpc(ctx,
     INBOUND_TTL_RPC_CHANNEL,
     (endpoint, payload, signal) => Object.values(GROUP_HISTORY_ENDPOINTS).includes(endpoint)
