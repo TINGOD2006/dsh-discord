@@ -4,9 +4,11 @@ import { forgetSessionChannel, sessionChannelOf } from '../shared/session-channe
  * The Discord persona, injected as plugin prompt context instead of being read
  * from a project agent file every turn.
  *
- * This text is the single source of truth for how the bot behaves in Discord:
- * it is prepended to every Discord turn, it supersedes any host AGENT.md or
- * other channel guidance, and it is what the settings card edits.
+ * This text is the single source of truth for how the bot behaves in Discord
+ * once an operator saves one in the settings card: it is prepended to every
+ * Discord turn of that channel and supersedes any host AGENT.md or other channel
+ * guidance. When nothing is saved, Discord turns run without a persona at all —
+ * DISCORD_PERSONA_PROMPT is only the template the card starts from.
  *
  * Kept deliberately terse: each extra sentence costs tokens on every message.
  */
@@ -41,7 +43,7 @@ function sessionIdOf(assembly) {
  * same plugin keeps its own AGENT.md and stays unpersonified — the persona is
  * the bot's way of talking in a group chat, not a host-wide instruction.
  */
-export function installDiscordPersona(ctx, { text = DISCORD_PERSONA_PROMPT } = {}) {
+export function installDiscordPersona(ctx, { text = '' } = {}) {
   ctx.systemPrompt.context({
     name: DISCORD_PERSONA_CONTEXT_NAME,
     order: 120,

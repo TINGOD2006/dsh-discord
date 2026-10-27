@@ -156,7 +156,7 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
       if (!mounted.current) return;
       setPersona(saved);
       setPersonaDraft(saved.text);
-      setPersonaFeedback('已恢复默认人格，重启 DSH 后生效。');
+      setPersonaFeedback('已清空人格，重启 DSH 后生效。');
     } catch (error) {
       if (mounted.current) setPersonaFeedback(error.message);
     } finally {
@@ -220,7 +220,7 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
     isDiscord && persona !== null ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow' },
       h('label', { className: 'dim-botGeneralTitle', htmlFor: `${modeId}-persona` }, '人格'),
       h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-persona-help` },
-        `${persona.empty ? '已清空，当前不注入人格' : persona.customized ? '当前为自定义人格' : '当前为内置默认人格'}，最多 ${MAX_PERSONA_CHARS} 字；留空即不注入；保存后重启 DSH 生效。`),
+        `${persona.text ? '当前为自定义人格' : '当前不注入人格'}，最多 ${MAX_PERSONA_CHARS} 字；空白保存即不注入；保存后重启 DSH 生效。`),
       h('textarea', {
         id: `${modeId}-persona`, className: 'dim-updateCommand', 'aria-label': '人格文本',
         'aria-describedby': `${modeId}-persona-help`, rows: 10,
@@ -237,7 +237,7 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
         h('button', {
           type: 'button', className: 'dim-deliveryButton', 'aria-busy': personaBusy,
           disabled: personaBusy || !persona.customized, onClick: () => void resetPersona(),
-        }, '恢复默认')),
+        }, '清空')),
       personaFeedback ? h('p', {
         className: 'dim-accessFeedback', role: 'alert',
         'data-tone': /已/.test(personaFeedback) ? 'success' : 'error',

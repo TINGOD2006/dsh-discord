@@ -76,7 +76,7 @@ test('the registry remembers, replaces, forgets, and resets a pairing', () => {
 test('the persona only renders for a Session the Discord channel prompted', () => {
   resetSessionChannels();
   const ctx = fakeCtx();
-  installDiscordPersona(ctx);
+  installDiscordPersona(ctx, { text: DISCORD_PERSONA_PROMPT });
 
   assert.equal(ctx.contexts.length, 1);
   const [spec] = ctx.contexts;
@@ -108,7 +108,7 @@ test('a custom persona is what the Discord Session receives', () => {
 test('the Agent going away drops its pairing', () => {
   resetSessionChannels();
   const ctx = fakeCtx();
-  installDiscordPersona(ctx);
+  installDiscordPersona(ctx, { text: DISCORD_PERSONA_PROMPT });
   rememberSessionChannel('s1', 'discord');
   assert.equal(ctx.contexts[0].text(assemblyFor('s1')), DISCORD_PERSONA_PROMPT);
 

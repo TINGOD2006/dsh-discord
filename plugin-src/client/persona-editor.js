@@ -109,7 +109,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef }) {
       h('h3', { id: titleId }, '人格'),
       h('span', { id: helpId, className: 'dim-contextHelp dim-contextHeaderHelp' },
         'Discord 群里使用的人格文本，最多 ', String(MAX_PERSONA_CHARS),
-        ' 字；留空则不注入任何人格；保存后重启 DSH 生效。')),
+        ' 字；空白或未设置时都不注入人格；保存后重启 DSH 生效。')),
     h('button', {
       type: 'button', className: 'dim-contextClose', 'aria-label': '关闭弹窗',
       disabled: busy, onClick: onClose,
@@ -131,7 +131,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef }) {
     h('button', {
       type: 'button', disabled: busy || !persona?.customized,
       onClick: () => { void save({ reset: true }); },
-    }, '恢复默认'),
+    }, '清空'),
     h('button', { type: 'button', disabled: busy, onClick: onClose }, '取消'),
     h('button', {
       type: 'button', className: 'dim-contextSave',
@@ -145,7 +145,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef }) {
 /** Editable Discord persona, shown in the bot card as a row that opens a dialog. */
 export function PersonaEditor({ rpcCall }) {
   const [open, setOpen] = React.useState(false);
-  const [label, setLabel] = React.useState('内置默认');
+  const [label, setLabel] = React.useState('未设置');
   const entryRef = React.useRef(null);
   const dialogId = React.useId();
   const statusId = React.useId();
@@ -155,7 +155,7 @@ export function PersonaEditor({ rpcCall }) {
     void (async () => {
       try {
         const loaded = readResult(await rpcCall(PERSONA_ENDPOINTS.get, {}));
-        if (!cancelled) setLabel(loaded.empty ? '已清空' : loaded.customized ? '自定义' : '内置默认');
+        if (!cancelled) setLabel(loaded.text ? '自定义' : loaded.customized ? '已清空' : '未设置');
       } catch {
         if (!cancelled) setLabel('读取失败');
       }

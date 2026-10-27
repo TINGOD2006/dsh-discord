@@ -610,8 +610,8 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 
 ## Discord 人格可在设置卡片里修改（2026-10-25）
 
-- 设置页（Discord 机器人 → 通用设置）新增「人格」文本框：读取、保存、恢复默认。
-- 文本存于 `<DSH_HOME>/integrations/dsh-discord/persona.md`（不存在时用内置默认人格）。
+- 设置页（Discord 机器人 → 通用设置）新增「人格」文本框：读取、保存、清空。
+- 文本存于 `<DSH_HOME>/integrations/dsh-discord/persona.md`（不存在或为空都表示不注入人格）。
 - 上限 8000 字，拒绝控制字符；保存/恢复后需重启 DSH 生效（prompt context 在插件启动时注册一次）。
 - 端点：`settings.discord-persona.get` / `settings.discord-persona.set`（`{text}` 或 `{reset:true}`），挂在 `/discord` 管理 RPC 通道，loopback 权限。
 - 卡片样式：与「上下文增强」一致的行（`dim-contextEntry`：图标 + 名称 + 状态 + 箭头），点开弹出对话框编辑，不再内联一个大文本框。
@@ -733,21 +733,22 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 
 **限制**：这是提示词层面的约束，不是沙箱。Harness 的工具集绑定在 Session 上，本插件无法按轮次收窄；同一个 Discord 频道的会话由所有人共享，所以只能靠 prompt 声明。若 Host 以后暴露「按轮次工具策略」，应改到这里接线。真正强制的做法是把非白名单消息路由到一个没有工具的 Session，这需要 DSH 侧支持无工具 preset。
 
-## 人格可以清空（2026-10-25）
+## 人格不再回退到内置默认（2026-10-25）
 
-以前「人格」最少要 1 个字，想彻底不要人格只能删文件——而删文件等于**回到内置默认**，两者分不开。
-现在空文本本身就是一个明确状态。
+以前「人格」有两条隐形的路：文件缺失就回退内置文案，空文本才表示「不要人格」，于是想彻底去掉人格必须删对文件。
+现在只有一条规则：**文件里有什么就注入什么，没有就是没有**。
 
-- `persona.md` 存在但内容为空 → `snapshot()` 返回 `{ text: "", customized: true, empty: true }`，
-  Discord 回合不再拼人格段（空的 prompt context 会被 `renderContextSections` 过滤掉）。
-- 文件缺失仍是「用内置默认」，所以「清空」与「恢复默认」是两件不同的事。
-- `normalizePersonaText(value, { allowEmpty })`：保存与读取时允许空串；不传 `allowEmpty` 的调用方
-  （例如把外部输入当文本验证时）仍把空串视为无效，语义不被稀释。
-- 校验错误文案改为「人格文本最多 8000 字，且不能包含控制字符」，去掉至少 1 字的限制；
-  `write()` 传非字符串仍报 `persona-invalid`，不会把已有的人格误清空。
-- 设置卡片两处入口都放开空保存：通用设置里的内联文本框与「人格」弹窗，提示改为「留空则不注入任何人格」，
-  状态显示「已清空」。
-- 新增 `test/persona-store.test.mjs`（10 例）：空串/纯空白/空文件都算「已清空」，文件缺失回退默认，
-  空人格对 Discord 与非 Discord 会话都渲染为空串，重置后恢复内置默认且文件被删除。
+- `snapshot()`：文件缺失 → `{ text: "", customized: false, empty: true }`；文件存在但为空 →
+  `{ text: "", customized: true, empty: true }`。两者 Discord 回合都不拼人格段（空的 prompt context 会被
+  `renderContextSections` 过滤掉）。
+- `DISCORD_PERSONA_PROMPT` 只当卡片里的模板：`installDiscordPersona(ctx)` 不传 `text` 时默认注入空串，
+  插件自身不再自动注入内置人格。
+- 「恢复默认」按钮改为「清空」：`reset()` 改成写 0 byte 文件而不是删档，让「已清空」在卡片上可见；
+  `write('')` 行为不变。
+- 设置卡片状态三态：未设置（从没保存过）/ 已清空 / 自定义；提示文案改为「空白或未设置时都不注入人格」。
+- `normalizePersonaText(value, { allowEmpty })` 与 `write()` 的校验不变：非字符串仍报 `persona-invalid`，
+  不会把已有的人格误清空。
+- `test/persona-store.test.mjs` 相应改为：文件缺失＝无人格（`text === ""`、`customized === false`）；
+  `reset()` 后 `text === ""`、`customized === true`、文件仍在且为 0 byte。
 - 顺手修了两个早就红着的测试：`context-access` 与 `discord-smart-reply` 之前把 prompt 当字符串断言，
   但入站 prompt 早已是内容块数组（guest guard 块 + 正文块），改成先拼文本再断言。

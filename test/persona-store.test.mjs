@@ -43,14 +43,15 @@ test('normalizePersonaText still rejects control characters and oversized text',
   assert.equal(normalizePersonaText(null, { allowEmpty: true }), null);
 });
 
-test('an absent file falls back to the built-in persona', () => {
+test('an absent file means no persona, not the built-in default', () => {
   const { store, cleanup } = tempStore();
   try {
     const snapshot = store.snapshot();
-    assert.equal(snapshot.text, DISCORD_PERSONA_PROMPT);
+    assert.equal(snapshot.text, '');
     assert.equal(snapshot.customized, false);
-    assert.equal(snapshot.empty, false);
-    assert.equal(store.text(), DISCORD_PERSONA_PROMPT);
+    assert.equal(snapshot.empty, true);
+    assert.equal(snapshot.defaultText, DISCORD_PERSONA_PROMPT);
+    assert.equal(store.text(), '');
   } finally {
     cleanup();
   }
@@ -95,7 +96,7 @@ test('a hand-edited empty persona file also means "no persona"', () => {
   }
 });
 
-test('saving text keeps the trimmed body, and reset restores the default', () => {
+test('saving text keeps the trimmed body, and reset clears it to an empty file', () => {
   const { store, path, cleanup } = tempStore();
   try {
     const saved = store.write('  第一行\r\n第二行  ');
@@ -104,9 +105,11 @@ test('saving text keeps the trimmed body, and reset restores the default', () =>
     assert.equal(saved.empty, false);
     assert.equal(readFileSync(path, 'utf8'), '第一行\n第二行\n');
     const reset = store.reset();
-    assert.equal(reset.text, DISCORD_PERSONA_PROMPT);
-    assert.equal(reset.customized, false);
-    assert.equal(existsSync(path), false);
+    assert.equal(reset.text, '');
+    assert.equal(reset.customized, true);
+    assert.equal(reset.empty, true);
+    assert.equal(existsSync(path), true);
+    assert.equal(readFileSync(path, 'utf8'), '');
   } finally {
     cleanup();
   }

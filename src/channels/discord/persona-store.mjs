@@ -1,12 +1,15 @@
 /**
- * Persisted Discord persona: the built-in prompt is the default, and a custom
- * override saved from the DSH settings card lives in
- * `<DSH_HOME>/integrations/dsh-discord/persona.md`.
+ * Persisted Discord persona. Only what the operator saves from the settings card
+ * is injected; it lives in `<DSH_HOME>/integrations/dsh-discord/persona.md`.
+ *
+ * There is no implicit fallback: a missing file and an empty file both mean
+ * "no persona", and DISCORD_PERSONA_PROMPT is only a template the card offers,
+ * never something the plugin injects on its own.
  *
  * The file is small (<= 8k chars) and read once per plugin start, so a plain
  * synchronous read is cheaper than wiring another async store.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { MAX_PERSONA_CHARS } from './persona-endpoints.mjs';
@@ -47,24 +50,18 @@ export class DiscordPersonaStore {
   }
 
   /**
-   * { text, defaultText, customized, empty } — `text` is what gets injected, so
-   * a deliberately emptied persona yields '' and Discord turns run without one.
+   * { text, defaultText, customized, empty } — `text` is what gets injected.
+   * `customized` is false only when no file has ever been saved; `empty` is true
+   * whenever the effective text is blank, so both "never configured" and
+   * "cleared" run Discord turns without a persona.
    */
   snapshot() {
     const custom = this.#read();
-    if (custom !== null) {
-      return {
-        text: custom,
-        defaultText: DISCORD_PERSONA_PROMPT,
-        customized: true,
-        empty: custom === '',
-      };
-    }
     return {
-      text: DISCORD_PERSONA_PROMPT,
+      text: custom ?? '',
       defaultText: DISCORD_PERSONA_PROMPT,
-      customized: false,
-      empty: false,
+      customized: custom !== null,
+      empty: (custom ?? '') === '',
     };
   }
 
@@ -85,9 +82,9 @@ export class DiscordPersonaStore {
     return this.snapshot();
   }
 
+  /** Clear the persona by writing an empty file, so "cleared" stays visible. */
   reset() {
-    rmSync(this.#path, { force: true });
-    return this.snapshot();
+    return this.write('');
   }
 
   /** null when the file is absent; '' when it is present and deliberately empty. */
