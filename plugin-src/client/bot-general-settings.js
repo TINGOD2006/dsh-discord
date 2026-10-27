@@ -5,6 +5,7 @@ import { normalizeFeishuStepCardPanels } from '../../src/channels/feishu/step-pu
 import { FEISHU_ENDPOINTS } from './channels/feishu/api.js';
 import { PERSONA_ENDPOINTS, MAX_PERSONA_CHARS } from '../../src/channels/discord/persona-endpoints.mjs';
 import { MAX_ALLOWLIST_SIZE, ALLOWLIST_ENDPOINTS } from '../../src/channels/discord/allowlist-endpoints.mjs';
+import { MemberAllowlist } from './member-allowlist.js';
 
 function allowlistFromResult(result) {
   if (result?.ok !== true) throw new Error(result?.error?.message || '无法读取白名单，请稍后重试。');
@@ -18,6 +19,12 @@ function parseAllowlistDraft(draft) {
     .split(/[\s,，;；]+/)
     .map((id) => id.trim())
     .filter((id) => id !== '');
+}
+
+function toggleAllowlistId(draft, id) {
+  const ids = parseAllowlistDraft(draft);
+  const next = ids.includes(id) ? ids.filter((entry) => entry !== id) : [...ids, id];
+  return next.join('\n');
 }
 
 function personaFromResult(result) {
@@ -245,10 +252,19 @@ export function BotGeneralSettingsPage({ channel, account, rpcCall }) {
     isDiscord && allowlist !== null ? h('div', { className: 'dim-botGeneralRow dim-botGeneralPanelRow dim-botGeneralStack' },
       h('label', { className: 'dim-botGeneralTitle', htmlFor: `${modeId}-allowlist` }, '白名单'),
       h('p', { className: 'dim-botGeneralHelp', id: `${modeId}-allowlist-help` },
-        `一行一个 Discord 用户 ID，最多 ${MAX_ALLOWLIST_SIZE} 个；名单里的人可以像主人一样使用完整指令，保存后 30 秒内生效。`),
+        `名单里的人可以像主人一样使用完整指令，最多 ${MAX_ALLOWLIST_SIZE} 个，保存后 30 秒内生效。点开成员开关即加入，勾选只改本地，按「保存白名单」一起提交。`),
+      h(MemberAllowlist, {
+        account,
+        rpcCall,
+        selectedIds: new Set(parseAllowlistDraft(allowlistDraft)),
+        onToggle: (id) => setAllowlistDraft((draft) => toggleAllowlistId(draft, id)),
+        max: MAX_ALLOWLIST_SIZE,
+        disabled: allowlistBusy,
+      }),
+      h('label', { className: 'dim-memberManualLabel', htmlFor: `${modeId}-allowlist` }, '手动添加用户 ID（一行一个）'),
       h('textarea', {
         id: `${modeId}-allowlist`, className: 'dim-botGeneralTextarea', 'aria-label': '白名单用户 ID',
-        'aria-describedby': `${modeId}-allowlist-help`, rows: 5,
+        'aria-describedby': `${modeId}-allowlist-help`, rows: 3,
         value: allowlistDraft, disabled: allowlistBusy, spellCheck: false,
         placeholder: '123456789012345678',
         onChange: (event) => setAllowlistDraft(event.target.value),

@@ -131,6 +131,21 @@ export class DiscordApi {
     return this.#request('gateway/bot', { ...options, method: 'GET' });
   }
 
+  /** Guilds this bot has joined; with_counts adds approximate member counts. */
+  listGuilds(options = {}) {
+    return this.#request('users/@me/guilds?with_counts=true', { ...options, method: 'GET' });
+  }
+
+  /** One page of guild members; requires the GUILD_MEMBERS privileged intent. */
+  listGuildMembers(guildId, { after, limit = 1_000, signal } = {}) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (after !== undefined && after !== null && after !== '') query.set('after', String(after));
+    return this.#request(
+      `guilds/${snowflake(guildId, 'guild id')}/members?${query.toString()}`,
+      { method: 'GET', signal },
+    );
+  }
+
   /** Replace the application's global slash commands with this exact set. */
   putGlobalApplicationCommands(applicationId, commands, { signal } = {}) {
     return this.#request(`applications/${snowflake(applicationId, 'application id')}/commands`, {

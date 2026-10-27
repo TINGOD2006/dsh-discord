@@ -34,4 +34,14 @@ export class DiscordController extends TokenBotController {
       },
     });
   }
+
+  /** Merged member list for the whitelist panel (see member-directory.mjs). */
+  async listMembers(botId, { force = false } = {}) {
+    try {
+      return await this.callRuntimeRead(botId, 'listMembers', [{ force }]);
+    } catch (error) {
+      if (error?.code === 'bot-not-connected') error.code = 'members-unavailable';
+      throw error;
+    }
+  }
 }

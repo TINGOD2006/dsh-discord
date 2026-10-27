@@ -247,6 +247,27 @@ export class TokenBotController {
     });
   }
 
+  /**
+   * Read-only runtime call that skips the per-bot transition lock.
+   *
+   * The member directory can spend seconds walking REST pages; holding the
+   * transition lock that long would delay reconnect/delete. Failures surface as
+   * `bot-not-connected` so the RPC layer can map them to a channel-specific code.
+   */
+  async callRuntimeRead(botId, method, args = []) {
+    const config = this.#configStore.get(botId);
+    if (!config) throw new Error(`Unknown ${this.#descriptor.label} bot`);
+    const runtime = this.#runtimes.get(botId);
+    if (!runtime?.status?.ready || typeof runtime[method] !== 'function') {
+      const error = new Error(t('{label}机器人尚未连接', {
+        label: this.#descriptor.label,
+      }));
+      error.code = 'bot-not-connected';
+      throw error;
+    }
+    return runtime[method](...args);
+  }
+
   async presentSessionSyncApproval(botId, target, interaction, options = {}) {
     const config = this.#configStore.get(botId);
     if (!config) throw new Error(`Unknown ${this.#descriptor.label} bot`);

@@ -683,6 +683,45 @@ const CSS = String.raw`
 .dim-botGeneralTextarea { width: 100%; min-height: 72px; display: block; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 10px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f5f6f7); font: 13px/20px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; resize: vertical; box-sizing: border-box; }
 .dim-botGeneralTextarea:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 2px; }
 .dim-botGeneralTextarea:disabled { opacity: .55; cursor: not-allowed; }
+/* 白名单成员面板 */
+.dim-memberPanel { min-width: 0; display: grid; gap: 8px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 12px; background: var(--dsw-alias-bg-layer-1, #fff); }
+.dim-memberToolbar { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.dim-memberCount { min-width: 0; display: inline-flex; align-items: baseline; gap: 4px; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; line-height: 18px; }
+.dim-memberCount strong { color: var(--dsw-alias-label-primary, #1f2329); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dim-memberActions { min-width: 0; margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 1 1 220px; justify-content: flex-end; }
+.dim-memberSearch { min-width: 0; flex: 1 1 160px; max-width: 260px; height: 32px; padding: 0 12px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f5f6f7); font: inherit; font-size: 13px; line-height: 20px; box-sizing: border-box; }
+.dim-memberSearch:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 1px; }
+.dim-memberList { min-width: 0; max-height: 328px; overflow-y: auto; display: grid; gap: 2px; margin: 0 -6px; padding: 0 6px; }
+.dim-memberRow { min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr) max-content; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.dim-memberRow:hover { background: var(--dsw-alias-interactive-bg-hover, #eef0f3); }
+.dim-memberRow[data-selected="true"] { background: color-mix(in srgb, var(--dim-blue) 9%, transparent); }
+.dim-memberRow[data-disabled="true"] { cursor: not-allowed; opacity: .5; }
+.dim-memberAvatar { width: 30px; height: 30px; flex: none; border-radius: 50%; object-fit: cover; background: var(--dsw-alias-bg-module-platform, #f5f6f7); }
+.dim-memberAvatarFallback { display: inline-flex; align-items: center; justify-content: center; color: var(--dsw-alias-label-secondary, #646a73); font-size: 13px; font-weight: 600; }
+.dim-memberIdentity { min-width: 0; display: grid; gap: 1px; }
+.dim-memberName { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; color: var(--dsw-alias-label-primary, #1f2329); font-size: 13px; line-height: 19px; font-weight: 500; overflow-wrap: anywhere; }
+.dim-memberHandle { color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; font-weight: 400; }
+.dim-memberMeta { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.dim-memberId { color: var(--dsw-alias-label-tertiary, #8f959e); font: 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.dim-memberGuilds { color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; line-height: 16px; }
+.dim-memberRow .dim-contextSwitch { display: block; }
+.dim-memberRow .dim-contextSwitch:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 3px; }
+.dim-memberLoading, .dim-memberEmpty, .dim-memberHidden, .dim-memberFetchedAt, .dim-memberLimit, .dim-memberPartial { margin: 0; padding: 10px 2px; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; line-height: 18px; }
+.dim-memberEmpty { padding: 18px 12px; border: 1px dashed var(--dsw-alias-border-l2, #dfe1e5); border-radius: 9px; text-align: center; }
+.dim-memberLimit, .dim-memberPartial { color: var(--dsw-alias-state-warn-primary, #d97706); }
+.dim-memberNotice { display: grid; gap: 8px; justify-items: start; padding: 12px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary, #d54941) 24%, var(--dsw-alias-border-l2, #dfe1e5)); border-radius: 9px; background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d54941) 6%, var(--dsw-alias-bg-layer-1, #fff)); }
+.dim-memberNoticeText { margin: 0; color: var(--dsw-alias-state-error-primary, #d54941); font-size: 12px; line-height: 18px; }
+.dim-memberNoticeHint { margin: 0; color: var(--dsw-alias-label-secondary, #646a73); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.dim-memberMissing { min-width: 0; display: grid; gap: 6px; padding-top: 4px; }
+.dim-memberMissingTitle { margin: 0; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; line-height: 18px; }
+.dim-memberMissingList { display: flex; flex-wrap: wrap; gap: 6px; }
+.dim-memberMissingItem { min-width: 0; padding: 4px 9px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 999px; color: var(--dsw-alias-label-secondary, #646a73); background: var(--dsw-alias-bg-module-platform, #f5f6f7); font: 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; overflow-wrap: anywhere; }
+.dim-memberMissingItem:hover:not(:disabled) { color: var(--dsw-alias-state-error-primary, #d54941); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d54941) 40%, transparent); }
+.dim-memberManual { min-width: 0; display: grid; gap: 6px; }
+.dim-memberManualToggle { justify-self: start; padding: 0; border: 0; color: var(--dim-blue); background: transparent; font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; }
+.dim-memberManualToggle:hover { text-decoration: underline; }
+.dim-memberManualHint { margin: 0; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.dim-memberManualLabel { margin-top: 4px; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 12px; line-height: 18px; }
 .dim-generalSettingsPage { min-width: 0; display: grid; }
 .dim-generalSettingsHeader { min-width: 0; margin: 0 0 8px; }
 .dim-generalSettingsHeader h2 { margin: 0; color: var(--dsw-alias-label-primary, #1f2329); font-size: 18px; line-height: 25px; font-weight: 680; }
