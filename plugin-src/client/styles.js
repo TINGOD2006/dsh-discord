@@ -6,7 +6,7 @@ const CSS = String.raw`
 .dim-pluginOpen:hover { background: var(--dsw-alias-interactive-bg-hover, #f7f8fa); }
 .dim-pluginOpen:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 3px; }
 .dim-pluginPage { height: 100%; min-height: 0; overflow: auto; box-sizing: border-box; padding: 24px clamp(16px, 4vw, 48px) 32px; color: var(--dsw-alias-label-primary, #1f2329); }
-.dim-pluginPageContent { max-width: 1080px; margin: 0 auto; }
+.dim-pluginPageContent { max-width: none; margin: 0; }
 @media (pointer: coarse) { .dim-pluginOpen { min-height: 44px; } }
 .dim-connectionDiagnostic { min-width: 0; width: 100%; color: var(--dsw-alias-label-secondary, #646a73); overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
 .dim-connectionDiagnostic[data-warning="true"] { color: var(--dsw-alias-state-warn-primary, #d97706); }
@@ -50,7 +50,7 @@ const CSS = String.raw`
   --dim-blue: var(--dsw-alias-state-business-primary, #3370ff);
   --dim-blue-soft: color-mix(in srgb, var(--dim-blue) 9%, transparent);
   width: 100%;
-  max-width: 1080px;
+  max-width: none;
   padding: 2px 0 30px;
   color: var(--dsw-alias-label-primary, #1f2329);
   box-sizing: border-box;
@@ -117,12 +117,7 @@ const CSS = String.raw`
 .dim-generalSettingsTooltip { position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; width: max-content; padding: 6px 9px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 7px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-layer-3, #fff); box-shadow: 0 8px 24px rgb(31 35 41 / 14%); font-size: 11px; line-height: 16px; font-weight: 500; white-space: nowrap; opacity: 0; visibility: hidden; transform: translateY(-3px); pointer-events: none; transition: opacity .15s ease, transform .15s ease, visibility .15s ease; }
 .dim-generalSettingsAction:hover .dim-generalSettingsTooltip, .dim-generalSettingsButton:focus-visible + .dim-generalSettingsTooltip { opacity: 1; visibility: visible; transform: translateY(0); }
 .dim-generalSettingsButton[aria-current="page"] + .dim-generalSettingsTooltip { opacity: 0; visibility: hidden; transform: translateY(-3px); }
-.dim-layout { display: grid; grid-template-columns: 174px 1px minmax(0, 1fr); gap: 24px; align-items: start; }
-.dim-rail { display: grid; align-content: start; gap: 8px; padding: 0 4px 1px 1px; }
-.dim-channel { width: 100%; min-height: 48px; display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--dsw-alias-border-l2, #eef0f3); border-radius: 14px; color: inherit; background: var(--dsw-alias-bg-layer-3, #fff); box-shadow: 0 2px 8px rgb(31 35 41 / 3%); font: inherit; text-align: left; cursor: pointer; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
-.dim-channel:hover { border-color: color-mix(in srgb, var(--dim-blue) 25%, var(--dsw-alias-border-l2, #eef0f3)); background: color-mix(in srgb, var(--dim-blue) 2%, var(--dsw-alias-bg-layer-3, #fff)); box-shadow: 0 5px 16px rgb(31 35 41 / 5%); }
-.dim-channel[aria-selected="true"] { border-color: color-mix(in srgb, var(--dim-blue) 43%, var(--dsw-alias-border-l2, #dfe1e5)); color: var(--dim-blue); background: color-mix(in srgb, var(--dim-blue) 12%, var(--dsw-alias-bg-layer-3, #fff)); box-shadow: 0 3px 12px rgb(51 112 255 / 7%); }
-.dim-channel:focus-visible { outline: none; border-color: color-mix(in srgb, var(--dim-blue) 72%, var(--dsw-alias-border-l2, #dfe1e5)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--dim-blue) 24%, transparent) inset, 0 3px 12px rgb(51 112 255 / 7%); }
+.dim-layout { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; }
 .dim-logo { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; box-shadow: 0 1px 3px rgb(31 35 41 / 7%); }
 .dim-logo svg { display: block; width: 20px; height: 20px; }
 .dim-logoWeixin { color: white; background: #07c160; }
@@ -147,11 +142,8 @@ const CSS = String.raw`
 .dim-logoIMessage { color: white; background: linear-gradient(180deg, #5bf675 0%, #28d944 50%, #0fbd2c 100%); box-shadow: inset 0 1px 1px rgb(255 255 255 / 45%), 0 1px 3px rgb(31 35 41 / 12%); }
 .dim-logoIMessage svg { width: 23px; height: 23px; }
 .dim-logoWhatsapp svg { width: 21px; height: 21px; }
-.dim-channelCopy { min-width: 0; display: grid; }
-.dim-channelCopy strong { overflow: hidden; color: inherit; font-size: 14px; line-height: 20px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
-.dim-channelNote { overflow: hidden; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 10px; line-height: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.dim-divider { width: 1px; align-self: stretch; background: var(--dsw-alias-border-l1, #eef0f3); }
 .dim-panel { min-width: 0; container-type: inline-size; }
+.dim-panelBackRow { display: flex; margin: 0 0 10px; }
 .dim-loopbackRecovery { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 14px; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 30%, var(--dsw-alias-border-l2, #dfe1e5)); border-radius: 12px; color: var(--dsw-alias-label-primary, #1f2329); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 8%, var(--dsw-alias-bg-layer-1, #fff)); }
 .dim-loopbackRecoveryCopy { min-width: 0; }
 .dim-loopbackRecoveryCopy strong { display: block; font-size: 14px; line-height: 20px; font-weight: 650; }
@@ -682,6 +674,15 @@ const CSS = String.raw`
 .dim-botGeneralControl .dim-contextSwitch:disabled { opacity: .5; cursor: not-allowed; }
 .dim-botGeneralControl .dim-contextSwitch:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 3px; }
 .dim-botGeneralActions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding-top: 16px; }
+/* 人格 / 白名单这类“标题 + 说明 + 多行输入 + 操作”的字段整行纵向排列：
+   旧的 1fr | max-content 两列会把说明文字撑成一整行，尾列抢走全部宽度，
+   输入框被压到 0 宽（看起来就是“设置无法输入”），所以单独给一列布局。 */
+.dim-botGeneralStack { grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: stretch; }
+.dim-botGeneralStack .dim-botGeneralHelp { max-width: 72ch; }
+.dim-botGeneralStack .dim-botGeneralActions { padding-top: 0; }
+.dim-botGeneralTextarea { width: 100%; min-height: 72px; display: block; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 10px; color: var(--dsw-alias-label-primary, #1f2329); background: var(--dsw-alias-bg-module-platform, #f5f6f7); font: 13px/20px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; resize: vertical; box-sizing: border-box; }
+.dim-botGeneralTextarea:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #3370ff); outline-offset: 2px; }
+.dim-botGeneralTextarea:disabled { opacity: .55; cursor: not-allowed; }
 .dim-generalSettingsPage { min-width: 0; display: grid; }
 .dim-generalSettingsHeader { min-width: 0; margin: 0 0 8px; }
 .dim-generalSettingsHeader h2 { margin: 0; color: var(--dsw-alias-label-primary, #1f2329); font-size: 18px; line-height: 25px; font-weight: 680; }
@@ -776,10 +777,7 @@ const CSS = String.raw`
 }
 @media (max-width: 840px) {
   .dim-title { align-items: flex-start; }
-  .dim-layout { grid-template-columns: minmax(0, 1fr); gap: 18px; }
-  .dim-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-right: 1px; }
-  .dim-divider { display: none; }
-  .dim-channel { min-height: 48px; }
+  .dim-layout { gap: 18px; }
 }
 @media (max-width: 560px) {
   .dim-title { flex-direction: column; gap: 10px; }
@@ -792,7 +790,6 @@ const CSS = String.raw`
   .dim-updateBody { padding: 16px 18px; }
   .dim-updateFooter { padding: 12px 18px; }
   .dim-githubTooltip { right: auto; left: 0; }
-  .dim-rail { grid-template-columns: minmax(0, 1fr); }
   .dim-loopbackRecovery { align-items: stretch; flex-direction: column; gap: 12px; }
   .dim-loopbackRecoveryAction { width: 100%; }
   .dim-deliverySectionHeading { align-items: stretch; flex-direction: column; }

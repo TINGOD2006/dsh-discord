@@ -554,6 +554,7 @@ const EN = Object.freeze({
   '跟随 Host 默认': 'Follow the Host default',
   '（已不可用）': ' (unavailable)',
   '只影响新建会话；若当前聊天已有会话，先发送 /new，再发送普通消息生效。': 'This affects only new sessions. If the current chat already has a session, send /new, then send a regular message to apply it.',
+  '保存后会立即套用到该机器人的现有会话，新建会话也使用该模型；改回“跟随默认模型”时，现有会话需发送 /new 才会回到默认。': 'Saving applies it to this bot\'s existing sessions right away, and new sessions use it too. Switching back to “Follow the default model” only reaches existing sessions after /new.',
   '当前 Agent Preset 已不可用，请选择其他 Preset 或跟随 Host 默认。': 'The current Agent Preset is unavailable. Choose another preset or follow the Host default.',
   'Agent Preset 修改失败，请重试。': 'Could not update the Agent Preset. Try again.',
   '请选择 Agent Preset。': 'Choose an Agent Preset.',

@@ -752,3 +752,24 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
   `reset()` 后 `text === ""`、`customized === true`、文件仍在且为 0 byte。
 - 顺手修了两个早就红着的测试：`context-access` 与 `discord-smart-reply` 之前把 prompt 当字符串断言，
   但入站 prompt 早已是内容块数组（guest guard 块 + 正文块），改成先拼文本再断言。
+
+## 保存模型时同步现有会话（2026-10-27）
+
+以前模型只在「新建会话」时读取：`createSession` 拿 `workspaces.modelFor(botId)` 调 `selectSessionModel`，
+已经存在的会话继续跑旧模型。于是设置卡片保存了 `openai-codex/gpt-6.1-sol` 后，群里看起来毫无变化，
+要么发 `/new`，要么一直以为功能坏了。
+
+现在保存即同步：
+
+- `bot-workspace-store.mjs` 新增导出 `applyModelToBotSessions(harness, state, model, { logger })`：
+  从 `state.snapshot().sessions` 取出去重后的会话 id，逐个 `harness.selectSessionModel(id, model)`，
+  再用 `confirmsModelSelection(selected?.selected, model)` 校验；单个会话切不过去只 `warn` 并计入 `failed`，
+  不影响保存结果，也不打断其他会话。
+- `updateModel` 在 `workspaces.setModel()` 成功之后、同一个 `withBotTransition` 里调用它
+  （`stateFor(botId)` 读不到会话状态时只 `warn`，保存照常完成）。`createWorkspaceAwareController`
+  新增可选的 `harness`、`logger` 注入；`plugin-src/host/channels/*/production.mjs` 十个通道全部传入。
+- 「跟随默认模型」（`model === null`）不会回滚现有会话：选模型 API 没有「恢复默认」的表达方式，
+  这种情况仍需 `/new`。卡片提示文案据此改写。
+- 不做「每回合懒切换」：那会给每条消息多加一次 RPC，而且模型临时不可用时整则消息都会失败。
+- 测试：新增 `test/bot-model-sessions.test.mjs` 5 项（全部会话切换并按 id 去重、单个失败只告警、
+  回报模型不符算失败、`null` 不调用、无状态/无 `selectSessionModel` 时空转），全部通过。

@@ -230,6 +230,8 @@ export async function createTokenProductionController(ctx, config, internals, de
     stateFor,
     agentPresetCatalog,
     modelCatalog,
+    harness,
+    logger,
   });
   const supervisor = createSupervisor({
     channel,

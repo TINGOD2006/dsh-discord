@@ -2311,11 +2311,49 @@ export function createBotScopedHarness(harness, options) {
   return createBotWorkspaceScope(harness, options).harness;
 }
 
+/**
+ * Push the bot's saved model onto the sessions its conversations are already
+ * bound to. Creating a session reads the model, but an existing session keeps
+ * whatever it was created with, so saving a model used to reach only chats
+ * that started afterwards (or after /new). This applies the same selection in
+ * place. A binding the harness no longer knows is skipped: the model save is
+ * already committed and must not fail because an old conversation cannot be
+ * reached.
+ */
+export async function applyModelToBotSessions(harness, state, model, { logger } = {}) {
+  if (!model || typeof harness?.selectSessionModel !== 'function'
+    || typeof state?.snapshot !== 'function') {
+    return { applied: 0, failed: 0, sessionIds: [] };
+  }
+  const sessionIds = [...new Set(Object.values(state.snapshot()?.sessions ?? {})
+    .filter((sessionId) => typeof sessionId === 'string' && sessionId))];
+  let applied = 0;
+  let failed = 0;
+  for (const sessionId of sessionIds) {
+    try {
+      const selected = await harness.selectSessionModel(sessionId, model);
+      if (!confirmsModelSelection(selected?.selected, model)) {
+        const error = new Error('Harness did not confirm the selected model');
+        error.code = 'model-selection-mismatch';
+        throw error;
+      }
+      applied += 1;
+    } catch (error) {
+      failed += 1;
+      logger?.warn?.(`[dsh-im] could not apply the bot model to ${sessionId}: `
+        + `${error?.code ?? error?.message ?? error}`);
+    }
+  }
+  return { applied, failed, sessionIds };
+}
+
 export function createWorkspaceAwareController(controller, {
   workspaces,
   stateFor,
   agentPresetCatalog,
   modelCatalog,
+  harness,
+  logger,
   validateAccessPolicyForBot,
 } = {}) {
   if (!controller || !workspaces || typeof stateFor !== 'function') {
@@ -2406,6 +2444,20 @@ export function createWorkspaceAwareController(controller, {
         throw error;
       }
       await workspaces.setModel(botId, model, { incarnation });
+      if (model) {
+        let sessionState = null;
+        try {
+          sessionState = await stateFor(botId);
+        } catch (error) {
+          logger?.warn?.('[dsh-im] could not read bot sessions to apply the model:', error?.message ?? error);
+        }
+        if (sessionState) {
+          // Existing conversations keep the model they were created with, so a
+          // save must reach them too; otherwise the panel and the running chat
+          // disagree until someone sends /new.
+          await applyModelToBotSessions(harness, sessionState, model, { logger });
+        }
+      }
       return decorateResult(
         workspaces,
         await controller.status(),

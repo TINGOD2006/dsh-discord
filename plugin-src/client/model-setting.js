@@ -143,7 +143,7 @@ export function ModelEditor({ model = null, disabled = false, onSave }) {
         h('span', { id: `${id}-help`, className: 'dim-presetTooltip', role: 'tooltip' },
           effortHint && !effortUnavailable
             ? h('span', { id: `${id}-hint` }, effortHint, ' ') : null,
-          '只影响新建会话；若当前聊天已有会话，先发送 /new，再发送普通消息生效。'))),
+          '保存后会立即套用到该机器人的现有会话，新建会话也使用该模型；改回“跟随默认模型”时，现有会话需发送 /new 才会回到默认。'))),
     saving ? h('span', { className: 'dim-presetStatus', role: 'status' }, '保存中…') : null),
   row('model', '模型', entry?.name ?? (current ? modelSelectionId(current) : localizeText('跟随默认模型'))),
   row('effort', '思考强度', effortLabel, effortDisabled),

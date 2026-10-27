@@ -306,6 +306,8 @@ export async function createProductionController(ctx, config = {}, internals = {
     stateFor: stateForBotId,
     agentPresetCatalog,
     modelCatalog,
+    harness,
+    logger,
     validateAccessPolicyForBot(botId, policy) {
       const botOpenId = configStore.getBot(botId)?.botOpenId;
       if (!botOpenId) return;

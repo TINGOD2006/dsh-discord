@@ -232,14 +232,15 @@ export function IMSettingsTab({
   const [selected, setSelected] = React.useState(() => (
     preferredSectionId === GLOBAL_SETTINGS_TAB_ID
       || CHANNELS.some((channel) => channel.id === preferredSectionId)
-      ? preferredSectionId : 'weixin'
+      ? preferredSectionId : CHANNELS[0].id
   ));
   const [loopbackRecovery, setLoopbackRecovery] = React.useState(null);
   const [runningVersion, setRunningVersion] = React.useState(IM_PLUGIN_VERSION);
   const [deliverySettings, setDeliverySettings] = React.useState(null);
   // The Host owns email availability and reports it over RPC. The
   // mailbox entry point is omitted entirely while it is closed, and the visible
-  // channel list is what every later lookup (active tab, rail) reads from.
+  // channel list is what the active-panel lookup reads from. dsh-discord 只有
+  // Discord 一个频道，所以不再渲染左侧频道导航，面板直接铺满整张卡片。
   const emailEnabled = useEmailChannelEnabled(emailRpcCall);
   const visibleChannels = React.useMemo(
     () => CHANNELS.filter((channel) => channel.id !== 'email' || emailEnabled),
@@ -249,9 +250,6 @@ export function IMSettingsTab({
   const generalSettingsTooltipId = React.useId();
   const globalSettingsSelected = selected === GLOBAL_SETTINGS_TAB_ID;
   const active = visibleChannels.find((channel) => channel.id === selected) ?? visibleChannels[0];
-  const activeTabId = globalSettingsSelected
-    ? 'dim-general-settings-trigger'
-    : `dim-tab-${active.id}`;
   const activePanelId = globalSettingsSelected
     ? `dim-panel-${GLOBAL_SETTINGS_TAB_ID}`
     : `dim-panel-${active.id}`;
@@ -365,37 +363,27 @@ export function IMSettingsTab({
         }, '通用设置'))),
     ),
     h('div', { className: 'dim-layout' },
-      h('nav', { className: 'dim-rail', role: 'tablist', 'aria-label': 'IM 设置导航' },
-        visibleChannels.map((channel) => h('button', {
-          key: channel.id,
-          type: 'button',
-          role: 'tab',
-          id: `dim-tab-${channel.id}`,
-          className: 'dim-channel',
-          'aria-selected': !globalSettingsSelected && channel.id === active.id,
-          'aria-controls': `dim-panel-${channel.id}`,
-          onClick: () => {
-            setSelected(channel.id);
-            setDeliverySettings(null);
-          },
-        },
-        h(ChannelLogo, { channel: channel.id }),
-        h('span', { className: 'dim-channelCopy' },
-          h('strong', null, channel.label),
-          channel.note ? h('small', { className: 'dim-channelNote' }, channel.note) : null,
-        )))),
-      h('div', { className: 'dim-divider', 'aria-hidden': 'true' }),
       h('main', {
         className: 'dim-panel',
-        role: 'tabpanel',
         id: activePanelId,
-        'aria-labelledby': activeTabId,
+        'aria-label': globalSettingsSelected ? '通用设置' : 'Discord 设置面板',
       },
       loopbackRecovery
         ? h(LoopbackRecoveryNotice, {
             recovery: loopbackRecovery,
             onNavigate: navigateToRecoveryUrl,
           })
+        : null,
+      globalSettingsSelected
+        ? h('div', { className: 'dim-panelBackRow' },
+            h('button', {
+              type: 'button',
+              className: 'dim-deliveryButton dim-deliveryBack',
+              onClick: () => {
+                setSelected(active?.id ?? 'discord');
+                setDeliverySettings(null);
+              },
+            }, '← 返回 Discord'))
         : null,
       h(BotSettingsContext.Provider, { value: botSettingsContext },
         globalSettingsSelected

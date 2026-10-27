@@ -177,6 +177,8 @@ export async function createProductionController(ctx, config = {}, internals = {
     stateFor,
     agentPresetCatalog,
     modelCatalog,
+    harness,
+    logger,
   });
   const supervisor = createSupervisor({
     channel: 'whatsapp',
