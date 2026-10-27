@@ -98,7 +98,9 @@ test('activate bumps the epoch', () => withHandler(async (handler, library) => {
 }));
 
 test('the legacy set endpoint writes the active persona', () => withHandler(async (handler, library) => {
-  const created = library.create({ name: 'H', text: '' });
+  // Activating needs content; the legacy `set` endpoint is what fills or clears
+  // it afterwards, which is exactly what this test asserts.
+  const created = library.create({ name: 'H', text: '种子人格' });
   library.activate(created.id);
   const saved = await call(handler, PERSONA_ENDPOINTS.set, { text: '旧客户端写入' });
   assert.equal(saved.ok, true);

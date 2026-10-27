@@ -12,6 +12,7 @@ const FALLBACK_MESSAGES = {
   'persona-not-found': '找不到这个人格。',
   'persona-active-undeletable': '正在使用的人格不能删除，请先切换到别的人格。',
   'persona-limit': '人格数量已达上限，请先删除一个。',
+  'persona-empty': '这个人物还没有内容，先写点内容再切换。',
   'persona-too-large': '人格正文太长。',
 };
 

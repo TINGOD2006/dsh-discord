@@ -93,12 +93,14 @@ test('text over the size cap or with control characters is rejected before it is
   assert.equal(library.read(id).text, 'x');
 }));
 
-test('no active persona, a missing file and an empty file all mean "inject nothing"', () => withLibrary(async (library) => {
+test('no active persona and an empty body both mean "inject nothing"', () => withLibrary(async (library, home) => {
   assert.equal(library.activeText(), '');
-  const { id } = library.create({ name: '空', text: '' });
-  library.activate(id);
-  assert.equal(library.activeText(), '');
+  // `activate` refuses a blank body, so reproduce the state a hand edit or an
+  // older install can still leave behind: a valid id pointing at an empty file.
+  const { id } = library.create({ name: '空', text: '暫存' });
   library.save({ id, name: '空', text: '' });
+  await writeFile(join(root(home), 'personas', 'active.json'),
+    `${JSON.stringify({ activeId: id, epoch: 1 })}\n`, 'utf8');
   assert.equal(library.activeText(), '');
 }));
 

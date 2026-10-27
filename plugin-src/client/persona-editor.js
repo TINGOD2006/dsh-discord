@@ -127,6 +127,10 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
 
   const dirty = loaded && selectedId !== null && (name !== baseline.name || text !== baseline.text);
   const isActive = selectedId !== null && selectedId === activeId;
+  // A blank persona has nothing to inject, so activating it only retires the
+  // bound Session and loses the current voice. Block it in the UI too; the
+  // library refuses it as well, so the rule holds without the dialog.
+  const blank = text.trim() === '';
 
   const saveSelected = () => mutate(async () => {
     unwrap(await rpcCall(PERSONA_ENDPOINTS.save, { id: selectedId, name, text }), '人格保存失败，请重试。');
@@ -136,6 +140,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
   }, '人格保存失败，请重试。', selectedId);
 
   const activateSelected = () => mutate(async () => {
+    if (text.trim() === '') throw new Error('這個人物還沒有內容，先寫點內容再切換。');
     if (dirty) unwrap(await rpcCall(PERSONA_ENDPOINTS.save, { id: selectedId, name, text }), '人格保存失败，请重试。');
     setBaseline({ name, text });
     unwrap(await rpcCall(PERSONA_ENDPOINTS.activate, { id: selectedId }), '切换人格失败，请重试。');
@@ -241,7 +246,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
         maxLength: MAX_PERSONA_CHARS,
         spellCheck: false,
         disabled: !loaded || selectedId === null || busy,
-        placeholder: loaded ? '留空则不注入任何人格，Discord 回合不再带人格段。' : '正在读取人格…',
+        placeholder: loaded ? '寫上這個人物的設定；空白的人物不能切換。' : '正在读取人格…',
         onChange: (event) => setText(event.target.value),
       }))) ,
   error ? h('p', { className: 'dim-contextError', role: 'alert' }, error) : null,
@@ -254,9 +259,9 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
     h('button', { type: 'button', disabled: busy, onClick: onClose }, '关闭'),
     h('button', {
       type: 'button', className: 'dim-contextActivate',
-      disabled: busy || selectedId === null || isActive,
+      disabled: busy || selectedId === null || isActive || blank,
       onClick: () => { void activateSelected(); },
-    }, isActive ? '使用中' : '切換到這個人'),
+    }, isActive ? '使用中' : blank ? '尚無內容' : '切換到這個人'),
     h('button', {
       type: 'button', className: 'dim-contextSave',
       disabled: busy || !loaded || !dirty,

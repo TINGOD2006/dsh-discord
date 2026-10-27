@@ -49,3 +49,35 @@ export async function applyPersonaEpoch({ epoch, state, key, handoff = null } = 
   }
   return { ...plan, oldSessionId };
 }
+
+/**
+ * Wrap a handoff job so it runs **after** the turn that discovered the switch
+ * has settled, never beside it.
+ *
+ * Generating the summary costs a full model turn in the same workspace. Running
+ * that turn at the moment the switch is detected would put it in front of the
+ * user's own request: the bot sits on "正在處理…" and the reply the user is
+ * waiting for arrives late or not at all. The summary is only ever read on a
+ * later turn (see `installDiscordHandoff`'s mtime cache), so finishing it after
+ * the reply costs nothing.
+ *
+ * Failures are logged, never thrown: a summary is a nicety, the conversation is
+ * the product.
+ */
+export function deferPersonaHandoff(run, { logger = null } = {}) {
+  if (typeof run !== 'function') return () => {};
+  return () => {
+    Promise.resolve()
+      .then(run)
+      .then(
+        (result) => {
+          if (result && result.ok === false) {
+            logger?.warn?.('[dsh-im:discord] persona handoff skipped:', result.reason ?? 'unknown');
+          }
+        },
+        (error) => {
+          logger?.warn?.('[dsh-im:discord] persona handoff failed:', error?.message ?? error);
+        },
+      );
+  };
+}

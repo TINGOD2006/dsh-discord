@@ -63,7 +63,7 @@ import {
   runPresetCommand,
 } from './preset-command.mjs';
 import { askInWorkspaceSession } from './workspace-session.mjs';
-import { applyPersonaEpoch } from '../discord/persona-epoch.mjs';
+import { applyPersonaEpoch, deferPersonaHandoff } from '../discord/persona-epoch.mjs';
 import { HarnessApprovalQueue, harnessApprovalDecision } from './harness-approval.mjs';
 import {
   BatchInputManager,
@@ -1488,6 +1488,10 @@ export class TextHarnessBridge {
     // running tool call. Declared outside the try so every exit path (including
     // pre-prompt failures like image parsing) clears the timer.
     let keepaliveTimer = null;
+    // A persona switch detected on this turn schedules its handoff summary for
+    // the `finally`, so generating it can never compete with the reply the user
+    // is waiting for.
+    let afterTurnHandoff = null;
     const stopKeepalive = () => {
       if (keepaliveTimer !== null) clearInterval(keepaliveTimer);
       keepaliveTimer = null;
@@ -1711,10 +1715,15 @@ export class TextHarnessBridge {
       // still contains the old voice.
       if (this.#personaEpoch) {
         try {
-          await applyPersonaEpoch({
+          const switched = await applyPersonaEpoch({
             epoch: this.#personaEpoch(), state: this.#state, key: conversationKey,
-            handoff: this.#personaHandoff,
           });
+          if (switched.enqueueHandoff && switched.oldSessionId && this.#personaHandoff) {
+            afterTurnHandoff = deferPersonaHandoff(
+              () => this.#personaHandoff({ key: conversationKey, oldSessionId: switched.oldSessionId }),
+              { logger: this.#logger },
+            );
+          }
         } catch (error) {
           this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] persona epoch check failed:`, error?.message ?? error);
         }
@@ -2009,6 +2018,9 @@ export class TextHarnessBridge {
       return error.deliveryReceipt;
     } finally {
       stopKeepalive();
+      // The summary starts only now: the reply (or the failure note) is already
+      // out, so a slow model turn cannot hold the conversation hostage.
+      afterTurnHandoff?.();
       const inFlight = this.#turnAuthors.get(conversationKey);
       if (inFlight?.turnMessageId === messageId) this.#turnAuthors.delete(conversationKey);
       await Promise.allSettled([
