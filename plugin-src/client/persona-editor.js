@@ -151,7 +151,7 @@ function PersonaDialog({ id, rpcCall, onClose, returnFocusRef, onActivated }) {
     setBaseline({ name, text });
     unwrap(await rpcCall(PERSONA_ENDPOINTS.activate, { id: selectedId }), '切换人格失败，请重试。');
     setActiveId(selectedId);
-    setNotice(`已切換 · 上一段對話的摘要會在下一則訊息後生成`);
+    setNotice('已切換 · 下一則訊息生效（回到用過的人格時會接上它原本的對話）');
     onActivated?.(name);
     return true;
   }, '切换人格失败，请重试。', selectedId);

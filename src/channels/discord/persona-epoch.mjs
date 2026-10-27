@@ -33,21 +33,51 @@ export function planPersonaEpoch({ epoch, seenEpoch = 0, sessionId = null } = {}
  * between the two leaves `seen` stale, so the next message repeats the (now
  * harmless) clear instead of resurrecting the retired persona.
  *
+ * `links` makes the trip reversible. Every switch remembers which persona the
+ * Session being left was answering as; when the target persona already ran in
+ * this conversation, that Session is re-bound instead of creating yet another.
+ * A re-bind needs no summary: the Session already carries that persona's own
+ * history, which is the thing a summary only approximates.
+ *
  * `handoff` is Phase 2's summary job. It runs detached, so a slow or failing
  * summary can never delay or fail the user's turn.
  */
-export async function applyPersonaEpoch({ epoch, state, key, handoff = null } = {}) {
+export async function applyPersonaEpoch({ epoch, activeId = null, state, key, handoff = null, links = null } = {}) {
   const oldSessionId = state.sessionFor(key) ?? null;
   const plan = planPersonaEpoch({ epoch, seenEpoch: state.personaEpochSeen(), sessionId: oldSessionId });
-  if (!plan.changed) return { ...plan, oldSessionId };
+  if (!plan.changed) return { ...plan, oldSessionId, rebound: false, reboundSessionId: null };
+
+  if (links && activeId) {
+    const previous = links.bindingFor(key);
+    if (previous?.sessionId && previous.activeId !== activeId) {
+      // Keep the outgoing Session in the index so switching back can find it.
+      links.bind({ key, activeId: previous.activeId, sessionId: previous.sessionId });
+    }
+    const remembered = links.candidateFor(activeId, key);
+    if (remembered) {
+      if (remembered !== oldSessionId) await state.setSession(key, remembered);
+      await state.setPersonaEpochSeen(plan.seenEpoch);
+      links.bind({ key, activeId, sessionId: remembered });
+      return {
+        ...plan,
+        clearSession: false,
+        enqueueHandoff: false,
+        oldSessionId,
+        rebound: true,
+        reboundSessionId: remembered,
+      };
+    }
+  }
+
   if (plan.clearSession) await state.clearSession(key);
   await state.setPersonaEpochSeen(plan.seenEpoch);
+  if (links && activeId) links.bind({ key, activeId, sessionId: null });
   if (plan.enqueueHandoff && typeof handoff === 'function') {
     Promise.resolve()
       .then(() => handoff({ key, oldSessionId }))
       .catch(() => undefined);
   }
-  return { ...plan, oldSessionId };
+  return { ...plan, oldSessionId, rebound: false, reboundSessionId: null };
 }
 
 /**

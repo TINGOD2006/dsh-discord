@@ -307,6 +307,14 @@ export class TextHarnessBridge {
   // binding before the next turn opens a Session.
   #personaEpoch = null;
 
+  // Discord only: `{ id, epoch }` of the active persona, so a switch can tell
+  // which persona it is leaving and which one it is going back to.
+  #personaState = null;
+
+  // Discord only: remembers which Session each persona owns per conversation,
+  // so switching back re-binds that Session instead of opening a third.
+  #personaLinks = null;
+
   #personaHandoff = null;
 
   constructor({
@@ -333,6 +341,8 @@ export class TextHarnessBridge {
     ownerUserId = '',
     trustedIds = [],
     personaEpoch = null,
+    personaState = null,
+    personaLinks = null,
     personaHandoff = null,
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
@@ -351,6 +361,8 @@ export class TextHarnessBridge {
     this.#signal = signal;
     this.#keepaliveIntervalMs = keepaliveIntervalMs;
     this.#personaEpoch = typeof personaEpoch === 'function' ? personaEpoch : null;
+    this.#personaState = typeof personaState === 'function' ? personaState : null;
+    this.#personaLinks = personaLinks ?? null;
     this.#personaHandoff = typeof personaHandoff === 'function' ? personaHandoff : null;
     this.#interactionCard = interactionCard ?? null;
     // Opt-in follow-up lanes for channels whose groups run on rapid consecutive
@@ -1149,6 +1161,31 @@ export class TextHarnessBridge {
     await this.#state.patchPendingMessage(pendingMessageId(key, messageId), { submitted: true });
   }
 
+  /**
+   * Record which persona this conversation's Session is answering as.
+   *
+   * Without this the index only ever learns about Sessions seen at switch time,
+   * so a persona that was switched *to* (and then had a Session created for it)
+   * would have nothing to return to. Written only when it changes, not on every
+   * turn.
+   */
+  #rememberPersonaBinding(key, sessionId) {
+    if (!this.#personaLinks || !sessionId) return;
+    try {
+      const persona = this.#personaState?.() ?? null;
+      if (!persona?.id) return;
+      // Only Sessions this bridge owns are worth indexing. A DS Bot session
+      // resolved from outside never lands in `state.sessions`, and recording it
+      // here would make a later switch try to re-bind something it cannot own.
+      if (this.#state?.sessionFor?.(key) !== sessionId) return;
+      const current = this.#personaLinks.bindingFor(key);
+      if (current?.activeId === persona.id && current?.sessionId === sessionId) return;
+      this.#personaLinks.bind({ key, activeId: persona.id, sessionId });
+    } catch (error) {
+      this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] failed to record the persona binding:`, error?.message ?? error);
+    }
+  }
+
   async #removePendingMessage(id) {
     if (typeof this.#state?.removePendingMessage !== 'function') return;
     try {
@@ -1713,11 +1750,21 @@ export class TextHarnessBridge {
       // A persona switch retires the binding before this turn opens a Session:
       // otherwise the new persona would keep answering inside a history that
       // still contains the old voice.
-      if (this.#personaEpoch) {
+      if (this.#personaEpoch || this.#personaState) {
         try {
+          const persona = this.#personaState?.() ?? null;
           const switched = await applyPersonaEpoch({
-            epoch: this.#personaEpoch(), state: this.#state, key: conversationKey,
+            epoch: persona?.epoch ?? this.#personaEpoch?.() ?? 0,
+            activeId: persona?.id ?? null,
+            state: this.#state,
+            key: conversationKey,
+            links: this.#personaLinks,
           });
+          if (switched.rebound) {
+            this.#logger.info?.(
+              `[dsh-im:${this.#descriptor.key}] persona switch re-bound ${conversationKey} to ${switched.reboundSessionId}`,
+            );
+          }
           if (switched.enqueueHandoff && switched.oldSessionId && this.#personaHandoff) {
             afterTurnHandoff = deferPersonaHandoff(
               () => this.#personaHandoff({ key: conversationKey, oldSessionId: switched.oldSessionId }),
@@ -1794,6 +1841,7 @@ export class TextHarnessBridge {
           images: message.images,
         },
       });
+      this.#rememberPersonaBinding(conversationKey, sessionId);
       stopKeepalive();
       if (batchSubmission) {
         this.#batches.complete(conversationKey, batchSubmission.token);
