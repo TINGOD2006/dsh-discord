@@ -142,3 +142,13 @@ test('a corrupted index is reported and treated as an empty library', () => with
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /index\.json/u);
 }));
+
+test('the prompt side reads a persona activated elsewhere', () => withLibrary(async (library, home) => {
+  const created = library.create({ name: 'B', text: '冷一点' });
+  // The RPC handler and the prompt context are separate instances; the disk is
+  // the channel between them, which is what makes a runtime switch visible.
+  const promptSide = new DiscordPersonaLibrary({ dshHome: home });
+  assert.equal(promptSide.activeText(), '');
+  promptSide.activate(created.id);
+  assert.equal(library.activeText(), '冷一点');
+}));

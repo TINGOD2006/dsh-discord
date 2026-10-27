@@ -5,7 +5,7 @@ import { installMusicTools } from '../../src/channels/shared/music-access.mjs';
 import { apply as applyDiscord } from './channels/discord/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
 import { installDiscordPersona } from '../../src/channels/discord/persona.mjs';
-import { getDiscordPersonaStore } from '../../src/channels/discord/persona-store.mjs';
+import { getDiscordPersonaLibrary } from '../../src/channels/discord/persona-library.mjs';
 import { installHostLanguage } from './host-language.mjs';
 import { installHostLanguageRpc } from './host-language-rpc.mjs';
 import { installDeliveryRpc } from './delivery-rpc.mjs';
@@ -117,10 +117,11 @@ export function createImHostPlugin(internals = {}) {
     } else if (ctx?.sessions && typeof ctx.on === 'function') {
       startTitlePrefix(ctx);
     }
-    // Resolved once per plugin start: the settings card writes the file, and the
-    // new text is picked up on the next DSH start (re-registering prompt context
-    // at runtime is not supported).
-    const personaText = getDiscordPersonaStore(config).text();
+    // Read on every Assemble instead of once per start: the settings card can
+    // activate another persona at runtime, and a frozen string would keep the
+    // old one until the host restarted.
+    const personaLibrary = getDiscordPersonaLibrary(config);
+    const personaText = () => personaLibrary.activeText();
     if (typeof ctx?.inject === 'function') {
       ctx.inject(['tools', 'systemPrompt'], (artifactCtx) => {
         installOutboundArtifactTool(artifactCtx);
