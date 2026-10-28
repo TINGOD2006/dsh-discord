@@ -82,3 +82,19 @@
 2. 卡片上「網頁控制」→ 開啟頁面 → 拖動滑桿 → 放開後音樂從該位置繼續。
 3. 拖到 0:50 再回群裡看卡片，時間同步在 0:50 附近。
 4. 兩人同時按下一首不會讓播放器狀態錯亂（限流＋單一 manager）。
+
+## Phase 0 結論（已驗證）
+
+**0.1 `-ss` 跳轉在真實 ffmpeg 上的行為**（10 秒 sine 音源 → `playbackEncoderArgs` → opus → 解回量測）：
+
+```
+offset=0s -> ogg 174986 bytes, decoded 10.00s
+offset=5s -> ogg  87736 bytes, decoded 5.00s
+offset=9s -> ogg  17936 bytes, decoded 1.00s
+```
+
+- `-ss` 放在 `-i` 前（現行 `music-encoder.mjs:25` 的寫法）精度足够：誤差 < 0.01 秒，解碼無報錯。
+- 因此 seek 不需要改 ffmpeg 參數順序，直接用既有 `offsetSeconds`。
+- 沙箱副檔：`ffmpeg` 子程序不能寫入 `$env:DSH_SCRATCH` 或系統 temp（`Permission denied`），探測檔要放 workspace 內的暫存目錄，跑完立刻刪除；`run_script` 內 `spawn` 會被擋（EPERM），要用 `pwsh` 起 node。
+
+**0.2**：`messageBody({ content, embeds, components })` 已加，`createMessage`/`editMessage` 都收 embeds/components，上限（10 embeds、5 action rows）在送出前就擋；`test/discord-api-body.test.mjs` 6 測試綠。

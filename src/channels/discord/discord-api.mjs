@@ -244,12 +244,13 @@ export class DiscordApi {
     });
   }
 
-  createMessage({ channelId, content, replyToMessageId, signal }) {
+  createMessage({ channelId, content, embeds, components, replyToMessageId, signal }) {
+    const card = messageBody({ content, embeds, components });
     return this.#request(`channels/${snowflake(channelId, 'channel id')}/messages`, {
       method: 'POST',
       signal,
       body: {
-        content,
+        ...card,
         allowed_mentions: { parse: [], replied_user: false },
         ...(replyToMessageId ? {
           message_reference: {
@@ -310,13 +311,13 @@ export class DiscordApi {
     }
   }
 
-  editMessage({ channelId, messageId, content, signal }) {
+  editMessage({ channelId, messageId, content, embeds, components, signal }) {
     return this.#request(
       `channels/${snowflake(channelId, 'channel id')}/messages/${snowflake(messageId, 'message id')}`,
       {
         method: 'PATCH',
         signal,
-        body: { content, allowed_mentions: { parse: [], replied_user: false } },
+        body: { ...messageBody({ content, embeds, components }), allowed_mentions: { parse: [], replied_user: false } },
       },
     );
   }
@@ -462,4 +463,28 @@ export async function inspectDiscordOwner(token, {
   }
   lookupSignal.throwIfAborted();
   return ownerUserId;
+}
+
+/**
+ * Body shared by message create and edit. `content` stays optional so a card can
+ * carry only embeds and components; at least one part is required because
+ * Discord rejects an empty body with 400.
+ */
+export function messageBody({ content, embeds, components } = {}) {
+  const body = {};
+  if (content !== undefined) body.content = content;
+  if (embeds !== undefined) {
+    if (!Array.isArray(embeds)) throw new TypeError('Discord embeds must be an array');
+    if (embeds.length > 10) throw new TypeError('Discord accepts at most 10 embeds per message');
+    body.embeds = embeds;
+  }
+  if (components !== undefined) {
+    if (!Array.isArray(components)) throw new TypeError('Discord components must be an array');
+    if (components.length > 5) throw new TypeError('Discord accepts at most 5 action rows per message');
+    body.components = components;
+  }
+  if (body.content === undefined && body.embeds === undefined && body.components === undefined) {
+    throw new TypeError('A Discord message needs content, embeds or components');
+  }
+  return body;
 }
