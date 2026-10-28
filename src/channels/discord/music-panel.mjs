@@ -32,14 +32,18 @@ export function formatClock(ms) {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
 }
 
+// ▰/▱/🔘 render as tofu boxes in Discord's client font; these two do not.
+const BAR_FULL = '█';
+const BAR_EMPTY = '░';
+
 export function progressBar(positionMs, durationMs, width = PANEL_BAR_WIDTH) {
   const cells = Math.max(4, Math.min(30, Number(width) || PANEL_BAR_WIDTH));
   const total = Number(durationMs);
   const position = Math.max(0, Number(positionMs) || 0);
-  if (!Number.isFinite(total) || total <= 0) return '▱'.repeat(cells);
+  if (!Number.isFinite(total) || total <= 0) return BAR_EMPTY.repeat(cells);
   const ratio = Math.max(0, Math.min(1, position / total));
   const filled = Math.min(cells, Math.round(ratio * cells));
-  return `${'▰'.repeat(filled)}${filled < cells ? '🔘' : ''}${'▱'.repeat(Math.max(0, cells - filled - (filled < cells ? 1 : 0)))}`;
+  return `${BAR_FULL.repeat(filled)}${BAR_EMPTY.repeat(cells - filled)}`;
 }
 
 /**
@@ -104,6 +108,7 @@ export function renderPanel(snapshot = {}, { guildId = '', controlUrl = null } =
     button({ action: 'remove', guildId: guild, label: '移除', emoji: '🗑️' }),
   ];
   const components = [buttonRow(primary)];
+  // Opt-in via DSK_DISCORD_MUSIC_CONSOLE=1: the card is the product, the console is a debug extra.
   if (controlUrl) {
     components.push(buttonRow([{ type: 2, style: 5, label: '網頁控制（可拖動）', url: String(controlUrl) }]));
   }

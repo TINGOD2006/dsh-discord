@@ -30,6 +30,17 @@ export function prefetchTargets(tracks, depth = MUSIC_PREFETCH_DEPTH) {
   return Array.isArray(tracks) ? tracks.slice(0, limit) : [];
 }
 
+/**
+ * Playback position in ms. `offsetSeconds` (transport) is seconds;
+ * `playbackDuration` (@discordjs/voice AudioResource) is already milliseconds —
+ * mixing the two is what showed "10:55:20" for a track 20 seconds in.
+ */
+export function positionMsFor(offsetSeconds, playbackDurationMs) {
+  const base = Number(offsetSeconds) || 0;
+  const played = Number(playbackDurationMs) || 0;
+  return Math.max(0, Math.round(base * 1000 + played));
+}
+
 /** Per-guild playback. A cancelled preparation can never resurrect a stopped track. */
 export class MusicManager {
   #token; #logger; #runtime; #pipeline; #notify; #client; #login; #library;
@@ -444,9 +455,7 @@ export class MusicManager {
   /** Seconds already played on the current track, straight from the live resource. */
   #positionMs(room) {
     if (!room?.current || !room.resource) return 0;
-    const base = Number(room.transport?.offsetSeconds) || 0;
-    const played = Number(room.resource.playbackDuration) || 0;
-    return Math.max(0, Math.round((base + played) * 1000));
+    return positionMsFor(room.transport?.offsetSeconds, room.resource.playbackDuration);
   }
 
   #changed(room) {

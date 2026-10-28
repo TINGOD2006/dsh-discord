@@ -1751,10 +1751,13 @@ export class DiscordRuntime {
     if (process.env.DSK_DISCORD_MUSIC_PANEL === '0') return null;
     const panel = this.#musicPanelManager();
     if (!panel) return null;
-    await this.#ensureMusicControl().catch((error) => {
-      this.#logger.warn?.('[dsh-im:discord] music control failed to start', error?.message ?? error);
-      return null;
-    });
+    // The web console (drag-to-seek) is a debug extra, off unless asked for.
+    if (process.env.DSK_DISCORD_MUSIC_CONSOLE === '1') {
+      await this.#ensureMusicControl().catch((error) => {
+        this.#logger.warn?.('[dsh-im:discord] music control failed to start', error?.message ?? error);
+        return null;
+      });
+    }
     return panel.sync(guildId);
   }
 

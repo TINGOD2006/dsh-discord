@@ -4,7 +4,7 @@ import {
   PANEL_ACTIONS, PANEL_BAR_WIDTH, clampSeekTarget, formatClock, panelCustomId,
   parsePanelCustomId, progressBar, renderPanel, seekIsMeaningful,
 } from '../src/channels/discord/music-panel.mjs';
-import { MusicManager } from '../src/channels/discord/music.mjs';
+import { MusicManager, positionMsFor } from '../src/channels/discord/music.mjs';
 
 test('formatClock pads and grows to hours', () => {
   assert.equal(formatClock(0), '0:00');
@@ -13,17 +13,18 @@ test('formatClock pads and grows to hours', () => {
   assert.equal(formatClock(-500), '0:00');
 });
 
-test('progressBar keeps its width and marks the playhead', () => {
+test('progressBar keeps its width and fills by ratio', () => {
   const fresh = progressBar(0, 200_000);
   assert.equal([...fresh].length, PANEL_BAR_WIDTH);
-  assert.ok(fresh.endsWith('▱'));
+  assert.equal(fresh, '░'.repeat(PANEL_BAR_WIDTH));
   const half = progressBar(100_000, 200_000);
-  assert.ok(half.includes('🔘'));
-  assert.equal([...half].length, PANEL_BAR_WIDTH);
+  assert.equal(half, '█'.repeat(8) + '░'.repeat(8));
   const done = progressBar(200_000, 200_000);
-  assert.ok(!done.includes('🔘'));
-  assert.ok(!done.includes('▱'));
-  assert.equal(progressBar(0, 0), '▱'.repeat(PANEL_BAR_WIDTH));
+  assert.equal(done, '█'.repeat(PANEL_BAR_WIDTH));
+  assert.equal(progressBar(0, 0), '░'.repeat(PANEL_BAR_WIDTH));
+  // Guards the seconds/milliseconds mix-up that painted "10:55:20" for 20s of audio.
+  assert.equal(positionMsFor(0, 20_000), 20_000);
+  assert.equal(positionMsFor(30, 5_000), 35_000);
 });
 
 test('clampSeekTarget never lands past the end', () => {
