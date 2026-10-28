@@ -1751,8 +1751,9 @@ export class DiscordRuntime {
     if (process.env.DSK_DISCORD_MUSIC_PANEL === '0') return null;
     const panel = this.#musicPanelManager();
     if (!panel) return null;
-    // The web console (drag-to-seek) is a debug extra, off unless asked for.
-    if (process.env.DSK_DISCORD_MUSIC_CONSOLE === '1') {
+    // The console is the only place a real (draggable) slider can exist; on by
+    // default, loopback-only, opt out with DSK_DISCORD_MUSIC_CONSOLE=0.
+    if (process.env.DSK_DISCORD_MUSIC_CONSOLE !== '0') {
       await this.#ensureMusicControl().catch((error) => {
         this.#logger.warn?.('[dsh-im:discord] music control failed to start', error?.message ?? error);
         return null;
