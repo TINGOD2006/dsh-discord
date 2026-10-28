@@ -117,11 +117,23 @@ export class ConversationStateStore {
     try {
       this.#state = normalizeState(JSON.parse(await readFile(this.#path, 'utf8')));
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      // A truncated or hand-edited state file used to abort startup and leave the
+      // bot permanently offline behind a "connection not ready" message. Keep the
+      // damaged file for forensics and start from an empty state instead.
+      if (error?.code !== 'ENOENT') await this.#quarantine();
       this.#state = structuredClone(EMPTY_STATE);
       await this.#persist();
     }
     return this;
+  }
+
+  async #quarantine() {
+    const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
+    try {
+      await rename(this.#path, `${this.#path}.corrupt-${stamp}`);
+    } catch {
+      // Best effort: if the rename fails the load still recovers to empty state.
+    }
   }
 
   deferredEntries() { return this.#deferred.entries(); }

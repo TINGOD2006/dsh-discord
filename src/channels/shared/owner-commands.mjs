@@ -98,22 +98,37 @@ export function grantRecall(conversationId, hours, { approved = false } = {}) {
  * Remember an over-limit request until the owner confirms it, and report the
  * hours that confirmation would open (already clamped to the hard ceiling).
  */
-export function requestRecallApproval(conversationId, hours) {
+export function requestRecallApproval(conversationId, hours, requesterId = '') {
   const colloquy = typeof conversationId === 'string' ? conversationId.trim() : '';
   if (!colloquy) return 0;
   const bounded = Math.min(RECALL_APPROVED_MAX_HOURS, Math.max(RECALL_AUTO_MAX_HOURS + 1, Math.trunc(hours)));
-  pendingRecalls.set(colloquy, { hours: bounded, expiresAt: Date.now() + RECALL_PENDING_TTL_MS });
+  pendingRecalls.set(colloquy, {
+    hours: bounded,
+    expiresAt: Date.now() + RECALL_PENDING_TTL_MS,
+    requesterId: typeof requesterId === 'string' ? requesterId.trim() : '',
+  });
   return bounded;
 }
 
-/** Consume a pending confirmation request, if it has not expired. */
-export function takePendingRecall(conversationId, now = Date.now()) {
+/**
+ * Consume a pending confirmation request, if it has not expired.
+ *
+ * When the request recorded who made it, only that sender may confirm it: the
+ * conversation is shared, so a conversation-keyed approval would let anyone in
+ * the room approve a week of history for themselves.
+ */
+export function takePendingRecall(conversationId, now = Date.now(), requesterId = '') {
   const colloquy = typeof conversationId === 'string' ? conversationId.trim() : '';
   if (!colloquy) return null;
   const pending = pendingRecalls.get(colloquy);
   if (!pending) return null;
+  const expired = now > pending.expiresAt;
+  const by = typeof requesterId === 'string' ? requesterId.trim() : '';
+  // A different sender must not consume the request: the person who asked keeps
+  // their chance to confirm it.
+  if (!expired && by && pending.requesterId && by !== pending.requesterId) return null;
   pendingRecalls.delete(colloquy);
-  return now <= pending.expiresAt ? pending : null;
+  return expired ? null : pending;
 }
 
 /** Consume the pending recall grant for a conversation, if any. */
@@ -171,7 +186,7 @@ function mentionUserId(raw) {
 }
 
 export async function runOwnerCommand(text, harness, state, key, {
-  signal, ownerTools, enhancement, conversationId: sourceConversationId,
+  signal, ownerTools, enhancement, conversationId: sourceConversationId, senderId = '',
 } = {}) {
   if (!isOwnerCommand(text)) return null;
   const command = text.trim();
@@ -227,7 +242,7 @@ export async function runOwnerCommand(text, harness, state, key, {
       return commandResult(found?.text || t('没有找到编号 {ref} 的记录。', { ref: argument.replace(/^#/u, '') }));
     }
     if (/^(?:批准|确认|確認|approve|yes|ok)$/iu.test(argument)) {
-      const pending = takePendingRecall(conversationId);
+      const pending = takePendingRecall(conversationId, Date.now(), senderId);
       if (!pending) return commandResult(t('没有待确认的回溯请求。'));
       const granted = grantRecall(conversationId, pending.hours, { approved: true });
       return commandResult(t('已开放回溯 {hours} 小时（已确认），只放宽下一轮上下文，之后自动恢复。', {
@@ -237,7 +252,7 @@ export async function runOwnerCommand(text, harness, state, key, {
     const requested = Number.parseInt(argument, 10);
     const hours = Number.isFinite(requested) ? requested : RECALL_DEFAULT_HOURS;
     if (hours > RECALL_AUTO_MAX_HOURS) {
-      const pending = requestRecallApproval(conversationId, hours);
+      const pending = requestRecallApproval(conversationId, hours, senderId);
       return commandResult(t('更早的记录需要主人确认：{minutes} 分钟内再发 /recall 批准，可开放 {hours} 小时窗口。', {
         minutes: String(Math.round(RECALL_PENDING_TTL_MS / 60_000)),
         hours: String(pending),

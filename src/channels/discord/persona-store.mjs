@@ -9,7 +9,7 @@
  * The file is small (<= 8k chars) and read once per plugin start, so a plain
  * synchronous read is cheaper than wiring another async store.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { MAX_PERSONA_CHARS } from './persona-endpoints.mjs';
@@ -78,7 +78,11 @@ export class DiscordPersonaStore {
       throw error;
     }
     mkdirSync(dirname(this.#path), { recursive: true });
-    writeFileSync(this.#path, text === '' ? '' : `${text}\n`, 'utf8');
+    // Rename rather than overwrite: a half-written persona file still parses as
+    // valid text, so truncation would never be noticed.
+    const temporary = `${this.#path}.tmp`;
+    writeFileSync(temporary, text === '' ? '' : `${text}\n`, 'utf8');
+    renameSync(temporary, this.#path);
     return this.snapshot();
   }
 

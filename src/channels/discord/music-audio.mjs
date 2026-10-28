@@ -167,8 +167,12 @@ export class MusicAudioPipeline {
     return JSON.parse(stdout);
   }
 
-  async #resolve(query, { dir, signal, guildId }) {
+  async #resolve(query, { dir, signal, guildId, allowLocalFile = false }) {
     if (existsSync(query)) {
+      // `/play <path>` reads a file from the bot host. The music lane is open to
+      // every member by design, so without this check anyone could make the bot
+      // stream (and expose) any audio file the host can read.
+      if (!allowLocalFile) throw new Error('本機檔案只有主人可以播放');
       if (!AUDIO_EXTENSIONS.has(extname(query).toLowerCase())) throw new Error('這個檔案不是支援的音訊格式');
       const file = await stat(query);
       if (!file.isFile() || file.size > 256 * 1024 * 1024) throw new Error('音訊檔案過大或無法讀取');
@@ -308,7 +312,7 @@ export class MusicAudioPipeline {
     }
   }
 
-  async prepare(query, { signal, guildId = 'local' } = {}) {
+  async prepare(query, { signal, guildId = 'local', allowLocalFile = false } = {}) {
     query = String(query ?? '').trim();
     if (!query || query.length > 500) throw new Error('請提供 500 字以內的歌曲關鍵詞或連結');
     const queryKey = `${guildId}:${query}`;
@@ -318,7 +322,7 @@ export class MusicAudioPipeline {
       try {
         let source = this.#resolved.get(queryKey);
         if (!source || source.expires < Date.now() || source.kind === 'file') {
-          source = { ...await this.#resolve(query, { dir, signal: jobSignal, guildId }), expires: Date.now() + 10 * 60_000 };
+          source = { ...await this.#resolve(query, { dir, signal: jobSignal, guildId, allowLocalFile }), expires: Date.now() + 10 * 60_000 };
           this.#resolved.set(queryKey, source);
           if (this.#resolved.size > 128) this.#resolved.delete(this.#resolved.keys().next().value);
         }

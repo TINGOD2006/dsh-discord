@@ -76,7 +76,8 @@ export class GroupHistoryStore {
   async #load() {
     await mkdir(join(this.#root, 'group-files'), { recursive: true, mode: 0o700 });
     try {
-      const data = JSON.parse(await readFile(join(this.#root, 'general-settings.json'), 'utf8'));
+      const raw = (await readFile(join(this.#root, 'general-settings.json'), 'utf8')).replace(/^\uFEFF/u, '');
+      const data = JSON.parse(raw);
       const days = normalizeGroupHistoryDays(data.groupHistoryRetentionDays);
       if (data.version !== 1 || days === null) throw invalid('群记录设置损坏，请重新保存保留天数。');
       this.#days = days;

@@ -428,6 +428,15 @@ export class TextHarnessBridge {
     return id !== '' && (id === this.#ownerUserId || this.#trustedIds.has(id));
   }
 
+  /**
+   * Owner commands answer to the owner alone. Being on the allowlist grants the
+   * same command rights as the owner for ordinary commands, not for these.
+   */
+  #canRunOwnerCommand(senderId) {
+    const id = typeof senderId === 'string' ? senderId.trim() : '';
+    return id !== '' && this.#ownerUserId !== '' && id === this.#ownerUserId;
+  }
+
   canAppendInput(message) {
     return this.#inputWindows.get(`${message.kind}:${message.conversationId}`)?.canAppend(message) === true;
   }
@@ -644,6 +653,12 @@ export class TextHarnessBridge {
           ? runModelCommand
           : (isPresetCommand(text) ? runPresetCommand : null));
     if (commandRunner && (normalized.kind !== 'group' || normalized.addressed === true)) {
+      // Owner commands (mute/block/recall/…) say they answer to the owner alone,
+      // but the access policy only distinguishes "may run commands", which is on
+      // by default — so the owner check has to happen here, before the runner.
+      if (commandRunner === runOwnerCommand && !this.#canRunOwnerCommand(senderId)) {
+        return this.#finishLocalMessage(normalized, messageId, '只有主人可以使用这条命令。');
+      }
       return this.#launchFastCommand(normalized, messageId, key, commandRunner, senderId);
     }
     // An addressed plain-text request that is no approve/reject token while only
@@ -846,7 +861,13 @@ export class TextHarnessBridge {
       }
       if (this.#coalesceWindowMs > 0 && plainText) {
         const opened = { senderId, members: [{ message, messageId }] };
-        const timer = setTimeout(() => { void this.#flushCoalesced(key); }, this.#coalesceWindowMs);
+        const timer = setTimeout(() => {
+          // A rejected state write here used to surface as an unhandled rejection
+          // (Node's default: fatal), taking every channel down with it.
+          void this.#flushCoalesced(key).catch((error) => {
+            this.#logger.warn?.(`[dsh-im:${this.#descriptor.key}] coalesced flush failed:`, error?.message ?? error);
+          });
+        }, this.#coalesceWindowMs);
         timer.unref?.();
         this.#coalescing.set(key, opened);
         return Promise.resolve();
@@ -1346,6 +1367,7 @@ export class TextHarnessBridge {
           pendingInteraction: this.#pendingInteractions.has(key)
             || this.#approvals.hasPending(key),
           ownerTools: this.#ownerTools,
+          senderId,
           conversationId: message.conversationId,
           music: this.#musicTools,
           ...(runner === runMusicCommand ? { conversationId: message.conversationId, senderId, guildId: message.guildId } : {}),
@@ -1428,6 +1450,7 @@ export class TextHarnessBridge {
         : isMusicCommand(command) ? runMusicCommand
         : null;
     if (!runner) return null;
+    if (runner === runOwnerCommand && !this.#canRunOwnerCommand(senderId)) return '只有主人可以使用这条命令。';
     const result = await runner(command, this.#harness, this.#state, key, {
       signal: this.#signal,
       isDirect: kind === 'direct',
@@ -1435,6 +1458,7 @@ export class TextHarnessBridge {
       hasFiles: false,
       pendingInteraction: this.#pendingInteractions.has(key) || this.#approvals.hasPending(key),
       ownerTools: this.#ownerTools,
+      senderId,
       music: this.#musicTools,
       ...(runner === runMusicCommand ? { senderId, guildId, ready } : {}),
       conversationId,
@@ -1661,8 +1685,11 @@ export class TextHarnessBridge {
       if (message.kind === 'group') content = prependSpeakerLabel(content, message.speakerName);
       // Everyone outside the owner allowlist is a guest: the room's Session is
       // shared, so the prompt states read-only reach instead of trusting the
-      // tool set, which this plugin cannot narrow per turn.
-      if (message.kind === 'group' && !this.#isTrusted(senderId)) content = prependGuestGuard(content);
+      // tool set, which this plugin cannot narrow per turn. Direct messages are
+      // included — a stranger's DM reaches the same Session and the same tools,
+      // and the seeded direct scope is open, so leaving them unguarded made the
+      // DM path the cheapest way in.
+      if (!this.#isTrusted(senderId)) content = prependGuestGuard(content);
       const snapshot = this.#acceptedMessageIds.get(messageId);
       let contextEnhanced = false;
       if (snapshot) {

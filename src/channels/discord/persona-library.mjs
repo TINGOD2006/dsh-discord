@@ -45,7 +45,9 @@ function normalizeName(value, fallback = '') {
 
 function readJson(path) {
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    // A hand-edited file on Windows often carries a UTF-8 BOM, which JSON.parse
+    // rejects outright; without this strip the whole library reads as empty.
+    return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/u, ''));
   } catch {
     return null;
   }
@@ -111,7 +113,7 @@ export class DiscordPersonaLibrary {
   }
 
   create({ name, text } = {}) {
-    const items = this.#items();
+    const items = this.#itemsForWrite();
     if (items.length >= MAX_PERSONAS) {
       throw libraryError('persona-limit', `最多 ${MAX_PERSONAS} 个人格。`);
     }
@@ -129,7 +131,7 @@ export class DiscordPersonaLibrary {
 
   save({ id, name, text } = {}) {
     this.#assertId(id);
-    const items = this.#items();
+    const items = this.#itemsForWrite();
     const item = items.find((entry) => entry.id === id);
     if (!item) throw libraryError('persona-not-found', '人格不存在。');
     const body = this.#normalizeBody(text);
@@ -148,7 +150,7 @@ export class DiscordPersonaLibrary {
 
   remove(id) {
     this.#assertId(id);
-    const items = this.#items();
+    const items = this.#itemsForWrite();
     if (!items.some((entry) => entry.id === id)) throw libraryError('persona-not-found', '人格不存在。');
     if (this.#active().activeId === id) {
       throw libraryError('persona-active-undeletable', '正在使用的人格不能删除，请先切换到别的人格。');
@@ -172,7 +174,7 @@ export class DiscordPersonaLibrary {
    */
   activate(id) {
     this.#assertId(id);
-    if (!this.#items().some((entry) => entry.id === id)) {
+    if (!this.#itemsForWrite().some((entry) => entry.id === id)) {
       throw libraryError('persona-not-found', '人格不存在。');
     }
     const { epoch } = this.#active();
@@ -234,6 +236,20 @@ export class DiscordPersonaLibrary {
     }
     if (!Array.isArray(index.items)) return [];
     return index.items.filter((item) => item && typeof item.id === 'string' && PERSONA_ID_PATTERN.test(item.id));
+  }
+
+  /**
+   * The list a mutating call may write back. Reading tolerantly is right for the
+   * settings card, but writing from an unreadable index would replace every other
+   * persona with the single item being saved and leave the rest orphaned, so
+   * mutations refuse until the file is repaired.
+   */
+  #itemsForWrite() {
+    const items = this.#items();
+    if (existsSync(this.#indexPath) && readJson(this.#indexPath) === null) {
+      throw libraryError('persona-index-unreadable', '人格索引无法读取，先修好 personas/index.json 再修改人格。');
+    }
+    return items;
   }
 
   #active() {

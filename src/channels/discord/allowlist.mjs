@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 // The cap lives in the browser-safe endpoints module so the client bundle can
@@ -77,7 +77,11 @@ export class DiscordAllowlistStore {
   write(value) {
     const ids = normalizeAllowlist(value);
     mkdirSync(dirname(this.#path), { recursive: true });
-    writeFileSync(this.#path, `${JSON.stringify({ ids }, null, 2)}\n`, 'utf8');
+    // Write beside the live file and rename: a crash mid-save must not leave a
+    // truncated allowlist that reads back as "nobody is trusted".
+    const temporary = `${this.#path}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify({ ids }, null, 2)}\n`, 'utf8');
+    renameSync(temporary, this.#path);
     return this.snapshot();
   }
 

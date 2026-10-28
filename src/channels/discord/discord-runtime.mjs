@@ -1414,6 +1414,9 @@ export class DiscordRuntime {
         this.#music = this.#createMusicManager({
           token: this.#token,
           harness: this.#harness,
+          // Read at worker start, so a whitelist change applies to the next track
+          // without rebuilding the manager.
+          privilegedIds: () => [this.#config.ownerUserId, ...this.#trustedIds()].filter(Boolean),
           notify: (channelId, content) => api.createMessage({ channelId, content }),
           logger: (level, event, detail) => {
             const write = level === 'warn' ? this.#logger.warn
@@ -1425,6 +1428,10 @@ export class DiscordRuntime {
       }
       const client = new DiscordBotClient({ api, signal: controller.signal });
       this.#allowlist = getDiscordAllowlistStore(this.#config);
+      // One library instance per bridge. Constructing a fresh one per message
+      // threw away its body cache and re-read every persona file on the gateway
+      // event loop, once per turn.
+      const personas = getDiscordPersonaLibrary(this.#config);
       this.#bridge = new DiscordHarnessBridge({
         bot: client,
         harness: this.#harness,
@@ -1461,11 +1468,11 @@ export class DiscordRuntime {
         // Read lazily per message: the settings card can activate another persona
         // while the bot is running, and that has to retire the Session bound to
         // the old one.
-        personaEpoch: () => getDiscordPersonaLibrary(this.#config).snapshot().epoch,
+        personaEpoch: () => personas.snapshot().epoch,
         // Same lazy read, plus the id: a switch needs to know which persona it is
         // leaving and whether the target already owns a Session here.
         personaState: () => {
-          const snapshot = getDiscordPersonaLibrary(this.#config).snapshot();
+          const snapshot = personas.snapshot();
           return { id: snapshot.activeId, epoch: snapshot.epoch };
         },
         personaLinks: getDiscordPersonaLinks(this.#config),

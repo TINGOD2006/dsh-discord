@@ -33,15 +33,23 @@ export function prefetchTargets(tracks, depth = MUSIC_PREFETCH_DEPTH) {
 export class MusicManager {
   #token; #logger; #runtime; #pipeline; #notify; #client; #login; #library;
   #guilds = new Map(); #cooldowns = new Map(); #destroyed = false; #idleMs; #cooldownMs; #loginTimeoutMs;
-  #bufferedFactory; #recoverVoice; #healthIntervalMs;
+  #bufferedFactory; #recoverVoice; #healthIntervalMs; #allowLocalFileFor;
   #commands = new MusicCommandLane();
   #lifetime = new AbortController();
   constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000,
-    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate } = {}) {
+    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate, allowLocalFileFor = null,
+    privilegedIds = [] } = {}) {
     this.#token = token; this.#logger = logger; this.#runtime = runtime; this.#notify = notify;
     this.#idleMs = idleMs; this.#cooldownMs = cooldownMs;
     this.#loginTimeoutMs = loginTimeoutMs;
     this.#bufferedFactory = bufferedFactory; this.#recoverVoice = recoverVoice; this.#healthIntervalMs = healthIntervalMs;
+    // Owner-only reach for host-local files: `/play <path>` must not become a way
+    // for any member to stream whatever the host can read. The worker receives the
+    // privileged ids as data, because a predicate cannot cross that boundary.
+    const privileged = new Set((Array.isArray(privilegedIds) ? privilegedIds : []).map(String));
+    this.#allowLocalFileFor = typeof allowLocalFileFor === 'function'
+      ? allowLocalFileFor
+      : (senderId) => privileged.has(String(senderId ?? ''));
     const tools = musicTools(); if (ytDlpPath) tools.ytDlp = ytDlpPath;
     this.#pipeline = pipeline ?? new MusicAudioPipeline({ tools, logger, selectCandidate: selectCandidate ?? createDshMusicSelector(harness, { logger }) });
   }
@@ -193,7 +201,11 @@ export class MusicManager {
   }
   #prepare(room, track) {
     if (!track.preparation) {
-      const preparation = this.#pipeline.prepare(track.query, { signal: track.controller.signal, guildId: room.id }).then(source => {
+      const preparation = this.#pipeline.prepare(track.query, {
+        signal: track.controller.signal,
+        guildId: room.id,
+        allowLocalFile: this.#allowLocalFileFor(track.senderId) === true,
+      }).then(source => {
         if (track.controller.signal.aborted || room.leaving) { source.release?.(); throw new Error('歌曲準備已取消'); }
         track.source = source; track.title = source.title; return source;
       });

@@ -10,10 +10,11 @@ export const musicWorkerEntry = join(dirname(createRequire(import.meta.url).reso
 
 /** Lazy worker facade: only commands, selection and notifications touch the host. */
 export class MusicWorkerManager {
-  #options; #factory; #worker; #rpc; #notify; #logger; #select; #destroyed = false; #destroyTask;
+  #options; #factory; #worker; #rpc; #notify; #logger; #select; #privilegedIds; #destroyed = false; #destroyTask;
   constructor({ token, harness, logger, notify, ytDlpPath, idleMs, cooldownMs, loginTimeoutMs, healthIntervalMs,
-    workerFactory = (file, options) => new Worker(file, options), selectCandidate } = {}) {
+    workerFactory = (file, options) => new Worker(file, options), selectCandidate, privilegedIds = null } = {}) {
     this.#options = { token, ytDlpPath, idleMs, cooldownMs, loginTimeoutMs, healthIntervalMs };
+    this.#privilegedIds = typeof privilegedIds === 'function' ? privilegedIds : () => [];
     this.#factory = workerFactory; this.#logger = logger; this.#notify = notify;
     this.#select = selectCandidate ?? createDshMusicSelector(harness, { logger });
   }
@@ -22,7 +23,10 @@ export class MusicWorkerManager {
   #start() {
     if (this.#rpc) return this.#rpc;
     if (!this.available) throw new Error('音樂功能未啟用');
-    const worker = this.#factory(musicWorkerEntry, { workerData: this.#options, name: 'discord-music', execArgv: [] });
+    const worker = this.#factory(musicWorkerEntry, {
+      workerData: { ...this.#options, privilegedIds: this.#privilegedIds() },
+      name: 'discord-music', execArgv: [],
+    });
     const rpc = new MusicWorkerRpc(worker, (method, params, { signal }) => {
       if (method !== 'select') throw new Error('未知音樂 worker 請求');
       return this.#select({ ...params, signal });
