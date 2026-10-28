@@ -1473,6 +1473,10 @@ export class DiscordRuntime {
         personaHandoff: ({ key, oldSessionId }) => createHandoffAdapter({
           harness: this.#harness, config: this.#config, logger: this.#logger,
         }).generate({ key, sessionId: oldSessionId }),
+        // A conversation pinned to a Session id (state.json or `/session`) should
+        // surface the Harness's own refusal instead of quietly moving to a brand
+        // new Session, which is how a lost conversation went unnoticed.
+        trustBoundSession: true,
         signal: controller.signal,
       });
       // The settings card writes the allowlist file directly, so pick it up on a

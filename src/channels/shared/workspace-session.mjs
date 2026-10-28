@@ -102,6 +102,12 @@ export async function askInWorkspaceSession({
   contextEnhanced = false,
   createOptions,
   existsOptions,
+  // A binding saved in state can outlive the Harness catalog entry: a large
+  // Session written by an earlier process may still be on disk and registered to
+  // its workspace while session.list/workspace.list no longer report it. Callers
+  // that prefer a loud failure over a silent fresh Session opt in here, so the
+  // bound id reaches the Harness and its own error surfaces to the user.
+  trustBoundSession = false,
   askOptions,
   deferredDelivery,
 }) {
@@ -127,7 +133,13 @@ export async function askInWorkspaceSession({
         // the persona context can find it later (it never sees the conversation key).
         if (sessionId) rememberSessionConversation(sessionId, key);
         let session = sessionId ? workspaceSession(harness, sessionId, key) : null;
-        if (!session || !(await sessionExists(session, existsOptions))) {
+        // An id recovered from state (rather than resolved by DS Bot) is a binding
+        // this side owns; when the caller trusts it, an unindexed id is attempted
+        // instead of being replaced with a new Session.
+        const trusted = session !== null && await sessionExists(session, existsOptions);
+        const bound = trustBoundSession && !dsBotSessionId && sessionId !== undefined
+          && sessionId === state.sessionFor(key);
+        if (!session || (!trusted && !bound)) {
           if (dsBotSessionId) {
             throw Object.assign(new Error('DS Bot 的当前会话不可用。'), { code: 'ds-bot-unavailable' });
           }

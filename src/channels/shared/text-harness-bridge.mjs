@@ -317,6 +317,11 @@ export class TextHarnessBridge {
 
   #personaHandoff = null;
 
+  // Discord only: attempt a Session id saved in state even when the Harness no
+  // longer lists it, so an unloadable conversation fails loudly instead of
+  // silently starting a new one.
+  #trustBoundSession = false;
+
   constructor({
     descriptor,
     bot,
@@ -344,6 +349,7 @@ export class TextHarnessBridge {
     personaState = null,
     personaLinks = null,
     personaHandoff = null,
+    trustBoundSession = false,
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -364,6 +370,7 @@ export class TextHarnessBridge {
     this.#personaState = typeof personaState === 'function' ? personaState : null;
     this.#personaLinks = personaLinks ?? null;
     this.#personaHandoff = typeof personaHandoff === 'function' ? personaHandoff : null;
+    this.#trustBoundSession = trustBoundSession === true;
     this.#interactionCard = interactionCard ?? null;
     // Opt-in follow-up lanes for channels whose groups run on rapid consecutive
     // posts: fold a same sender's burst into one dispatch, and steer that
@@ -1789,6 +1796,7 @@ export class TextHarnessBridge {
         prepareContent: prepareForSession ? ({ sessionId }) => collectContext(sessionId) : undefined,
         createOptions: this.#signal ? { signal: this.#signal } : undefined,
         existsOptions: this.#signal ? { signal: this.#signal } : undefined,
+        trustBoundSession: this.#trustBoundSession,
         askOptions: {
           groupHistory: message.groupHistory,
           music: this.#descriptor.key === 'discord' ? createMusicRequestContext(message, this.#musicTools, { signal: this.#signal }) : null,
