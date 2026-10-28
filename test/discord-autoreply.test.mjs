@@ -58,7 +58,7 @@ async function fixture(dir, { state, store, ask, accessPolicy, resolveSession, r
   }
   const runtime = new DiscordRuntime({
     ...runtimeOptions,
-    config: { platformId: BOT, botId: 'fixture', ownerUserId: OWNER }, token: 'fixture-only',
+    config: { platformId: BOT, botId: 'fixture', ownerUserId: OWNER, dshHome: dir }, token: 'fixture-only',
     state, groupHistory: store, accessPolicy,
     harness: {
       ensureRunning: async () => {},

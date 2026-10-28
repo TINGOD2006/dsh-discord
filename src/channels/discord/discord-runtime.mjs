@@ -1452,22 +1452,22 @@ export class DiscordRuntime {
         // turn log, so messages the bot never saw arrive here as a rendered
         // <dsh_im_recent_chat> block ahead of the prompt.
         contextHooks: this.#createContextHooks(),
-        // Persona state is read from an explicit DSH home only. Without one the
-        // runtime would fall back to the ambient ~/.dsh, and every test fixture
-        // would then inherit the developer's real persona library and epoch.
-        ...(this.#config?.dshHome ? {
-          // Read lazily per message: the settings card can activate another
-          // persona while the bot is running, and that has to retire the Session
-          // bound to the old one.
-          personaEpoch: () => getDiscordPersonaLibrary(this.#config).snapshot().epoch,
-          // Same lazy read, plus the id: a switch needs to know which persona it
-          // is leaving and whether the target already owns a Session here.
-          personaState: () => {
-            const snapshot = getDiscordPersonaLibrary(this.#config).snapshot();
-            return { id: snapshot.activeId, epoch: snapshot.epoch };
-          },
-          personaLinks: getDiscordPersonaLinks(this.#config),
-        } : {}),
+        // Persona state is always wired. An earlier version switched it on only
+        // when the host passed an explicit DSH home, which looked defensive but
+        // silently disabled persona switching and binding history in production,
+        // where the config has no such field. Test isolation is the test
+        // fixtures' job (`dshHome` pointing at a temp dir), not a runtime gate.
+        // Read lazily per message: the settings card can activate another persona
+        // while the bot is running, and that has to retire the Session bound to
+        // the old one.
+        personaEpoch: () => getDiscordPersonaLibrary(this.#config).snapshot().epoch,
+        // Same lazy read, plus the id: a switch needs to know which persona it is
+        // leaving and whether the target already owns a Session here.
+        personaState: () => {
+          const snapshot = getDiscordPersonaLibrary(this.#config).snapshot();
+          return { id: snapshot.activeId, epoch: snapshot.epoch };
+        },
+        personaLinks: getDiscordPersonaLinks(this.#config),
         // Runs detached after the old Session is unbound: the summary is written
         // for the *next* Session and must never delay or fail the current turn.
         personaHandoff: ({ key, oldSessionId }) => createHandoffAdapter({

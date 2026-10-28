@@ -39,7 +39,9 @@ async function fixture(dir, { readyFor = () => true, heartbeatInterval = 30_000,
   const errors = [];
   const payloads = [];
   const runtime = new DiscordRuntime({
-    config: { platformId: BOT, botId: 'fixture', ownerUserId: OWNER },
+    // Isolate persona state: the runtime always reads it now, so without a
+    // scrubbed home this fixture would inherit the developer's real library.
+    config: { platformId: BOT, botId: 'fixture', ownerUserId: OWNER, dshHome: dir },
     token: 'fixture-only',
     state,
     harness: {

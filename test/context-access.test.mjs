@@ -9,6 +9,7 @@ import { historyEntriesFrom, renderHistoryBlock } from '../src/channels/discord/
 import { GroupHistoryStore } from '../src/channels/shared/group-history-store.mjs';
 import { DiscordRuntime } from '../src/channels/discord/discord-runtime.mjs';
 import { EventEmitter } from 'node:events';
+import { tmpdir } from 'node:os';
 
 /** Prompts reach the bridge as content blocks; these assertions care about text. */
 const promptText = (prompt) => (
@@ -172,7 +173,10 @@ test('real Gateway chat reads no archive for self-contained requests and filters
   let socket, reads = 0; const prompts = [], options = [], errors = [], seen = new Set();
   const store = { capture: async () => ({ store, groupId: 'g' }), query() {}, findGroupId: async () => 'g',
     recentMessages: async () => { reads++; return { items: [row('9', '/music stop'), row('8', '正在處理'), row('7', '這張圖片顯示旋律分析', { sentAt: Date.now() - 1000 })] }; } };
-  const runtime = new DiscordRuntime({ config: { platformId: '123', botId: 'fixture' }, token: 'fixture-only', groupHistory: store,
+  // The runtime now always reads persona state, so the fixture needs its own
+  // DSH home instead of silently inheriting the developer's real persona library.
+  const personaHome = await mkdtemp(join(tmpdir(), 'dsh-ctx-persona-'));
+  const runtime = new DiscordRuntime({ config: { platformId: '123', botId: 'fixture', dshHome: personaHome }, token: 'fixture-only', groupHistory: store,
     state: { hasSeen: id => seen.has(id), markSeen: async id => { seen.add(id); }, sessionFor: () => 'chat' },
     harness: { ensureRunning: async () => {}, workspaceSession: () => ({ sessionExists: async () => true, ask: async (prompt, config) => { prompts.push(prompt); options.push(config); return 'answer'; } }) },
     logger: { info() {}, warn(...args) { errors.push(args); }, error(...args) { errors.push(args); } }, createMusicManager: () => ({ execute: async () => ({ message: 'ok' }), destroy: async () => {} }),
@@ -190,5 +194,5 @@ test('real Gateway chat reads no archive for self-contained requests and filters
     assert(!promptText(prompts[1]).includes('/music stop')); assert(!promptText(prompts[1]).includes('正在處理'));
     assert.equal(options[1].groupHistory.suppliedHistory.calls, 1); assert(options[1].groupHistory.suppliedHistory.chars > 0);
     deliver('3', '請播放晴天'); await until(3); assert.equal(reads, 1); assert(options[2].music);
-  } finally { await runtime.stop(); }
+  } finally { await runtime.stop(); await rm(personaHome, { recursive: true, force: true }); }
 });
