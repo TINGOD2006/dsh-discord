@@ -20,6 +20,9 @@ import { isControlCommand } from '../shared/control-command.mjs';
 import { DiscordApi } from './discord-api.mjs';
 import { handleApplicationCommand, syncApplicationCommands } from './discord-commands.mjs';
 import { MusicWorkerManager } from './music-worker.mjs';
+import { MusicPanelManager } from './music-panel-manager.mjs';
+import { createMusicControlServer } from './music-control-server.mjs';
+import { parsePanelCustomId } from './music-panel.mjs';
 import { isMusicCommand } from '../shared/music-commands.mjs';
 import { musicIntentActions } from '../shared/music-access.mjs';
 import { cleanHistoryText, filterHistoryRows, historyContextNeeded, historyRecallRequested } from '../shared/history-context.mjs';
@@ -1002,6 +1005,9 @@ export class DiscordRuntime {
   // them, so without a note they are invisible in the session and a burst of
   // @chat buries what the player was told. Notes replay like chat lines.
   #musicNotes = new Map();
+  #musicPanel = null;
+  #musicControl = null;
+  #musicControlBase = null;
   #interactions = new Set();
   #abortController = null;
   #socket = null;
@@ -1418,6 +1424,13 @@ export class DiscordRuntime {
           // without rebuilding the manager.
           privilegedIds: () => [this.#config.ownerUserId, ...this.#trustedIds()].filter(Boolean),
           notify: (channelId, content) => api.createMessage({ channelId, content }),
+          // The playback lives in the worker; it tells the host when a guild's state
+          // moved so the card can be refreshed instead of polled blind.
+          onPlaybackChange: (guildId) => {
+            void this.#syncMusicPanel(guildId).catch((error) => {
+              this.#logger.warn?.('[dsh-im:discord] music panel failed', error?.message ?? error);
+            });
+          },
           logger: (level, event, detail) => {
             const write = level === 'warn' ? this.#logger.warn
               : level === 'debug' ? this.#logger.debug
@@ -1695,6 +1708,96 @@ export class DiscordRuntime {
     });
   }
 
+  /** One card manager per bot, created on demand so music-off bots pay nothing. */
+  #musicPanelManager() {
+    if (this.#musicPanel) return this.#musicPanel;
+    const music = this.#music, api = this.#api;
+    if (!music || !api) return null;
+    this.#musicPanel = new MusicPanelManager({
+      api,
+      registry: {
+        snapshot: (guildId) => music.snapshot(guildId),
+        control: (guildId, action, params) => music.control(guildId, action, params),
+      },
+      logger: (level, event, detail) => {
+        const write = level === 'warn' ? this.#logger.warn : level === 'debug' ? this.#logger.debug : this.#logger.info;
+        write?.(`[dsh-im:discord] ${event}`, detail);
+      },
+      controlUrlFor: (guildId) => (this.#musicControlBase ? `${this.#musicControlBase}${encodeURIComponent(guildId)}/` : null),
+    });
+    return this.#musicPanel;
+  }
+
+  /** The console binds a loopback port only once music actually plays. */
+  async #ensureMusicControl() {
+    if (this.#musicControlBase) return this.#musicControlBase;
+    const music = this.#music;
+    if (!music) return null;
+    const control = createMusicControlServer({
+      registry: {
+        snapshot: (guildId) => music.snapshot(guildId),
+        control: (guildId, action, params) => music.control(guildId, action, params),
+      },
+      logger: (event, detail) => this.#logger.warn?.(`[dsh-im:discord] music control ${event}`, detail),
+    });
+    this.#musicControlBase = await control.start();
+    this.#musicControl = control;
+    this.#logger.info?.('[dsh-im:discord] 音樂控制台已啟動', this.#musicControlBase);
+    return this.#musicControlBase;
+  }
+
+  async #syncMusicPanel(guildId) {
+    // Opt-out for hosts that only want the text commands.
+    if (process.env.DSK_DISCORD_MUSIC_PANEL === '0') return null;
+    const panel = this.#musicPanelManager();
+    if (!panel) return null;
+    await this.#ensureMusicControl().catch((error) => {
+      this.#logger.warn?.('[dsh-im:discord] music control failed to start', error?.message ?? error);
+      return null;
+    });
+    return panel.sync(guildId);
+  }
+
+  async #handleMusicComponent(interaction, { action, guildId }) {
+    const api = this.#api, music = this.#music;
+    if (!api || !music) return false;
+    const interactionId = String(interaction?.id ?? ''), token = String(interaction?.token ?? '');
+    if (!interactionId || !token) return false;
+    const panel = this.#musicPanelManager();
+    const userId = String(interaction?.member?.user?.id ?? interaction?.user?.id ?? '');
+    const reply = (body) => Promise.resolve(api.createInteractionResponse(interactionId, token, body, {}))
+      .catch((error) => { this.#logger.warn?.('[dsh-im:discord] interaction reply failed', error?.message ?? error); });
+    try {
+      if (action === 'queue') {
+        const snapshot = await music.snapshot(guildId) ?? { state: 'idle', title: null, queue: [] };
+        const lines = [];
+        if (snapshot.title) lines.push(`${snapshot.state === 'paused' ? '已暫停' : '正在播放'}：${snapshot.title}`);
+        (snapshot.queue ?? []).forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+        await reply({ type: 4, data: { flags: 64, content: (lines.join('\n') || '音樂佇列目前是空的').slice(0, 1900) } });
+        return true;
+      }
+      if (action === 'remove') {
+        await reply({ type: 6 });
+        await panel?.stop(guildId, { remove: true });
+        return true;
+      }
+      if (action === 'refresh') {
+        await reply({ type: 6 });
+        await panel?.refresh(guildId, { force: true });
+        return true;
+      }
+      if (!['pause', 'resume', 'next'].includes(action)) return false;
+      await reply({ type: 6 });
+      const result = await music.control(guildId, action);
+      this.#logger.event?.('music.card.action', { action, guildId, userId, ok: result?.ok !== false });
+      await panel?.refresh(guildId, { force: true });
+      return true;
+    } catch (error) {
+      this.#logger.warn?.('[dsh-im:discord] music card action failed', error?.message ?? error);
+      return true;
+    }
+  }
+
   async #acceptInteraction(interaction) {
     const api = this.#api;
     const bridge = this.#bridge;
@@ -1705,6 +1808,15 @@ export class DiscordRuntime {
     while (this.#interactions.size > 2048) this.#interactions.delete(this.#interactions.values().next().value);
     if (!this.#applicationId) {
       this.#logger.error?.('[dsh-im:discord] ignoring an interaction: application id unknown');
+      return;
+    }
+    const component = Number(interaction?.type) === 3 ? parsePanelCustomId(interaction?.data?.custom_id) : null;
+    if (component && await this.#handleMusicComponent(interaction, component)) {
+      this.#logger.event?.('music.card.handled', {
+        interactionId,
+        action: component.action,
+        guildId: component.guildId,
+      });
       return;
     }
     const handled = await handleApplicationCommand(interaction, {
@@ -2124,11 +2236,15 @@ export class DiscordRuntime {
     const socket = this.#socket;
     const bridge = this.#bridge;
     const music = this.#music;
+    const panel = this.#musicPanel, control = this.#musicControl;
     this.#socket = null;
     this.#bridge = null;
     this.#music = null;
     this.#api = null;
     this.#memberDirectory = null;
+    this.#musicPanel = null; this.#musicControl = null; this.#musicControlBase = null;
+    void Promise.resolve(panel?.destroy()).catch(() => {});
+    void Promise.resolve(control?.close()).catch((error) => this.#logger.warn?.('[dsh-im:discord] music control shutdown failed', error?.message ?? error));
     void music?.destroy().catch(error => this.#logger.warn?.('[dsh-im:discord] music shutdown failed:', error?.name ?? 'Error'));
     this.#interactions.clear(); this.#musicNotes.clear();
     this.#routing.clear();

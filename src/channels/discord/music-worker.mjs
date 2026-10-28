@@ -10,12 +10,13 @@ export const musicWorkerEntry = join(dirname(createRequire(import.meta.url).reso
 
 /** Lazy worker facade: only commands, selection and notifications touch the host. */
 export class MusicWorkerManager {
-  #options; #factory; #worker; #rpc; #notify; #logger; #select; #privilegedIds; #destroyed = false; #destroyTask;
+  #options; #factory; #worker; #rpc; #notify; #logger; #select; #privilegedIds; #destroyed = false; #destroyTask; #onPlaybackChange;
   constructor({ token, harness, logger, notify, ytDlpPath, idleMs, cooldownMs, loginTimeoutMs, healthIntervalMs,
-    workerFactory = (file, options) => new Worker(file, options), selectCandidate, privilegedIds = null } = {}) {
+    workerFactory = (file, options) => new Worker(file, options), selectCandidate, privilegedIds = null, onPlaybackChange = null } = {}) {
     this.#options = { token, ytDlpPath, idleMs, cooldownMs, loginTimeoutMs, healthIntervalMs };
     this.#privilegedIds = typeof privilegedIds === 'function' ? privilegedIds : () => [];
     this.#factory = workerFactory; this.#logger = logger; this.#notify = notify;
+    this.#onPlaybackChange = typeof onPlaybackChange === 'function' ? onPlaybackChange : null;
     this.#select = selectCandidate ?? createDshMusicSelector(harness, { logger });
   }
   get available() { return !this.#destroyed && typeof this.#options.token === 'string' && this.#options.token.length > 0; }
@@ -37,6 +38,9 @@ export class MusicWorkerManager {
       if (message?.event === 'log') this.#log(message.level, message.name, message.detail);
       if (message?.event === 'notice') Promise.resolve().then(() => this.#notify?.(message.channelId, message.message))
         .catch(() => this.#log('warn', 'music.notice.failed', '音樂通知傳送失敗'));
+      if (message?.event === 'playback' && message.guildId) {
+        try { this.#onPlaybackChange?.(String(message.guildId)); } catch (error) { this.#log('warn', 'music.panel.notify', error); }
+      }
     });
     let failed = false;
     const failure = () => {
@@ -53,6 +57,15 @@ export class MusicWorkerManager {
     signal?.throwIfAborted();
     if (this.#destroyed) throw new Error('音樂服務已關閉');
     return this.#start().request('execute', { command, args }, { signal, ready });
+  }
+  /** Null means "no worker running", which the card renders as idle. */
+  async snapshot(guildId) {
+    if (!this.#worker || this.#destroyed) return null;
+    return this.#start().request('snapshot', { guildId: String(guildId) }, {});
+  }
+  async control(guildId, action, params = {}) {
+    if (!this.#worker || this.#destroyed) return { ok: false, message: '目前沒有播放中的歌曲' };
+    return this.#start().request('control', { guildId: String(guildId), action, params }, {});
   }
   destroy() {
     if (this.#destroyTask) return this.#destroyTask;

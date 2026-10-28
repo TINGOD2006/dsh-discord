@@ -7,6 +7,7 @@ import { createDshMusicSelector } from './music-dsh.mjs';
 import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from './music-transport.mjs';
 import { startMusicHealth } from './music-health.mjs';
 import { MusicCommandLane, musicTask } from './music-command-lane.mjs';
+import { clampSeekTarget, formatClock, seekIsMeaningful } from './music-panel.mjs';
 
 export const MUSIC_AUDIO_URL = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|webm)(\?|#|$)/i;
 export const MUSIC_MAX_QUEUE = 25;
@@ -33,15 +34,16 @@ export function prefetchTargets(tracks, depth = MUSIC_PREFETCH_DEPTH) {
 export class MusicManager {
   #token; #logger; #runtime; #pipeline; #notify; #client; #login; #library;
   #guilds = new Map(); #cooldowns = new Map(); #destroyed = false; #idleMs; #cooldownMs; #loginTimeoutMs;
-  #bufferedFactory; #recoverVoice; #healthIntervalMs; #allowLocalFileFor;
+  #bufferedFactory; #recoverVoice; #healthIntervalMs; #allowLocalFileFor; #onPlaybackChange;
   #commands = new MusicCommandLane();
   #lifetime = new AbortController();
   constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000,
     bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate, allowLocalFileFor = null,
-    privilegedIds = [] } = {}) {
+    privilegedIds = [], onPlaybackChange = null } = {}) {
     this.#token = token; this.#logger = logger; this.#runtime = runtime; this.#notify = notify;
     this.#idleMs = idleMs; this.#cooldownMs = cooldownMs;
     this.#loginTimeoutMs = loginTimeoutMs;
+    this.#onPlaybackChange = typeof onPlaybackChange === 'function' ? onPlaybackChange : null;
     this.#bufferedFactory = bufferedFactory; this.#recoverVoice = recoverVoice; this.#healthIntervalMs = healthIntervalMs;
     // Owner-only reach for host-local files: `/play <path>` must not become a way
     // for any member to stream whatever the host can read. The worker receives the
@@ -55,7 +57,7 @@ export class MusicManager {
   }
   get available() { return !this.#destroyed && typeof this.#token === 'string' && this.#token.length > 0; }
   async execute(command, args = {}) {
-    if (!['play', 'join', 'next', 'stop', 'pause', 'resume', 'queue', 'nowplaying', 'status', 'volume', 'bitrate', 'channels', 'leave'].includes(command)) throw new Error('未知音樂指令');
+    if (!['play', 'join', 'next', 'stop', 'pause', 'resume', 'seek', 'queue', 'nowplaying', 'status', 'volume', 'bitrate', 'channels', 'leave'].includes(command)) throw new Error('未知音樂指令');
     const signal = args.signal ? AbortSignal.any([args.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     signal.throwIfAborted();
     // Gateway guild IDs reserve a shared player lane before any asynchronous lookup.
@@ -225,7 +227,7 @@ export class MusicManager {
   #finished(room, id) {
     if (room.current?.id !== id) return;
     room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
-    const track = room.current; room.current = null; room.resource = null; room.state = 'idle'; this.#cancel(track); this.#pump(room);
+    const track = room.current; room.current = null; room.resource = null; room.state = 'idle'; this.#cancel(track); this.#pump(room); this.#changed(room);
   }
   #pump(room) {
     if (room.startTask || room.current || room.leaving || this.#destroyed) return;
@@ -280,7 +282,7 @@ export class MusicManager {
       room.transport = transport; room.resource = resource; room.state = 'playing';
       room.health?.destroy();
       room.health = startMusicHealth(room, (...args) => this.#log(...args), { intervalMs: this.#healthIntervalMs });
-      room.connection.subscribe(room.player); room.player.play(resource);
+      room.connection.subscribe(room.player); room.player.play(resource); this.#changed(room);
       this.#log('info', 'music.playing', { guildId: room.id, title: source.title, selection: source.selection, cacheHit: source.cacheHit });
       void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${source.selection === 'search-fallback' ? '\nDSH 選歌暫不可用，使用搜尋首選。' : ''}`);
       this.#prefetch(room);
@@ -310,11 +312,11 @@ export class MusicManager {
     if (!room.current && !room.tracks.length && !room.startTask) return { message: '目前沒有播放中的歌曲' };
     const track = room.current ?? room.tracks.shift(); room.current = null; room.resource = null; room.state = 'idle'; room.version++;
     room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
-    this.#cancel(track); room.player?.stop(true); this.#pump(room); return { message: '已跳過，正在準備下一首' };
+    this.#cancel(track); room.player?.stop(true); this.#pump(room); this.#changed(room); return { message: '已跳過，正在準備下一首' };
   }
-  async stop({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); this.#clear(room); this.#idle(room); return { message: '已停止音樂並清空佇列' }; }
-  async pause({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); if (room.state !== 'playing') return { message: '目前沒有可暫停的歌曲' }; room.player?.pause(); room.transport?.resetTiming?.(); room.state = 'paused'; return { message: '音樂已暫停' }; }
-  async resume({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); if (room.state !== 'paused') return { message: '目前沒有暫停中的歌曲' }; room.transport?.resetTiming?.(); room.state = 'playing'; room.player?.unpause(); return { message: '繼續播放音樂' }; }
+  async stop({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); this.#clear(room); this.#idle(room); this.#changed(room); return { message: '已停止音樂並清空佇列' }; }
+  async pause({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); if (room.state !== 'playing') return { message: '目前沒有可暫停的歌曲' }; room.player?.pause(); room.transport?.resetTiming?.(); room.state = 'paused'; this.#changed(room); return { message: '音樂已暫停' }; }
+  async resume({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); if (room.state !== 'paused') return { message: '目前沒有暫停中的歌曲' }; room.transport?.resetTiming?.(); room.state = 'playing'; room.player?.unpause(); this.#changed(room); return { message: '繼續播放音樂' }; }
   async queue({ channelId, senderId, signal }) {
     const { room } = await this.#context(channelId, senderId, { voice: false, signal });
     const lines = room.current ? [`${room.state === 'preparing' ? '準備中' : room.state === 'paused' ? '已暫停' : '正在播放'}：${room.current.title ?? room.current.query}`] : [];
@@ -389,10 +391,11 @@ export class MusicManager {
       : '\n目標高於目前可用碼率；請確認語音頻道的碼率設定。') : '';
     return { message: `音樂目標碼率：${room.requestedBitrate / 1000} kbps\n${actual ? '目前輸出' : '預計輸出'}：${rate / 1000} kbps；頻道上限：${limit}\n聲道：${channels === 2 ? '2（雙聲道立體聲）' : '1（單聲道）'}${hint}\n設定沿用至離開語音或外掛重載；/music channels ${MUSIC_PLAYBACK_PROFILE.channels} 及 /music bitrate ${MUSIC_PLAYBACK_PROFILE.bitrate / 1000} 可恢復預設。` };
   }
-  async #replacePlayback(room, signal, rollback) {
+  async #replacePlayback(room, signal, rollback, { offsetSeconds: explicitOffset } = {}) {
     const track = room.current, previous = room.transport, oldResource = room.resource, previousState = room.state;
     const active = signal ? AbortSignal.any([signal, track.controller.signal]) : track.controller.signal;
-    const offsetSeconds = (previous?.offsetSeconds ?? 0) + (oldResource.playbackDuration ?? 0) / 1000;
+    // A seek overrides the "carry on from where the old encoder stopped" offset.
+    const offsetSeconds = explicitOffset ?? (previous?.offsetSeconds ?? 0) + (oldResource.playbackDuration ?? 0) / 1000;
     room.player?.pause(); if (room.state === 'playing') room.state = 'paused';
     let replacement;
     try {
@@ -407,6 +410,7 @@ export class MusicManager {
       if (previousState !== 'playing') room.player.pause(); else room.player.unpause();
       room.health?.destroy(); room.health = startMusicHealth(room, (...args) => this.#log(...args), { intervalMs: this.#healthIntervalMs });
       previous?.destroy();
+      this.#changed(room);
     } catch (error) {
       replacement?.destroy();
       if (room.current === track && room.transport === previous) {
@@ -416,6 +420,83 @@ export class MusicManager {
       throw error;
     }
   }
+  /** Playback state for the card and the web console; never throws. */
+  snapshot(guildId) {
+    const room = this.#guilds.get(String(guildId));
+    if (!room || (!room.current && !room.tracks.length)) {
+      return { state: 'idle', title: null, url: null, positionMs: 0, durationMs: 0, loop: 'off', volume: Math.round(MUSIC_DEFAULT_VOLUME * 100), queue: [], requester: null, channelId: null };
+    }
+    const track = room.current;
+    return {
+      state: track ? room.state : 'preparing',
+      title: track?.title ?? track?.query ?? null,
+      url: track?.source?.url ?? null,
+      positionMs: this.#positionMs(room),
+      durationMs: Math.max(0, Math.round((Number(track?.source?.duration) || 0) * 1000)),
+      loop: 'off',
+      volume: Math.round((Number(room.volume) || MUSIC_DEFAULT_VOLUME) * 100),
+      queue: room.tracks.map((item) => item.title ?? item.query),
+      requester: track?.senderId ? `<@${track.senderId}>` : null,
+      channelId: room.textChannelId ?? track?.channelId ?? null,
+    };
+  }
+
+  /** Seconds already played on the current track, straight from the live resource. */
+  #positionMs(room) {
+    if (!room?.current || !room.resource) return 0;
+    const base = Number(room.transport?.offsetSeconds) || 0;
+    const played = Number(room.resource.playbackDuration) || 0;
+    return Math.max(0, Math.round((base + played) * 1000));
+  }
+
+  #changed(room) {
+    if (!room || !this.#onPlaybackChange) return;
+    try { this.#onPlaybackChange(room.id); } catch (error) { this.#log('warn', 'music.panel.notify', error); }
+  }
+
+  async seek({ channelId, senderId, positionMs, signal }) {
+    const { room } = await this.#context(channelId, senderId, { signal });
+    return this.#seekRoom(room, positionMs, signal, { announce: true });
+  }
+
+  async #seekRoom(room, positionMs, signal, { announce = false } = {}) {
+    if (!room.current || !room.resource) return { ok: false, message: '目前沒有可跳轉的歌曲' };
+    if (room.state === 'preparing') return { ok: false, message: '歌曲還在準備中，請稍後再跳轉' };
+    const durationMs = Math.round((Number(room.current.source?.duration) || 0) * 1000);
+    const target = clampSeekTarget(positionMs, durationMs);
+    if (!seekIsMeaningful(target, this.#positionMs(room))) return { ok: true, message: `已經在 ${formatClock(target)}` };
+    await this.#replacePlayback(room, signal, () => {}, { offsetSeconds: target / 1000 });
+    const message = `已跳到 ${formatClock(target)}`;
+    if (announce) void this.#say(room.textChannelId, message);
+    return { ok: true, message };
+  }
+
+  /** Console path: a guild id, with no text channel or sender to resolve. */
+  async control(guildId, action, { positionMs } = {}) {
+    const room = this.#guilds.get(String(guildId));
+    if (!room || room.leaving) return { ok: false, message: '目前沒有播放中的歌曲' };
+    if (action === 'pause') {
+      if (room.state !== 'playing') return { ok: false, message: '目前沒有可暫停的歌曲' };
+      room.player?.pause(); room.transport?.resetTiming?.(); room.state = 'paused'; this.#changed(room);
+      return { ok: true, message: '音樂已暫停' };
+    }
+    if (action === 'resume') {
+      if (room.state !== 'paused') return { ok: false, message: '目前沒有暫停中的歌曲' };
+      room.transport?.resetTiming?.(); room.state = 'playing'; room.player?.unpause(); this.#changed(room);
+      return { ok: true, message: '繼續播放音樂' };
+    }
+    if (action === 'next') {
+      if (!room.current && !room.tracks.length && !room.startTask) return { ok: false, message: '目前沒有播放中的歌曲' };
+      const track = room.current ?? room.tracks.shift();
+      room.current = null; room.resource = null; room.state = 'idle'; room.version++;
+      room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
+      this.#cancel(track); room.player?.stop(true); this.#pump(room); this.#changed(room);
+      return { ok: true, message: '已跳過，正在準備下一首' };
+    }
+    if (action === 'seek') return this.#seekRoom(room, positionMs, this.#lifetime.signal);
+    return { ok: false, message: '不支援的動作' };
+  }
+
   async leave({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); this.#dispose(room); return { message: '已停止音樂並離開語音頻道' }; }
   async destroy() {
     this.#destroyed = true; this.#lifetime.abort(); this.#commands.destroy();
