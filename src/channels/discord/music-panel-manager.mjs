@@ -25,7 +25,11 @@ export class MusicPanelManager {
   messageIdFor(guildId) { return this.#panels.get(String(guildId))?.messageId ?? null; }
 
   #log(level, event, detail) {
-    try { this.#logger?.(level, event, detail instanceof Error ? detail.message : detail); } catch {}
+    try {
+      if (!(detail instanceof Error)) { this.#logger?.(level, event, detail); return; }
+      const extra = detail.providerErrors ? ` ${JSON.stringify(detail.providerErrors).slice(0, 600)}` : '';
+      this.#logger?.(level, event, `${detail.message}${extra}`);
+    } catch {}
   }
 
   #body(guildId, snapshot) {

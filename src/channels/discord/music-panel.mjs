@@ -112,6 +112,10 @@ export function renderPanel(snapshot = {}, { guildId = '', controlUrl = null } =
     description: lines.join('\n'),
     footer: { text: snapshot.requester ? `點播：${snapshot.requester}` : 'dsh-discord 音樂' },
   };
-  if (snapshot.url) embed.url = String(snapshot.url);
+  // A local file or a bare search term is not a URL, and Discord rejects the whole
+  // embed when `url` is not http(s).
+  if (typeof snapshot.url === 'string' && /^https?:\/\//iu.test(snapshot.url.trim())) {
+    embed.url = snapshot.url.trim();
+  }
   return { embeds: [embed], components };
 }

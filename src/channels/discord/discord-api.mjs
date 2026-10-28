@@ -415,6 +415,11 @@ export class DiscordApi {
       if (Number.isInteger(parsed?.code) || typeof parsed?.code === 'string') {
         error.providerCode = parsed.code;
       }
+      // Discord explains which field it rejected in `errors`; without it a bare
+      // "Invalid Form Body" cannot be diagnosed from the log.
+      if (parsed?.errors && typeof parsed.errors === 'object') {
+        error.providerErrors = parsed.errors;
+      }
       const retryAfter = Number(parsed?.retry_after);
       if (Number.isFinite(retryAfter) && retryAfter >= 0) {
         error.retry_after = retryAfter;
