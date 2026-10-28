@@ -138,3 +138,53 @@
 - **速率限制**：多人同頻道時按鈕連點會撞 429；用「最後一次請求時間」節流，而不是排隊。
 - **卡片孤兒**：重啟後舊卡片按鈕會失效，這是刻意的取捨（不做持久化）。
 - **文字指令與按鈕雙軌**：兩邊都改同一個 `MusicManager`，狀態只有一份，所以不會不同步——這是保留指令的前提，也是它比「兩套播放器」安全的地方。
+
+## 12. 修訂（追加）：拖動需求納入設計
+
+使用者要求「在做到拖的要求下設計」。平台事實（已核實）：Discord 訊息元件沒有滑桿（官方 Message Components 只有 Button、四種 Select、modal 內的 Text Input／Checkbox／Radio／File Upload），一則訊息最多 5 排 × 5 顆；拖動需要連續 pointer 事件，Discord 只送單次互動。所以**拖動只能發生在網頁裡**：
+
+- **A（採用）** 本機網頁控制台：卡片加一顆 Link 按鈕（`style: 5`）指向 `http://127.0.0.1:<port>/music/<token>/`，頁面用原生 `<input type="range">`，可以真的拖。
+- **B（不採用，記錄原因）** Discord Activity：官方文件明確是 iframe 內的 web app，但需要公開 HTTPS 位址與 App 的 Activity 設定；本插件跑在使用者本機，沒有公網位址，且聲音仍由 bot 的語音連線輸出，Activity 只能當遙控。要採用得先有 tunnel 或公網部署。
+
+## 13. 拖動的實作：seek 與位置
+
+好消息：播放管線**已經支援 offset**，不必重寫播放器。已核實：
+
+- `src/channels/discord/music-encoder.mjs:20` 的 `playbackEncoderArgs(input, { volume, bitrate, channels, offsetSeconds })` 已會插 `-ss <offsetSeconds>`（:25）。
+- `src/channels/discord/music-transport.mjs:14,18` 把 `offsetSeconds` 傳進 encoder，並在 :67 回傳 `{ resource, destroy, offsetSeconds, resetTiming }`。
+- `src/channels/discord/music.mjs:395` 重連續播時已經用 `(previous?.offsetSeconds ?? 0) + playbackDuration / 1000`。
+
+新增三件事：
+
+- `MusicManager.seek(positionMs)`：clamp 到 `[0, durationMs - 2000]`；與目前位置差 < 1500ms 直接忽略（吸收拖動尾端抖動）；`destroy()` 現有 resource → `#buildTransport(room, track, { offsetSeconds })`（`music.mjs:236`）→ 更新 `track.offsetSeconds`。
+- `MusicManager.positionMs()`：`offsetSeconds * 1000 + playbackDuration * 1000`；暫停時凍結在 `frozenMs`。
+- `seek` 進 `music.mjs` 的 `ACTIONS`，所以 `/music seek 1:30` 與網頁拖動共用同一條路徑、同一份狀態。
+
+## 14. 網頁控制台
+
+新檔 `src/channels/discord/music-control-server.mjs`，只用 `node:http`、零依賴（同 `src/channels/wecom-app/callback-server.mjs` 的做法）：
+
+| 路由 | 方法 | 作用 |
+|---|---|---|
+| `/music/<token>/` | GET | 單頁 HTML（inline CSS/JS，深色、手機可用） |
+| `/music/<token>/state` | GET | `{ ok, title, author, positionMs, durationMs, paused, loop, volume, queue }` |
+| `/music/<token>/seek` | POST `{ positionMs }` | 拖動放開時呼叫 |
+| `/music/<token>/{pause,resume,next,prev,loop,volume}` | POST | 與卡片按鈕同一批 action |
+
+- 綁定：預設 `127.0.0.1`，埠由 `config.musicControlPort`（預設 0＝隨機）決定；啟動後把實際位址與 token 交給 `MusicManager`，卡片才生得出 Link。
+- token：每次啟動 `crypto.randomBytes(16).toString('base64url')`，放**路徑**而非 query，避免 Referer 外洩。
+- 拖動體驗：`input` 只更新本地時間文字；`change`（放開）才 POST seek；其餘時間每 1 秒輪詢 `state`，拖動期間暫停輪詢覆蓋。
+- 手機：同 Wi-Fi 用 `http://<區網 IP>:<port>/music/<token>/`，需要設定卡的「允許區網」開關（預設關）。
+
+## 15. 安全
+
+- token 是能力憑證：拿到連結的人都能控制播放（跳轉／暫停／音量）。風險面僅限音樂，不含檔案、不含 shell。
+- 預設只綁 loopback；區網要明確開啟，開啟時卡片連結改用區網 IP。
+- 限流：每 token 20 req/s，超過回 429；seek 最小間隔 300ms。
+- 不提供檔案瀏覽、不代理任意 URL。
+
+## 16. 分期修訂
+
+- **P1**：訊息 API 支援 embeds/components → `snapshot()` → 卡片（暫停/繼續、下一首、佇列、更新、移除）→ `seek` action → 網頁控制台（HTML、state、seek、pause/resume/next）→ 卡片上的「網頁控制」Link 按鈕。**這一期交付「能拖」。**
+- **P2**：loop／previous、佇列頁、±30s 按鈕。
+- **P3**：區網開關、封面圖、音量滑桿。
