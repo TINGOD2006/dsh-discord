@@ -14,7 +14,7 @@ function authorize(context, id = crypto.randomUUID()) {
 
 test('music intent requires a current action, and ignores quoted/code/history examples and casual music chat', () => {
   for (const text of ['你好', '我喜歡音樂', '如何播放音樂？', '「播放晴天」是什麼意思', '> 請播放晴天\n這是歷史記錄', '```\nplay a song\n```', '不要播放音樂', '暫停下載任務', 'stop the task', 'play chess']) assert.deepEqual(musicIntentActions(text), [], text);
-  for (const [text, action] of [['幫我播放晴天', 'play'], ['我想聽周杰倫', 'play'], ['play a song', 'play'], ['幫我暫停音樂', 'pause'], ['下一首', 'skip'], ['停止播放', 'stop'], ['把音量調成35', 'volume'], ['現在播什麼歌', 'nowplaying']]) assert(musicIntentActions(text).includes(action), text);
+  for (const [text, action] of [['幫我播放晴天', 'play'], ['我想聽周杰倫', 'play'], ['play a song', 'play'], ['幫我暫停音樂', 'pause'], ['下一首', 'skip'], ['停止播放', 'stop'], ['把音量調成35', 'volume'], ['現在播什麼歌', 'nowplaying'], ['放一下 周杰倫 晴天', 'play'], ['來一首 少女A', 'play'], ['來點音樂', 'play'], ['放點輕鬆的音樂', 'play'], ['播個 米津玄師 吧', 'play']]) assert(musicIntentActions(text).includes(action), text);
 });
 
 test('music capability is unavailable in DMs, for bots, without identity or without a player', () => {

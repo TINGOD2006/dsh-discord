@@ -21,6 +21,7 @@ import { DiscordApi } from './discord-api.mjs';
 import { handleApplicationCommand, syncApplicationCommands } from './discord-commands.mjs';
 import { MusicWorkerManager } from './music-worker.mjs';
 import { isMusicCommand } from '../shared/music-commands.mjs';
+import { musicIntentActions } from '../shared/music-access.mjs';
 import { cleanHistoryText, filterHistoryRows, historyContextNeeded, historyRecallRequested } from '../shared/history-context.mjs';
 import { ensureHistoryReadState } from '../shared/history-read-state.mjs';
 import { decideSmartReply } from './reply-policy.mjs';
@@ -1859,7 +1860,12 @@ export class DiscordRuntime {
         reason: accessDecision.reason ?? null,
         canExecuteCommands: accessDecision.canExecuteCommands === true,
       });
-      if (!accessDecision.allowed && !isMusicCommand(preflight.content)) {
+      // Playing a song is a low-privilege action: anyone may ask for music, so a
+      // plain chat request passes the policy gate exactly like the /music command
+      // does. Everything the allowlist buys (commands, tools, workspace) stays gated.
+      const musicRequest = isMusicCommand(preflight.content)
+        || musicIntentActions(preflight.content).includes('play');
+      if (!accessDecision.allowed && !musicRequest) {
         // Let the shared bridge apply its normal silent/command-denial behavior,
         // but do so against the source channel before creating a Thread.
         return { completion: bridge.accept(preflight, { accessDecision }) };
