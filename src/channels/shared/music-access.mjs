@@ -5,13 +5,18 @@ const META = /(?:如何|怎麼|怎么|為什麼|为什么|教我|示範|示范|�
 const NEGATION = /(?:不要|別|别|請勿|请勿|不用|無需|无需)|\b(?:don['’]?t|do not|never|no need to)\b/iu;
 const POLITE_PREFIX = /^(?:(?:(?:請|请)(?!勿)|幫我|帮我|替我|麻煩你?|麻烦你?|可以|可不可以|能不能|能否|拜託|拜托|先|再|然後|然后|接著|接着|改成|改為|改为)\s*|(?:please|can you|could you|would you|will you)\s+)*/iu;
 const PLAY_REQUEST = /^(?:播放|點播|点播|點歌|点歌|放歌|我想(?:要)?(?:聽|听)|(?:放|聽|听|來|来)(?:一)?(?:首|個|个)(?:歌)?|(?:放|播|播放|來|来)(?:一下|下|點|点|個|个)|(?:play|put on)\b)/iu;
+// Same vocabulary, allowed anywhere in the clause: real people open with filler
+// ("隨便放點什麼都行"), so the verb is not always the first word.
+const PLAY_REQUEST_ANY = new RegExp(PLAY_REQUEST.source.replace(/^\^/u, ''), 'iu');
+const PLAY_NARRATION = /(?:正在|在|已經|已经)\s*$/u;
+const PLAY_CONTROL_BEFORE = /(?:停止|暫停|暂停|停掉|關掉|关掉|跳過|跳过|跳|結束|结束|繼續|继续|恢復|恢复|音量|碼率|码率|聲道|声道)/u;
 const EXPLANATION_SUFFIX = /(?:這|这)(?:個|个|句|段)?(?:指令|命令|說法|说法|話|话).{0,6}(?:意思|解釋|解释)|(?:是什麼意思|是什么意思)\s*[?？]?$/iu;
 const PLAY_EXPLANATION = /^(?:播放|點播|点播|點歌|点歌)(?:音樂|音乐|歌曲|功能|指令|命令)(?:要|該|该)?(?:如何|怎麼|怎么)/u;
 const REPORTED_SPEECH = /^(?:(?:他|她|有人|機器人|机器人).{0,5}(?:說|说)|(?:he|she|they)\s+(?:said|says)\b)/iu;
 const OTHER_CONTROL = /(?:暫停|暂停|停止|繼續|继续|恢復|恢复).{0,6}(?:任務|任务|下載|下载|思考|計時|计时)|\b(?:pause|stop|resume)\s+(?:the\s+)?(?:task|download|timer|game)\b|\bplay\s+(?:chess|a game|games|football|basketball)\b/iu;
 const INTENTS = {
   join: /(?:加入|進來|进来|進入|进入).{0,8}(?:語音|语音|頻道|频道)|\bjoin\b.{0,20}\b(?:voice|channel)\b/iu,
-  skip: /(?:跳過|跳过|切歌|下一首)|\b(?:skip|next (?:song|track))\b/iu,
+  skip: /(?:跳過|跳过|切歌|下一首|換(?:一)?首|换(?:一)?首|換首歌|换首歌)|\b(?:skip|next (?:song|track))\b/iu,
   stop: /(?:停止|停掉|關掉|关掉|結束|结束).{0,6}(?:音樂|音乐|播放|歌曲|放歌)|(?:音樂|音乐|歌曲|播放).{0,6}(?:關掉|关掉|停掉|停止|結束|结束)|\bstop\b.{0,12}\b(?:music|playing|playback|song)\b|\b(?:turn|switch)\s+(?:off\s+(?:the\s+)?music|(?:the\s+)?music\s+off)\b/iu,
   pause: /(?:暫停|暂停)|\bpause\b/iu,
   resume: /(?:繼續|继续|恢復|恢复).{0,6}(?:播放|音樂|音乐)|\b(?:resume|unpause|keep playing|continue playing)\b/iu,
@@ -24,6 +29,23 @@ const INTENTS = {
   leave: /(?:離開|离开|退出).{0,8}(?:語音|语音|頻道|频道)|\b(?:leave|disconnect)\b.{0,15}\b(?:voice|channel)\b/iu,
 };
 
+/**
+ * A play verb buried mid-clause still counts, as long as nothing in front of it
+ * turns the clause into a negation, a report of someone else's wish, or a
+ * description of playback already happening. Song titles keep their negation
+ * ("Don't Stop Me Now") because only the text *before* the verb is inspected.
+ */
+function midSentencePlay(clause) {
+  const match = PLAY_REQUEST_ANY.exec(clause);
+  if (!match) return false;
+  const before = clause.slice(0, match.index);
+  // "停止播放" / "繼續播放" are controls, not requests for a new song.
+  if (PLAY_CONTROL_BEFORE.test(before)) return false;
+  if (NEGATION.test(clause) && NEGATION.test(before)) return false;
+  if (REPORTED_SPEECH.test(before) || PLAY_NARRATION.test(before)) return false;
+  return !META.test(clause);
+}
+
 /** Only the live message supplies intent; history and model arguments cannot. */
 export function musicIntentActions(text) {
   const current = String(text ?? '').replace(/```[\s\S]*?(?:```|$)/gu, '').replace(/^\s*>.*$/gmu, '')
@@ -35,7 +57,9 @@ export function musicIntentActions(text) {
     if (!clause || REPORTED_SPEECH.test(clause)) continue;
     // Parse the operation before inspecting its argument. A song named
     // "Don't Stop Me Now" does not negate play or authorize stop/pause.
-    const play = PLAY_REQUEST.test(clause) || (/(?:幫我|帮我|替我)/u.test(prefix) && /^(?:放|播)(?!大|小|慢|快|心|下|上|回|到|開|开|鬆|松|假|學|学)/u.test(clause));
+    const play = PLAY_REQUEST.test(clause)
+      || (/(?:幫我|帮我|替我)/u.test(prefix) && /^(?:放|播)(?!大|小|慢|快|心|下|上|回|到|開|开|鬆|松|假|學|学)/u.test(clause))
+      || midSentencePlay(clause);
     if (play) {
       if (EXPLANATION_SUFFIX.test(clause) || PLAY_EXPLANATION.test(clause) || /^play\s+(?:chess|a game|games|football|basketball)\b/iu.test(clause)) continue;
       actions.add('play'); continue;
