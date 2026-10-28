@@ -64,8 +64,10 @@ function buttonRow(buttons) {
   return { type: 1, components: buttons };
 }
 
+// Discord's REST validator only accepts a partial-emoji *object* here, even though
+// the docs also show a bare string. A string fails with MODEL_TYPE_CONVERT.
 function button({ action, guildId, label, emoji, style = 2, disabled = false }) {
-  return { type: 2, style, label, emoji, custom_id: panelCustomId(action, guildId), disabled };
+  return { type: 2, style, label, emoji: { name: emoji }, custom_id: panelCustomId(action, guildId), disabled };
 }
 
 /**
