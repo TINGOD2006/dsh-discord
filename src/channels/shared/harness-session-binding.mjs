@@ -59,9 +59,12 @@ function sessionSummary(sessionId, value) {
     throw new Error('Harness returned an invalid response for session.list');
   }
   const matches = value.items.filter((item) => item.sessionId === sessionId);
-  if (matches.length === 0) {
-    throw bindingError('session-summary-unavailable', 'The session is no longer available from Harness');
-  }
+  // Missing from session.list is not proof the Session is gone: Harness indexes
+  // only what it has loaded, so a large session written by an earlier process can
+  // be absent while still sitting on disk and registered to its workspace. The
+  // workspace list below is the authoritative registration check; this summary
+  // only supplies a title (and a cwd for ungrouped workspaces).
+  if (matches.length === 0) return null;
   if (matches.length !== 1) {
     throw new Error('Harness returned duplicate session summaries for session.list');
   }
@@ -93,7 +96,7 @@ export async function adoptRegisteredWorkspaceSession(client, value, options = {
     await client.rpc('session.list', {}, timeoutMs, options),
   );
   if (!workspace) {
-    if (typeof summary.cwd !== 'string' || !isAbsolute(summary.cwd)
+    if (!summary || typeof summary.cwd !== 'string' || !isAbsolute(summary.cwd)
       || UNSAFE_WORKSPACE_PATH.test(summary.cwd)
       || !await client.isUngroupedWorkspace?.(summary.cwd)) {
       throw bindingError('session-not-registered', 'The session is not registered to a Harness workspace');
@@ -113,7 +116,7 @@ export async function adoptRegisteredWorkspaceSession(client, value, options = {
   return {
     sessionId,
     workspace: workspace.path,
-    title: summary.title,
+    title: summary?.title ?? null,
     archived,
   };
 }
