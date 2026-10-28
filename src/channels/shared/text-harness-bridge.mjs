@@ -24,7 +24,7 @@ async function historyImagePart(path) {
 
 import { createDeferredDeliveryCoordinator, deferredOutcomeText } from './deferred-delivery-coordinator.mjs';
 import { t } from './i18n.mjs';
-import { commandHelpLines } from './command-catalog.mjs';
+import { commandHelpSections } from './command-catalog.mjs';
 import {
   COMMAND_PERMISSION_DENIED_MESSAGE,
   evaluateInboundAccess,
@@ -1584,7 +1584,11 @@ export class TextHarnessBridge {
           t('{label}机器人已连接 DeepSeek Harness。', { label: this.#descriptor.label }),
           '',
           t('直接发送文字、图片或文件即可继续当前会话。'),
-          ...commandHelpLines(this.#descriptor.key),
+          ...commandHelpSections(this.#descriptor.key).flatMap((section) => [
+            '',
+            `【${section.title}】`,
+            ...section.lines,
+          ]),
         ].join('\n'));
         return;
       }

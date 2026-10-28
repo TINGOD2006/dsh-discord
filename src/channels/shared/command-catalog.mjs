@@ -76,10 +76,10 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
     '/preset --default  跟随 Host 默认',
   ]),
   defineCatalogCommand('stop', '停止当前任务', [
-    '/stop  停止当前任务',
+    '/stop  停止当前任务（跳歌用 /music skip，不要用 /stop）',
   ]),
-  defineCatalogCommand('skip', '停止当前任务（/stop 的快捷写法）', [
-    '/skip  停止当前任务（/stop 的快捷写法）',
+  defineCatalogCommand('skip', '停止当前任务（等同 /stop，不是跳歌）', [
+    '/skip  停止当前任务（等同 /stop；要跳歌请用 /music skip 或 /next）',
   ]),
   defineCatalogCommand('digest', '查看最近一段时间的群聊摘要（仅主人）', [
     '/digest [小时]  查看最近群聊摘要（默认 24 小时，最多 720 小时）',
@@ -162,6 +162,49 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
 
 export function commandsForChannel(channel, catalog = SHARED_COMMAND_CATALOG) {
   return catalog.filter((item) => item.enabled !== false && item.channels.includes(channel));
+}
+
+// Help order and headings. A flat list of forty lines is unreadable in chat, and
+// it hides which commands a non-owner may actually use.
+export const COMMAND_HELP_SECTIONS = Object.freeze([
+  Object.freeze({ id: 'session', title: '会话' }),
+  Object.freeze({ id: 'workspace', title: '工作区与会话绑定' }),
+  Object.freeze({ id: 'model', title: '模型与推理' }),
+  Object.freeze({ id: 'music', title: '音乐' }),
+  Object.freeze({ id: 'owner', title: '群聊管理（仅主人）' }),
+  Object.freeze({ id: 'misc', title: '其他' }),
+]);
+
+const MUSIC_NAMES = new Set(['play', 'music', 'join', 'next', 'pause', 'resume', 'queue', 'leave']);
+const WORKSPACE_NAMES = new Set(['workspace', 'conv', 'workspacelist', 'sessionlist', 'session']);
+const MODEL_NAMES = new Set(['models', 'model', 'reasoninglist', 'reasoning', 'presetlist', 'preset']);
+const SESSION_NAMES = new Set(['new', 'compact', 'clear', 'history', 'stop', 'skip', 'steer', 'batch', 'send', 'cancel']);
+
+/** Which help section a command belongs to; explicit lists win over privateOnly. */
+export function commandSectionName(item) {
+  if (MUSIC_NAMES.has(item.name)) return 'music';
+  if (WORKSPACE_NAMES.has(item.name)) return 'workspace';
+  if (MODEL_NAMES.has(item.name)) return 'model';
+  if (SESSION_NAMES.has(item.name)) return 'session';
+  if (item.privateOnly === true) return 'owner';
+  return 'misc';
+}
+
+/**
+ * Help grouped by section, in `COMMAND_HELP_SECTIONS` order.
+ *
+ * Empty sections disappear, so a channel without music commands never prints a
+ * heading for them.
+ */
+export function commandHelpSections(channel, catalog = SHARED_COMMAND_CATALOG) {
+  const buckets = new Map(COMMAND_HELP_SECTIONS.map((section) => [section.id, []]));
+  for (const item of commandsForChannel(channel, catalog)) {
+    const bucket = buckets.get(commandSectionName(item));
+    if (bucket) bucket.push(...item.help.map((line) => t(line)));
+  }
+  return COMMAND_HELP_SECTIONS
+    .map((section) => ({ id: section.id, title: t(section.title), lines: buckets.get(section.id) ?? [] }))
+    .filter((section) => section.lines.length > 0);
 }
 
 export function commandHelpLines(channel, catalog = SHARED_COMMAND_CATALOG) {
