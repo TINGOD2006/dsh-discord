@@ -41,6 +41,13 @@ export function positionMsFor(offsetSeconds, playbackDurationMs) {
   return Math.max(0, Math.round(base * 1000 + played));
 }
 
+/** The encoder emits fixed 20ms Opus frames, so frames played * 20 is the position. */
+export function positionFromFrames(offsetSeconds, framesRead, frameMs = 20) {
+  const base = Number(offsetSeconds) || 0;
+  const frames = Number(framesRead) || 0;
+  return Math.max(0, Math.round(base * 1000 + frames * frameMs));
+}
+
 /** Per-guild playback. A cancelled preparation can never resurrect a stopped track. */
 export class MusicManager {
   #token; #logger; #runtime; #pipeline; #notify; #client; #login; #library;
@@ -452,10 +459,17 @@ export class MusicManager {
     };
   }
 
-  /** Seconds already played on the current track, straight from the live resource. */
+  /**
+   * Position comes from the transport's own frame counter: the buffered resource
+   * keeps `playbackDuration` at 0 in the worker, so reading it froze the card at
+   * whatever second the first render happened to catch.
+   */
   #positionMs(room) {
     if (!room?.current || !room.resource) return 0;
-    return positionMsFor(room.transport?.offsetSeconds, room.resource.playbackDuration);
+    const offset = Number(room.transport?.offsetSeconds) || 0;
+    const frames = Number(room.transport?.snapshot?.()?.framesRead);
+    if (Number.isFinite(frames) && frames >= 0) return positionFromFrames(offset, frames);
+    return positionMsFor(offset, room.resource.playbackDuration);
   }
 
   #changed(room) {

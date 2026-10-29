@@ -4,7 +4,7 @@ import {
   PANEL_ACTIONS, PANEL_BAR_WIDTH, clampSeekTarget, formatClock, panelCustomId,
   parsePanelCustomId, progressBar, renderPanel, seekIsMeaningful,
 } from '../src/channels/discord/music-panel.mjs';
-import { MusicManager, positionMsFor } from '../src/channels/discord/music.mjs';
+import { MusicManager, positionFromFrames, positionMsFor } from '../src/channels/discord/music.mjs';
 
 test('formatClock pads and grows to hours', () => {
   assert.equal(formatClock(0), '0:00');
@@ -25,6 +25,10 @@ test('progressBar keeps its width and fills by ratio', () => {
   // Guards the seconds/milliseconds mix-up that painted "10:55:20" for 20s of audio.
   assert.equal(positionMsFor(0, 20_000), 20_000);
   assert.equal(positionMsFor(30, 5_000), 35_000);
+  // The card follows the transport's frame counter, not a frozen playbackDuration.
+  assert.equal(positionFromFrames(0, 50), 1_000);
+  assert.equal(positionFromFrames(30, 50), 31_000);
+  assert.equal(positionFromFrames(undefined, undefined), 0);
 });
 
 test('clampSeekTarget never lands past the end', () => {
