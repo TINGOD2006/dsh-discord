@@ -14,7 +14,7 @@
  * The index keeps the session a persona *used*, even after the binding moved
  * elsewhere, so a later switch back has something to return to.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -35,6 +35,8 @@ function cleanId(value) {
 
 export class DiscordPersonaLinks {
   #path;
+  #cache = null;
+  #stamp = '';
 
   constructor(options = {}) {
     this.#path = options.path ?? linksFilePath(options);
@@ -70,34 +72,52 @@ export class DiscordPersonaLinks {
     if (typeof key !== 'string' || key === '' || !activeId) return;
     const data = this.#read();
     const id = cleanId(sessionId);
+    // Copy-on-write: the cached object must never be mutated in place, or a
+    // failed write would leave the next reader looking at unsaved state.
+    const bindings = { ...data.bindings };
+    const index = { ...data.index };
     if (id) {
-      const perPersona = plainObject(data.index[activeId]);
-      perPersona[key] = id;
-      data.index[activeId] = perPersona;
-      data.bindings[key] = { activeId, sessionId: id };
+      index[activeId] = { ...plainObject(index[activeId]), [key]: id };
+      bindings[key] = { activeId, sessionId: id };
     } else {
-      delete data.bindings[key];
+      delete bindings[key];
     }
-    this.#write(data);
+    this.#write({ bindings, index });
   }
 
   /** Drop the current pointer for a conversation but keep the history index. */
   unbind(key) {
     const data = this.#read();
     if (!(key in data.bindings)) return;
-    delete data.bindings[key];
-    this.#write(data);
+    const bindings = { ...data.bindings };
+    delete bindings[key];
+    this.#write({ bindings, index: { ...data.index } });
   }
 
+  /**
+   * Parsed links, re-read only when the file changes. Every message asks for a
+   * binding, so the stat check replaces a read+parse on the hot path while an
+   * edit made by hand still lands on the next call.
+   */
   #read() {
+    let stamp;
+    try {
+      const stat = statSync(this.#path);
+      stamp = `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      this.#cache = null; this.#stamp = '';
+      return { bindings: {}, index: {} };
+    }
+    if (this.#cache !== null && stamp === this.#stamp) return this.#cache;
     try {
       // Notepad on Windows writes a UTF-8 BOM; JSON.parse rejects it.
       const raw = readFileSync(this.#path, 'utf8').replace(/^\uFEFF/, '');
       const parsed = JSON.parse(raw);
-      const bindings = plainObject(parsed?.bindings);
-      const index = plainObject(parsed?.index);
-      return { bindings, index };
+      this.#cache = { bindings: plainObject(parsed?.bindings), index: plainObject(parsed?.index) };
+      this.#stamp = stamp;
+      return this.#cache;
     } catch {
+      this.#cache = null; this.#stamp = '';
       return { bindings: {}, index: {} };
     }
   }
@@ -107,6 +127,13 @@ export class DiscordPersonaLinks {
     const temporary = `${this.#path}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
     renameSync(temporary, this.#path);
+    try {
+      const stat = statSync(this.#path);
+      this.#cache = data; this.#stamp = `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      // Losing the cache only costs one extra read on the next call.
+      this.#cache = null; this.#stamp = '';
+    }
   }
 }
 

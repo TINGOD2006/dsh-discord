@@ -121,22 +121,29 @@ export class MusicPanelManager {
 
   async #render(guildId, panel, snapshot, { force = false } = {}) {
     const body = this.#body(guildId, snapshot);
+    const encoded = JSON.stringify(body);
     try {
       if (!panel.messageId) {
         const message = await this.#api.createMessage({ channelId: panel.channelId, ...body });
         panel.messageId = String(message?.id ?? '') || null;
         panel.lastEditAt = this.#now();
         panel.trackId = snapshot?.trackId ?? null;
+        panel.lastBody = encoded;
         return panel.messageId;
       }
+      // Paused or stalled playback renders byte-identical bodies; editing anyway
+      // burns the message-edit rate limit for nothing. `force` only skips the
+      // time throttle, it never re-sends an unchanged card.
+      if (encoded === panel.lastBody) return panel.messageId;
       if (!force && this.#now() - panel.lastEditAt < 1500) return panel.messageId;
       await this.#api.editMessage({ channelId: panel.channelId, messageId: panel.messageId, ...body });
       panel.lastEditAt = this.#now();
       panel.trackId = snapshot?.trackId ?? panel.trackId;
+      panel.lastBody = encoded;
     } catch (error) {
       // A manually deleted card answers 404: forget the id so the next change posts
       // a fresh card instead of failing on every tick.
-      if (isMissingMessage(error)) { panel.messageId = null; panel.lastEditAt = 0; this.#log('info', 'music.panel.repost', error); return null; }
+      if (isMissingMessage(error)) { panel.messageId = null; panel.lastEditAt = 0; panel.lastBody = null; this.#log('info', 'music.panel.repost', error); return null; }
       this.#log('warn', 'music.panel.render', error);
     }
     return panel.messageId;

@@ -49,8 +49,15 @@ test('sync posts one card per guild and reuses it', async () => {
     assert.match(api.created[0].embeds[0].title, /晴天/);
     const messageId = panel.messageIdFor('g1');
     assert.equal(messageId, 'm1');
+    // Identical bodies cost nothing: a no-op sync must not hit the Discord API.
     await panel.sync('g1');
-    assert.equal(api.created.length, 1, 'second sync edits instead of reposting');
+    assert.equal(api.created.length, 1, 'second sync never reposts');
+    assert.equal(api.edits.length, 0, 'identical card bodies are not re-sent');
+    // A real change edits the existing message instead of reposting it.
+    const base = store.snapshot;
+    store.snapshot = () => ({ ...base(), positionMs: 90_000 });
+    await panel.sync('g1');
+    assert.equal(api.created.length, 1);
     assert.equal(api.edits.at(-1).messageId, 'm1');
     assert.equal(api.edits.at(-1).components.length, 1, 'only the transport row');
   } finally { await panel.destroy(); }
@@ -58,9 +65,13 @@ test('sync posts one card per guild and reuses it', async () => {
 
 test('a deleted card is reposted on the next sync', async () => {
   const api = new FakeApi();
-  const panel = new MusicPanelManager({ api, registry: registry(), intervalMs: 60_000 });
+  const store = registry();
+  const panel = new MusicPanelManager({ api, registry: store, intervalMs: 60_000 });
   try {
     await panel.sync('g1');
+    // The 404 only surfaces on an edit attempt, so move the card forward first.
+    const base = store.snapshot;
+    store.snapshot = () => ({ ...base(), positionMs: 12_000 });
     api.failEdit = Object.assign(new Error('Unknown Message'), { status: 404 });
     await panel.sync('g1');
     assert.equal(panel.messageIdFor('g1'), null);
@@ -91,6 +102,35 @@ test('remove leaves a tombstone without components', async () => {
     await panel.stop('g1', { remove: true });
     assert.equal(api.edits.at(-1).components.length, 0);
     assert.equal(panel.size, 0);
+  } finally { await panel.destroy(); }
+});
+
+test('an unchanged card body is not re-sent to Discord', async () => {
+  const api = new FakeApi();
+  const store = registry('paused');
+  const panel = new MusicPanelManager({ api, registry: store, intervalMs: 2_500 });
+  try {
+    await panel.sync('g1');
+    const editsAfterCreate = api.edits.length;
+    await panel.refresh('g1', { force: true });
+    await panel.refresh('g1', { force: true });
+    assert.equal(api.edits.length, editsAfterCreate, 'identical body is skipped even when forced');
+  } finally { await panel.destroy(); }
+});
+
+test('a changed position still edits the card', async () => {
+  const api = new FakeApi();
+  const store = registry('playing');
+  let position = 1000;
+  const base = store.snapshot;
+  store.snapshot = () => ({ ...base(), positionMs: position });
+  const panel = new MusicPanelManager({ api, registry: store, intervalMs: 2_500 });
+  try {
+    await panel.sync('g1');
+    const before = api.edits.length;
+    position = 60_000;
+    await panel.refresh('g1', { force: true });
+    assert.equal(api.edits.length, before + 1);
   } finally { await panel.destroy(); }
 });
 
