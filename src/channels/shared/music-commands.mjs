@@ -97,7 +97,7 @@ export async function runMusicCommand(
       case 'leave':
         return await invoke('leave');
       case 'help':
-        return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/music bitrate [16–384]：查看或設定 kbps（預設 128，受聲道及語音頻道上限限制）\n/music channels [1|2]：單聲道／雙聲道（預設 2）；320 kbps 請選 2\n也可在聊天中 @機器人，明確要求點歌或控制音樂。\n/stop 與 /skip 仍然控制 AI 任務。' };
+        return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/music bitrate [16–384]：查看或設定 kbps（預設 192；頻道設定不限制輸出，只受聲道上限約束）\n/music channels [1|2]：單聲道／雙聲道（預設 2）；320 kbps 請選 2\n也可在聊天中 @機器人，明確要求點歌或控制音樂。\n/stop 與 /skip 仍然控制 AI 任務。' };
       default:
         return null;
     }
