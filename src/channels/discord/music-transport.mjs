@@ -3,10 +3,21 @@ import { performance } from 'node:perf_hooks';
 import { abortError } from './music-process.mjs';
 import { createMusicEncoder, MUSIC_PLAYBACK_PROFILE, playbackBitrate, playbackChannels } from './music-encoder.mjs';
 
+/**
+ * Bitrate the encoder actually runs at.
+ *
+ * `channelBitrate` is the voice channel's *client* setting (64 kbps on a plain
+ * server, up to 384 kbps with boosts). Discord does not police a bot's Opus
+ * stream against it, but clamping to it used to drag every ordinary channel
+ * down to 64 kbps — below the source and below what the encoder can do. The
+ * requested rate now wins and only the codec ceiling applies; the channel
+ * number is still reported for the status lines.
+ */
 export function voiceBitrate(channelBitrate, requestedBitrate = MUSIC_PLAYBACK_PROFILE.bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels) {
-  // Unknown channel limits stay at the original conservative default.
-  const limit = Number.isFinite(channelBitrate) && channelBitrate > 0 ? channelBitrate : 64000;
-  return Math.min(playbackBitrate(requestedBitrate, channels), playbackBitrate(limit, channels));
+  const requested = Number.isFinite(requestedBitrate) && requestedBitrate > 0
+    ? requestedBitrate
+    : MUSIC_PLAYBACK_PROFILE.bitrate;
+  return playbackBitrate(requested, channels);
 }
 
 /** A bounded packet queue decouples short encoder/I/O stalls from the 20ms player clock. */

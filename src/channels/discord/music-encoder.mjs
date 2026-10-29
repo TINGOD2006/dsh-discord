@@ -4,8 +4,9 @@ import { dirname } from 'node:path';
 import { musicTools } from './music-audio.mjs';
 import { abortError } from './music-process.mjs';
 
-// Default target; the transport still clamps actual output to the voice channel.
-export const MUSIC_PLAYBACK_PROFILE = Object.freeze({ bitrate: 128000, channels: 2, sampleRate: 48000, frameMs: 20 });
+// Default target for the encoder; the transport no longer clamps it to the
+// voice channel's client-side setting (see voiceBitrate).
+export const MUSIC_PLAYBACK_PROFILE = Object.freeze({ bitrate: 192000, channels: 2, sampleRate: 48000, frameMs: 20 });
 export function playbackChannels(value = MUSIC_PLAYBACK_PROFILE.channels) {
   if (value !== 1 && value !== 2) throw new Error('聲道數須為 1（單聲道）或 2（雙聲道）');
   return value;
@@ -24,7 +25,7 @@ export function playbackEncoderArgs(input, { volume = 0.6, bitrate = MUSIC_PLAYB
   return ['-nostdin', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1',
     ...(offsetSeconds > 0 ? ['-ss', offsetSeconds.toFixed(3)] : []), '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
     '-af', `volume=${volume.toFixed(6)}`, '-ar', '48000', '-ac', String(count), '-c:a', 'libopus', '-threads', '1',
-    '-application', 'audio', '-compression_level', '0', '-b:a', String(rate), '-vbr', 'off', '-frame_duration', '20',
+    '-application', 'audio', '-vbr', 'on', '-compression_level', '10', '-b:a', String(rate), '-frame_duration', '20',
     '-page_duration', '20000', '-flush_packets', '1', '-f', 'ogg', 'pipe:1'];
 }
 

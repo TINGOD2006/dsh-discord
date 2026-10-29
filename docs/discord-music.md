@@ -16,12 +16,12 @@
 | `/music stop` | 停止音樂、取消預處理、清空佇列 |
 | `/music pause`、`/music resume` | 暫停／繼續 |
 | `/music queue`、`/music nowplaying` | 查看佇列／目前歌曲 |
-| `/music status` | 查看 UDP／WebSocket 往返、目標／實際碼率、頻道上限、音訊預讀、來源缺口與 worker 延遲 |
+| `/music status` | 查看 UDP／WebSocket 往返、目標／實際碼率、頻道設定、音訊預讀、來源缺口與 worker 延遲 |
 | `/music volume percent:0–100` | 調整播放音量；預設 60%，100 為正規化後的基準音量 |
-| `/music bitrate kbps:320` | 設定播放目標碼率，選項為 16、32、48、64、96、128、192、256、320、384 kbps；預設 128 |
-| `/music bitrate` | 查詢目標碼率、實際輸出與頻道上限 |
+| `/music bitrate kbps:320` | 設定播放目標碼率，選項為 16、32、48、64、96、128、192、256、320、384 kbps；預設 192 |
+| `/music bitrate` | 查詢目標碼率、實際輸出與頻道設定 |
 | `/music channels count:2` | 選 1 單聲道或 2 雙聲道立體聲；320／384 kbps 須選 2 |
-| `/music channels` | 查詢目前聲道、碼率與頻道上限 |
+| `/music channels` | 查詢目前聲道、碼率與頻道設定 |
 | `/music join`、`/music leave` | 加入／離開語音頻道 |
 
 原本的 `/stop`、`/skip` 完整保留為 AI 任務控制，不攔截、不改名。原有 `/join`、`/next`、`/pause`、`/resume`、`/queue`、`/leave` 音樂別名仍可用。原本聊天與 AI Session 綁定方式保持不變。
@@ -30,9 +30,9 @@
 
 碼率及聲道設定依伺服器分開，保留至離開語音（含閒置自動離開）或外掛重載；停止、跳歌及下一首沿用設定。播放中切換會從目前位置重建串流，可能短暫停頓，保留原本音量及播放／暫停狀態；失敗時恢復舊設定與串流。文字指令接受 `/music bitrate 16` 至 `/music bitrate 384` 的整數，以及 `/music channels 1` 或 `/music channels 2`。設定聲道須在機器人所在的語音頻道；查詢不需要加入語音。
 
-實際碼率取目標、頻道設定與編碼上限的較低值（單聲道 256 kbps、雙聲道 384 kbps）。讀不到頻道設定時暫以 64 kbps 為上限。例如選擇雙聲道 320 kbps，但頻道設為 64 kbps，會明確顯示實際輸出 64 kbps；在 Discord 調整頻道後重新執行碼率指令即可重新套用。切回單聲道會將實際輸出限制在 256 kbps 以內，保留目標設定，切回雙聲道時可恢復。指令不修改 Discord 頻道設定。[Discord 頻道碼率說明](https://docs.discord.com/developers/resources/channel#modify-channel)列出各頻道及伺服器等級限制。
+實際碼率取目標與編碼上限的較低值（單聲道 256 kbps、雙聲道 384 kbps）。**頻道碼率不再限制輸出**：那個數字是 Discord 用戶端的設定，機器人的 Opus 串流不受它管制，先前照它截斷會讓一般（未加成）伺服器一律壓到 64 kbps，比來源還差。`/music status` 仍會顯示頻道設定供參考。指令不修改 Discord 頻道設定。[Discord 頻道碼率說明](https://docs.discord.com/developers/resources/channel#modify-channel)列出各頻道及伺服器等級限制。
 
-320 kbps 測試順序：`/music channels count:2` → `/music bitrate kbps:320` → `/music status`。確認狀態為「雙聲道立體聲」且實際音訊碼率為 320 kbps。恢復預設請用 `/music channels count:2` 與 `/music bitrate kbps:128`。Discord 輸出為重新編碼的 Opus，包含正規化與播放音量；不是來源 MP3／AAC 檔案的免轉碼直通。
+320 kbps 測試順序：`/music channels count:2` → `/music bitrate kbps:320` → `/music status`。確認狀態為「雙聲道立體聲」且實際音訊碼率為 320 kbps。恢復預設請用 `/music channels count:2` 與 `/music bitrate kbps:192`。Discord 輸出為重新編碼的 Opus，包含正規化與播放音量；不是來源 MP3／AAC 檔案的免轉碼直通。
 
 ## 聊天調用音樂（2026-10-24）
 

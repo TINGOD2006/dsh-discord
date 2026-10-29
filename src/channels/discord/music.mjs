@@ -349,8 +349,8 @@ export class MusicManager {
     const number = value => Number.isFinite(value) ? Math.round(value) : '尚無資料';
     const encoder = frames?.encoder === 'ffmpeg' ? `FFmpeg 子程序／${frames.channels === 2 ? '雙聲道立體聲' : '單聲道'}，主程序不重編碼` : '尚無播放資料';
     const execution = isMainThread ? '主程序' : '獨立 worker';
-    const fallbackLimit = `${voiceBitrate() / 1000} kbps 為上限`;
-    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps\n頻道上限：${room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : `尚無資料（暫以 ${fallbackLimit}）`}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。` };
+    const fallbackLimit = `${voiceBitrate() / 1000} kbps`;
+    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps\n頻道設定：${room.channelBitrate ? `${room.channelBitrate / 1000} kbps（客戶端設定，不限制本機編碼）` : `尚無資料（本機以 ${fallbackLimit} 編碼）`}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。` };
   }
   async volume({ channelId, senderId, percent, deltaPercent, signal }) {
     const { room } = await this.#context(channelId, senderId, { signal });
