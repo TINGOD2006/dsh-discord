@@ -26,7 +26,13 @@ test('Discord FIFO keeps separate @ turns in arrival order across owners and fol
     tasks.push(bridge.accept(message('fourth','a')));
     for(let i=5;i<=12;i++)tasks.push(bridge.accept(message(`turn-${i}`,i%2?'owner':'a')));
     finish();await Promise.all(tasks);await bridge.waitForIdle();
-    assert.deepEqual(prompts,['first','second','third','fourth',...Array.from({length:8},(_,i)=>`turn-${i+5}`)]);assert.equal(steering,0);
+    // A prompt is either a plain string or a block array once the speaker label
+    // and the guest guard wrap it, so compare the text, not the wire shape.
+    const texts=prompts.map(prompt=>Array.isArray(prompt)?prompt.map(part=>part?.text??'').join('\n'):String(prompt));
+    const expected=['first','second','third','fourth',...Array.from({length:8},(_,i)=>`turn-${i+5}`)];
+    assert.equal(texts.length,expected.length);
+    expected.forEach((id,index)=>assert(texts[index].includes(id),`turn ${index} kept its arrival place: ${texts[index]}`));
+    assert.equal(steering,0);
   }finally{finish?.();lifetime.abort();}
 });
 

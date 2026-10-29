@@ -33,7 +33,8 @@ test('busy and coalesced @chat cannot absorb music or share its cancellation own
     await bridge.accept(message('chat-2', 'more chat'));
     await until(() => finishChat);
     assert.equal(calls.length, 1); assert.equal(calls[0].verb, 'play'); assert.equal(calls[0].args.guildId, 'guild');
-    assert(prompts[0].includes('hello')); assert(prompts[0].includes('more chat')); assert(!prompts[0].includes('/play'));
+    const promptText = prompts[0]?.map?.(part => part?.text ?? '').join('\n') ?? String(prompts[0]);
+    assert(promptText.includes('hello')); assert(promptText.includes('more chat')); assert(!promptText.includes('/play'));
     await bridge.accept(message('music-2', '/music stop'));
     assert.equal(calls.length, 2); assert.equal(prompts.length, 1);
     await bridge.runNativeCommand('/stop', { conversationId: 'room', senderId: 'user' });
