@@ -24,8 +24,8 @@ export function parseMusicCommand(text) {
   let name = match[1].toLowerCase();
   let argument = String(text).trim().slice(match[0].length).trim();
   if (name === 'music') {
-    const command = /^(play|join|skip|stop|pause|resume|queue|nowplaying|status|volume|bitrate|channels|leave)(?=$|\s)/i.exec(argument);
-    if (!command) return { name: 'help', argument: '' };
+    const command = /^(join|skip|stop|pause|resume|queue|nowplaying|status|volume|bitrate|channels|leave)(?=$|\s)/i.exec(argument);
+    if (!command) return { name: 'help', argument };
     name = command[1].toLowerCase();
     argument = argument.slice(command[0].length).trim();
     if (name === 'skip') name = 'next';
@@ -56,7 +56,12 @@ export async function runMusicCommand(
   if (signal?.aborted) return null;
   if (hasImages || hasFiles) return { message: '音樂指令請使用純文字網址或關鍵詞，移除附件後重試。' };
   if (isDirect) return { message: '請在伺服器頻道使用音樂指令。' };
-  if (parsed.argument && !['play', 'volume', 'bitrate', 'channels', 'help'].includes(parsed.name)) {
+  // `/music play` used to be an alias of `/play`; the slash group no longer lists
+  // it, so a leftover habit gets an answer instead of the generic help wall.
+  if (parsed.name === 'help' && /^play(?=$|\s)/i.test(parsed.argument)) {
+    return { message: '點歌請直接用 /play <網址或關鍵詞>。' };
+  }
+  if (parsed.argument && !['volume', 'bitrate', 'channels', 'help'].includes(parsed.name)) {
     return { message: '這個音樂控制指令不接受額外文字；請單獨使用 /music stop、/music skip 等指令。' };
   }
   if (!music) return { message: t('音乐功能没开嘛。') };
@@ -70,8 +75,6 @@ export async function runMusicCommand(
     : Promise.resolve(ready).then(() => music[name](args));
   try {
     switch (parsed.name) {
-      case 'play':
-        return await invoke('play', { ...request, query: parsed.argument });
       case 'join':
         return await invoke('join');
       case 'next':

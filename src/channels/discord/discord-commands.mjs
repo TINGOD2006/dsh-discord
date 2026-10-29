@@ -212,7 +212,6 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
     description: 'Music controls (separate from AI /stop and /skip)',
     description_localizations: zh('音乐控制（不影响 AI 的 /stop 与 /skip）'),
     options: [
-      { type: SUB_COMMAND, name: 'play', description: 'Play a URL or search for a song', options: [{ ...QUERY_OPTION, required: true }] },
       { type: SUB_COMMAND, name: 'join', description: 'Join your voice channel' },
       { type: SUB_COMMAND, name: 'skip', description: 'Skip the current song, including pending preparation' },
       { type: SUB_COMMAND, name: 'stop', description: 'Stop music and clear the queue' },
@@ -224,7 +223,7 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
       { type: SUB_COMMAND, name: 'volume', description: 'Set playback volume', options: [
         { type: INTEGER_OPTION, name: 'percent', description: 'Volume from 0 to 100', required: true, min_value: 0, max_value: 100 },
       ] },
-      { type: SUB_COMMAND, name: 'bitrate', description: 'Show or set music bitrate (limited by voice channel)', options: [
+      { type: SUB_COMMAND, name: 'bitrate', description: 'Show or set music bitrate (bounded by the encoder, not the channel)', options: [
         { type: INTEGER_OPTION, name: 'kbps', description: 'Target kbps; omit to show current settings', required: false,
           min_value: 16, max_value: 384, choices: [16, 32, 48, 64, 96, 128, 192, 256, 320, 384].map(value => ({ name: `${value} kbps`, value })) },
       ] },
