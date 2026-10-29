@@ -1005,6 +1005,9 @@ export class DiscordRuntime {
   // them, so without a note they are invisible in the session and a burst of
   // @chat buries what the player was told. Notes replay like chat lines.
   #musicNotes = new Map();
+  // senderId -> Discord display name ("名稱·1234"), so the music card can say who
+  // requested a track instead of printing a raw <@id> mention.
+  #displayNames = new Map();
   #musicPanel = null;
   #musicControl = null;
   #musicControlBase = null;
@@ -1237,7 +1240,13 @@ export class DiscordRuntime {
     return { execute: async (verb, args) => {
       signal.throwIfAborted();
       // Capture this generation's manager; an old callback cannot use a new one.
-      const result = await music.execute(verb, { ...args, signal });
+      const result = await music.execute(verb, {
+        ...args,
+        signal,
+        // The card shows a display name, not a raw mention; the cache is fed by the
+        // messages this bot has already seen.
+        senderName: args?.senderName ?? this.#displayNames.get(String(args?.senderId ?? '')) ?? undefined,
+      });
       if (!signal.aborted) this.#noteMusic(args, `/music ${verb === 'next' ? 'skip' : verb}`, result);
       return result;
     } };
@@ -1751,9 +1760,9 @@ export class DiscordRuntime {
     if (process.env.DSK_DISCORD_MUSIC_PANEL === '0') return null;
     const panel = this.#musicPanelManager();
     if (!panel) return null;
-    // The console is the only place a real (draggable) slider can exist; on by
-    // default, loopback-only, opt out with DSK_DISCORD_MUSIC_CONSOLE=0.
-    if (process.env.DSK_DISCORD_MUSIC_CONSOLE !== '0') {
+    // The console is the only place a real (draggable) slider can exist; off by
+    // default now that the card no longer advertises it, opt in with =1.
+    if (process.env.DSK_DISCORD_MUSIC_CONSOLE === '1') {
       await this.#ensureMusicControl().catch((error) => {
         this.#logger.warn?.('[dsh-im:discord] music control failed to start', error?.message ?? error);
         return null;
@@ -1895,6 +1904,10 @@ export class DiscordRuntime {
   #acceptMessage(message, bridge) {
     if (this.#stopped || this.#bridge !== bridge) return Promise.resolve();
     const normalized = normalizeDiscordMessage(message, this.#config.platformId);
+    if (normalized?.senderId && normalized?.speakerName) {
+      this.#displayNames.set(normalized.senderId, normalized.speakerName);
+      while (this.#displayNames.size > 512) this.#displayNames.delete(this.#displayNames.keys().next().value);
+    }
     // Music owns its own per-guild lane and cannot wait behind chat history/routing.
     if (isMusicCommand(normalized?.content) || isControlCommand(normalized?.content) || isOwnerCommand(normalized?.content)) {
       return this.#routeMessage(message, bridge).then(result => result?.completion);

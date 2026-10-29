@@ -93,8 +93,7 @@ export function renderPanel(snapshot = {}, { guildId = '', controlUrl = null } =
     lines.push(`\`${formatClock(positionMs)} / ${durationMs > 0 ? formatClock(durationMs) : '--:--'}\``);
   }
   const queue = Array.isArray(snapshot.queue) ? snapshot.queue : [];
-  const meta = [STATE_TEXT[state], `循環：${snapshot.loop === 'one' ? '單曲' : snapshot.loop === 'all' ? '全部' : '關閉'}`,
-    `音量：${Number.isInteger(snapshot.volume) ? snapshot.volume : 60}%`];
+  const meta = [STATE_TEXT[state], `循環：${snapshot.loop === 'one' ? '單曲' : snapshot.loop === 'all' ? '全部' : '關閉'}`];
   if (queue.length) meta.push(`佇列：${queue.length} 首`);
   lines.push(meta.join(' · '));
 
@@ -108,10 +107,6 @@ export function renderPanel(snapshot = {}, { guildId = '', controlUrl = null } =
     button({ action: 'remove', guildId: guild, label: '移除', emoji: '🗑️' }),
   ];
   const components = [buttonRow(primary)];
-  // Opt-in via DSK_DISCORD_MUSIC_CONSOLE=1: the card is the product, the console is a debug extra.
-  if (controlUrl) {
-    components.push(buttonRow([{ type: 2, style: 5, label: '網頁控制（可拖動）', url: String(controlUrl) }]));
-  }
 
   const embed = {
     color: PANEL_COLOR,

@@ -61,17 +61,17 @@ test('renderPanel shows the idle state with a disabled transport row', () => {
   assert.equal(row[2].custom_id, 'music:queue:42');
 });
 
-test('renderPanel renders the playing card and the console link', () => {
+test('renderPanel renders the playing card without a console link', () => {
   const { embeds, components } = renderPanel({
     state: 'playing', title: '老人與海', positionMs: 60_000, durationMs: 180_000, volume: 60, queue: ['a', 'b'],
-    requester: '<@1>',
+    requester: 'TINGOD·3761',
   }, { guildId: '42', controlUrl: 'http://127.0.0.1:1234/music/tok/' });
   assert.equal(embeds[0].title, '🎵 老人與海');
   assert.match(embeds[0].description, /1:00 \/ 3:00/);
   assert.match(embeds[0].description, /佇列：2 首/);
-  assert.equal(components.length, 2);
-  assert.equal(components[1].components[0].url, 'http://127.0.0.1:1234/music/tok/');
-  assert.equal(components[1].components[0].style, 5);
+  assert.doesNotMatch(embeds[0].description, /音量/, 'volume is not shown');
+  assert.equal(embeds[0].footer.text, '點播：TINGOD·3761');
+  assert.equal(components.length, 1, 'the console link is gone even when a URL is offered');
   assert.equal(components[0].components[0].custom_id, 'music:pause:42');
 });
 

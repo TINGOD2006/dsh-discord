@@ -45,7 +45,7 @@ test('sync posts one card per guild and reuses it', async () => {
     await panel.sync('g1');
     assert.equal(api.created.length, 1, 'second sync edits instead of reposting');
     assert.equal(api.edits.at(-1).messageId, 'm1');
-    assert.equal(api.edits.at(-1).components.length, 2, 'console link button rides along');
+    assert.equal(api.edits.at(-1).components.length, 1, 'only the transport row');
   } finally { await panel.destroy(); }
 });
 

@@ -302,7 +302,7 @@ export class MusicManager {
       if (room.current === track) this.#finished(room, track.id);
     }
   }
-  async play({ channelId, senderId, query, signal }) {
+  async play({ channelId, senderId, query, senderName = null, signal }) {
     query = String(query ?? '').trim(); if (!query || query.length > 500) return { message: '請提供歌曲關鍵詞或網址（最多 500 字）' };
     const key = `${channelId}:${senderId}`, now = Date.now();
     if (now - (this.#cooldowns.get(key) ?? 0) < this.#cooldownMs) return { message: '點歌太快，請稍等 3 秒' };
@@ -313,7 +313,7 @@ export class MusicManager {
     this.#cooldowns.set(key, now);
     if (this.#cooldowns.size > 1000) for (const [id, time] of this.#cooldowns) if (now - time > 60000) this.#cooldowns.delete(id);
     const occupied = Boolean(room.current || room.startTask || room.tracks.length); room.textChannelId = channelId;
-    room.tracks.push({ id: randomUUID(), query, title: null, senderId, channelId, controller: new AbortController(), source: null });
+    room.tracks.push({ id: randomUUID(), query, title: null, senderId, senderName: typeof senderName === 'string' ? senderName : null, channelId, controller: new AbortController(), source: null });
     this.#pump(room); this.#prefetch(room);
     return { message: occupied ? `已加入音樂佇列：${query}` : `正在準備歌曲並統一音量：${query}` };
   }
@@ -447,7 +447,7 @@ export class MusicManager {
       loop: 'off',
       volume: Math.round((Number(room.volume) || MUSIC_DEFAULT_VOLUME) * 100),
       queue: room.tracks.map((item) => item.title ?? item.query),
-      requester: track?.senderId ? `<@${track.senderId}>` : null,
+      requester: track?.senderName || (track?.senderId ? `<@${track.senderId}>` : null),
       channelId: room.textChannelId ?? track?.channelId ?? null,
     };
   }
