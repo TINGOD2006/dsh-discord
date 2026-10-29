@@ -18,8 +18,28 @@ function openScope(allowlistUsers = []) {
   });
 }
 
-function allowlistScope(users = []) {
+/**
+ * Discord keeps chat open but commands closed in the seed policy.
+ *
+ * A freshly saved bot lands in a server with an unknown number of members, so
+ * the default must not hand them the command surface: anyone may talk to the
+ * bot, while `/...` commands stay with the owner until an admin opts in from
+ * the access-policy settings. The owner stays privileged through
+ * `privilegedSenderIdsFor`, so this changes nothing for the person who
+ * connected the bot.
+ */
+function discordScope() {
   return createAccessPolicyScope({
+    mode: 'open',
+    open: {
+      defaultCanExecuteCommands: false,
+      commandPermissionOverrides: [],
+    },
+    allowlist: { users: [] },
+  });
+}
+
+function allowlistScope(users = []) {  return createAccessPolicyScope({
     mode: 'allowlist',
     open: {
       defaultCanExecuteCommands: false,
@@ -91,7 +111,11 @@ export function initialAccessPolicyFor(channel, config = {}) {
       group: allowlistScope(),
     });
   }
-  if (['dingtalk', 'wecom', 'wecom-app', 'slack', 'discord', 'imessage', 'matrix'].includes(key)) {
+  if (key === 'discord') {
+    const scope = discordScope();
+    return createAccessPolicy({ direct: scope, group: scope });
+  }
+  if (['dingtalk', 'wecom', 'wecom-app', 'slack', 'imessage', 'matrix'].includes(key)) {
     return createAccessPolicy({ direct: openScope(), group: openScope() });
   }
   throw new TypeError(`Unsupported access-policy channel: ${channel}`);

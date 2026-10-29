@@ -347,7 +347,7 @@ Connection RPC accepts loopback callers by default. If a Web profile is delibera
     rpcAuthority: trusted-host
 ```
 
-`trusted-host` is only a Host/Origin reachability boundary, not user authentication. Callers that can reach that trusted-network authority can also access bot-management endpoints. Enable it only on a trusted network.
+`rpcAuthority` defaults to `loopback` (management endpoints answer this machine only); the `trusted-host` value above has to be set explicitly. `trusted-host` is only a Host/Origin reachability boundary, not user authentication. Callers that can reach that trusted-network authority can also access bot-management endpoints. Enable it only on a trusted network.
 
 ## Troubleshooting
 

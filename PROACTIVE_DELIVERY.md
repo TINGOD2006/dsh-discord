@@ -347,7 +347,7 @@ Connection RPC 默认只允许当前 Host 的回环调用。若 Web profile 明�
     rpcAuthority: trusted-host
 ```
 
-`trusted-host` 只是 Host／Origin 可达性边界，不是用户认证。启用后，能访问该受信网络 authority 的调用方也能访问机器人管理接口；只应在可信网络中使用。
+`rpcAuthority` 默认是 `loopback`（只有本机可调用管理接口）；上面的 `trusted-host` 需要显式配置才生效。`trusted-host` 只是 Host／Origin 可达性边界，不是用户认证。启用后，能访问该受信网络 authority 的调用方也能访问机器人管理接口；只应在可信网络中使用。
 
 ## 常见问题
 
