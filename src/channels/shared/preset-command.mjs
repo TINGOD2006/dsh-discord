@@ -212,14 +212,7 @@ export async function runPresetCommand(text, harness, state, key, options = {}) 
   const requestOptions = rpcOptions(options.signal);
 
   if (PRESET_LIST_COMMAND.test(command)) {
-    if (!/^\/(?:presetlist|presets)[ \t]*$/iu.test(command)) return commandResult(t(PRESET_LIST_USAGE));
-    try {
-      const current = await settings(harness, requestOptions);
-      LIST_SNAPSHOTS.save(state, key, current.agentPresetCatalog.items.map((item) => item.id));
-      return commandResult(formatList(current));
-    } catch (error) {
-      return commandResult(presetErrorMessage(error, 'list'));
-    }
+    return commandResult(t('/presetlist 与 /presets 已移除：/preset 不带参数即列出全部 Preset。'));
   }
 
   const match = /^\/preset(?:[ \t]+([^\s]+))?[ \t]*$/iu.exec(command);
@@ -227,7 +220,9 @@ export async function runPresetCommand(text, harness, state, key, options = {}) 
   const requested = match[1];
   if (!requested) {
     try {
-      return commandResult(formatCurrent(await settings(harness, requestOptions)));
+      const current = await settings(harness, requestOptions);
+      LIST_SNAPSHOTS.save(state, key, current.agentPresetCatalog.items.map((item) => item.id));
+      return commandResult(`${formatCurrent(current)}\n\n${formatList(current)}`);
     } catch (error) {
       return commandResult(presetErrorMessage(error, 'current'));
     }

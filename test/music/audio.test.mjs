@@ -29,10 +29,10 @@ test('quiet and loud recordings are normalized before use and repeated playback 
     try{for(const [name,gain] of [['quiet',0.04],['loud',4]]){
       const input=join(dir,name+'.wav');
       await runMusicProcess(tools.ffmpeg,['-y','-f','lavfi','-i','sine=frequency=440:duration=5','-af','volume='+gain,'-ar','48000',input],{cwd:dir});
-      const source=await pipeline.prepare(input);assert.equal(source.loudness.integrated,-20);assert(source.input.startsWith(dir));
+      const source=await pipeline.prepare(input,{allowLocalFile:true});assert.equal(source.loudness.integrated,-20);assert(source.input.startsWith(dir));
       const measured=await runMusicProcess(tools.ffmpeg,['-hide_banner','-i',source.input,'-af',loudnessAnalysisFilter(),'-f','null','-'],{cwd:dir});
       const stats=loudnessStats(measured.stderr);levels.push(Number(stats.input_i));assert(Math.abs(Number(stats.input_i)+20)<0.5);source.release();
-      const cached=await pipeline.prepare(input);assert.equal(cached.cacheHit,true);cached.release();
+      const cached=await pipeline.prepare(input,{allowLocalFile:true});assert.equal(cached.cacheHit,true);cached.release();
     }assert(Math.abs(levels[0]-levels[1])<0.3);}finally{await pipeline.destroy();}
   });
 });
@@ -47,8 +47,8 @@ test('cancelling one shared request does not cancel another guild consumer',asyn
     };
     const pipeline=new MusicAudioPipeline({cacheDir:join(dir,'cache'),tools:{ffmpeg:'ffmpeg',ffprobe:'probe'},run});
     try{
-      const controller=new AbortController();const first=pipeline.prepare(input,{signal:controller.signal,guildId:'one'});first.catch(()=>{});
-      const second=pipeline.prepare(input,{guildId:'two'});
+      const controller=new AbortController();const first=pipeline.prepare(input,{signal:controller.signal,guildId:'one',allowLocalFile:true});first.catch(()=>{});
+      const second=pipeline.prepare(input,{guildId:'two',allowLocalFile:true});
       while(!probeCalls)await new Promise(resolve=>setTimeout(resolve,1));
       controller.abort();begin();await assert.rejects(first,{name:'AbortError'});const result=await second;assert(result.input.endsWith('audio.flac'));result.release();
     }finally{await pipeline.destroy();}

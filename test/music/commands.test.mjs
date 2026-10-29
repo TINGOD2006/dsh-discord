@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applicationCommandPayloads, commandTextFromInteraction, handleApplicationCommand } from '../../src/channels/discord/discord-commands.mjs';
-import { isMusicCommand, parseMusicCommand, runMusicCommand } from '../../src/channels/shared/music-commands.mjs';
+import { isMusicCommand, isRetiredMusicShortcut, parseMusicCommand, runMusicCommand, runRetiredMusicShortcut } from '../../src/channels/shared/music-commands.mjs';
 import { isControlCommand } from '../../src/channels/shared/control-command.mjs';
 import { createDshMusicSelector, selectedCandidate } from '../../src/channels/discord/music-dsh.mjs';
 import { DiscordHarnessBridge } from '../../src/channels/discord/discord-bridge.mjs';
@@ -14,9 +14,19 @@ test('existing AI stop and skip are never parsed as music', () => {
   }
   const commands = applicationCommandPayloads();
   assert.equal(commands.find(c => c.name === 'stop').description, 'Stop the task running in this chat');
-  assert.equal(commands.find(c => c.name === 'skip').description, 'Skip the current thinking (short spelling of /stop)');
+  assert.equal(commands.some(c => c.name === 'skip'), false, '/skip was folded into /stop');
   assert.deepEqual(parseMusicCommand('/music skip'), { name: 'next', argument: '' });
   assert.deepEqual(parseMusicCommand('/music stop'), { name: 'stop', argument: '' });
+});
+
+test('retired music shortcuts answer with the /music spelling', () => {
+  for (const name of ['join', 'next', 'pause', 'resume', 'queue', 'leave']) {
+    assert.equal(isMusicCommand('/' + name), false, `${name} is no longer top level`);
+    assert.equal(isRetiredMusicShortcut('/' + name), true);
+    assert.match(runRetiredMusicShortcut('/' + name).message, new RegExp(`/music ${name}`));
+    assert.equal(isMusicCommand('/music ' + name), true);
+  }
+  assert.equal(isRetiredMusicShortcut('/play song'), false);
 });
 
 test('native music subcommands retain their arguments while legacy command text stays identical', () => {
@@ -71,7 +81,7 @@ test('music dispatcher forwards channel and sender to controls without touching 
 
 test('music controls reject extra text instead of executing an accidental command', async () => {
   let calls=0;
-  for (const text of ['/music stop extra', '/music skip\n/stop', '/pause song']) {
+  for (const text of ['/music stop extra', '/music skip\n/stop', '/music pause song']) {
     const result=await runMusicCommand(text,{}, {},'key',{conversationId:'channel',senderId:'sender',music:{execute:async()=>{calls++;}}});
     assert.match(result.message,/不接受額外文字/);
   }

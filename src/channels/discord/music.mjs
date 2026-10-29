@@ -402,12 +402,17 @@ export class MusicManager {
     const frames = room.transport?.snapshot();
     const actual = frames?.bitrate;
     const rate = actual ?? room.bitrate;
-    const limit = room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : `尚無資料（暫以 ${voiceBitrate() / 1000} kbps 為上限）`;
+    // The channel's bitrate is a listener-side setting Discord never applies to
+    // bot Opus streams, so it is reported as information and never as a cap.
+    const channel = room.channelBitrate
+      ? `${room.channelBitrate / 1000} kbps（客戶端設定，不限制本機編碼）`
+      : '尚無資料';
     const channels = frames?.channels ?? room.channels;
-    const hint = room.requestedBitrate > rate ? (room.channels === 1 && room.requestedBitrate > 256000
-      ? '\n單聲道上限為 256 kbps；請先 /music channels 2，並確認語音頻道碼率足夠。'
-      : '\n目標高於目前可用碼率；請確認語音頻道的碼率設定。') : '';
-    return { message: `音樂目標碼率：${room.requestedBitrate / 1000} kbps\n${actual ? '目前輸出' : '預計輸出'}：${rate / 1000} kbps；頻道上限：${limit}\n聲道：${channels === 2 ? '2（雙聲道立體聲）' : '1（單聲道）'}${hint}\n設定沿用至離開語音或外掛重載；/music channels ${MUSIC_PLAYBACK_PROFILE.channels} 及 /music bitrate ${MUSIC_PLAYBACK_PROFILE.bitrate / 1000} 可恢復預設。` };
+    const ceiling = channels === 1 ? 256 : 384;
+    const hint = room.requestedBitrate > rate
+      ? `\n目標高於目前輸出；編碼上限為 ${ceiling} kbps（${channels === 1 ? '單聲道' : '雙聲道'}）。`
+      : '';
+    return { message: `音樂目標碼率：${room.requestedBitrate / 1000} kbps\n${actual ? '目前輸出' : '預計輸出'}：${rate / 1000} kbps；頻道設定：${channel}\n聲道：${channels === 2 ? '2（雙聲道立體聲）' : '1（單聲道）'}${hint}\n設定沿用至離開語音或外掛重載；/music channels ${MUSIC_PLAYBACK_PROFILE.channels} 及 /music bitrate ${MUSIC_PLAYBACK_PROFILE.bitrate / 1000} 可恢復預設。` };
   }
   async #replacePlayback(room, signal, rollback, { offsetSeconds: explicitOffset } = {}) {
     const track = room.current, previous = room.transport, oldResource = room.resource, previousState = room.state;

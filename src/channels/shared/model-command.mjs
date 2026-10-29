@@ -308,8 +308,6 @@ function currentModelMessage(catalog) {
     modelId(catalog.current.provider, catalog.current.model),
     t('当前推理等级：{effort}', { effort: currentReasoningEffortText(catalog) }),
     '',
-    t('查看全部模型：/models'),
-    t('查看可用推理等级：/reasoninglist'),
     t('切换模型：/model <序号> [推理等级ID]'),
   ].join('\n');
 }
@@ -320,7 +318,6 @@ function currentReasoningMessage(catalog) {
     modelId(catalog.current.provider, catalog.current.model),
     t('当前推理等级：{effort}', { effort: currentReasoningEffortText(catalog) }),
     '',
-    t('查看可用推理等级：/reasoninglist'),
     t('切换推理等级：/reasoning <序号或等级ID>'),
     t('恢复默认等级：/reasoning --default'),
   ].join('\n');
@@ -522,6 +519,11 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
   }
   const requestOptions = rpcOptions(options.signal);
 
+  // Retired names answer with where their list went instead of failing silently.
+  if (/^\/(?:models|reasoninglist|reasonings)(?=$|\s)/iu.test(command)) {
+    return commandResult(t('/models 与 /reasoninglist 已移除：/model 不带参数列出全部模型，/reasoning 不带参数列出全部推理等级。'));
+  }
+
   if (isModelsCommand(command)) {
     if (!/^\/models[ \t]*$/iu.test(command)) return commandResult(t(MODELS_USAGE));
     try {
@@ -638,7 +640,7 @@ export async function runModelCommand(text, harness, state, key, options = {}) {
       const bound = await boundSession(harness, state, key, requestOptions);
       if (!bound) return commandResult(noSessionMessage());
       const catalog = await sessionCatalog(bound.session, requestOptions);
-      return commandResult(currentModelMessage(catalog));
+      return commandResult(`${currentModelMessage(catalog)}\n\n${formatCatalog(catalog)}`);
     } catch (error) {
       return commandResult(modelErrorMessage(error, 'select'));
     }

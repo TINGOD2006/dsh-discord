@@ -8,11 +8,11 @@ import { createMusicEncoder, playbackEncoderArgs, MUSIC_PLAYBACK_PROFILE } from 
 import { musicTools, MusicAudioPipeline } from '../../src/channels/discord/music-audio.mjs';
 import { runMusicProcess } from '../../src/channels/discord/music-process.mjs';
 
-test('playback defaults to 128 kbps stereo and accepts higher rates with fixed 20 ms frames',()=>{
-  assert.deepEqual(MUSIC_PLAYBACK_PROFILE,{bitrate:128000,channels:2,sampleRate:48000,frameMs:20});
-  const args=playbackEncoderArgs('fixture.ogg',{volume:0.35,bitrate:128000,offsetSeconds:12.34});
+test('playback defaults to 192 kbps stereo and accepts higher rates with fixed 20 ms frames',()=>{
+  assert.deepEqual(MUSIC_PLAYBACK_PROFILE,{bitrate:192000,channels:2,sampleRate:48000,frameMs:20});
+  const args=playbackEncoderArgs('fixture.ogg',{volume:0.35,bitrate:192000,offsetSeconds:12.34});
   const value=flag=>args[args.indexOf(flag)+1];
-  assert.equal(value('-b:a'),'128000');assert.equal(value('-ac'),'2');assert.equal(value('-vbr'),'off');
+  assert.equal(value('-b:a'),'192000');assert.equal(value('-ac'),'2');assert.equal(value('-vbr'),'off');
   assert.equal(value('-compression_level'),'0');assert.equal(value('-frame_duration'),'20');
   assert.equal(value('-ss'),'12.340');assert.equal(value('-af'),'volume=0.350000');assert.equal(args.at(-1),'pipe:1');
   assert.throws(()=>playbackEncoderArgs('fixture',{volume:NaN}),/無效/);
@@ -27,7 +27,7 @@ test('lossless cache and real 320/384 kbps Opus preserve separate stereo channel
   try{
     await runMusicProcess(tools.ffmpeg,['-nostdin','-y','-hide_banner','-loglevel','error','-f','lavfi','-i',
       'aevalsrc=0.1*sin(2*PI*440*t)|0.1*sin(2*PI*880*t):s=48000:d=2','-c:a','pcm_s24le',input],{cwd:dir});
-    source=await pipeline.prepare(input);assert(source.input.endsWith('audio.flac'));
+    source=await pipeline.prepare(input,{allowLocalFile:true});assert(source.input.endsWith('audio.flac'));
     const probe=await runMusicProcess(tools.ffprobe,['-v','error','-show_entries','stream=codec_name,channels,sample_rate,bits_per_raw_sample','-of','json',source.input],{cwd:dir});
     const cached=JSON.parse(probe.stdout).streams[0];assert.equal(cached.codec_name,'flac');assert.equal(cached.channels,2);
     assert.equal(cached.sample_rate,'48000');assert.equal(cached.bits_per_raw_sample,'24');
@@ -96,7 +96,7 @@ test('real FFmpeg output is stereo CBR Opus at the default rate, honors seek pos
       const probe=await runMusicProcess(tools.ffprobe,['-v','error','-show_entries','stream=channels,sample_rate:format=duration:packet=size','-of','json',output],{cwd:dir});
       const info=JSON.parse(probe.stdout);assert.equal(info.streams[0].channels,2);assert.equal(info.streams[0].sample_rate,'48000');
       assert(Math.abs(Number(info.format.duration)-1.5)<0.08);assert(info.packets.length>=75);
-      assert(info.packets.every(packet=>Number(packet.size)===320),'128 kbps stereo at 20 ms must use 320-byte audio packets');
+      assert(info.packets.every(packet=>Number(packet.size)===480),'192 kbps stereo at 20 ms must use 480-byte audio packets');
       const measured=await runMusicProcess(tools.ffmpeg,['-nostdin','-hide_banner','-i',output,'-af','volumedetect','-f','null','-'],{cwd:dir});
       levels.push(Number(/mean_volume:\s*(-?[\d.]+) dB/.exec(measured.stderr)?.[1]));
     }

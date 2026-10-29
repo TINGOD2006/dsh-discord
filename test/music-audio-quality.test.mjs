@@ -21,11 +21,11 @@ test('the codec ceiling still applies', () => {
   assert.equal(voiceBitrate(384000, 320000, 2), 320000);
 });
 
-test('the encoder runs VBR at maximum effort', () => {
+test('the encoder keeps a fixed 20 ms packet size at the requested rate', () => {
   const args = playbackEncoderArgs('/tmp/a.flac', { bitrate: 192000 });
   const at = (flag) => args[args.indexOf(flag) + 1];
-  assert.equal(at('-vbr'), 'on');
-  assert.equal(at('-compression_level'), '10');
+  assert.equal(at('-vbr'), 'off', 'CBR keeps every 20 ms packet the same size for UDP pacing');
+  assert.equal(at('-compression_level'), '0');
   assert.equal(at('-b:a'), '192000');
   assert.equal(at('-application'), 'audio');
   assert.equal(at('-frame_duration'), '20');
@@ -34,5 +34,5 @@ test('the encoder runs VBR at maximum effort', () => {
 test('a seek keeps the encoder flags and adds the offset', () => {
   const args = playbackEncoderArgs('/tmp/a.flac', { bitrate: 192000, offsetSeconds: 12.5 });
   assert.equal(args[args.indexOf('-ss') + 1], '12.500');
-  assert.equal(args[args.indexOf('-vbr') + 1], 'on');
+  assert.equal(args[args.indexOf('-vbr') + 1], 'off');
 });

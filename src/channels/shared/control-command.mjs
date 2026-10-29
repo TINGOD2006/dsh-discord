@@ -3,7 +3,8 @@ import { t } from './i18n.mjs';
 import manifest from '../../../package.json' with { type: 'json' };
 
 const CONTROL_COMMAND = /^\/(?:stop|skip|steer|version)(?=$|\s)/iu;
-const STOP_COMMAND = /^\/(?:stop|skip)(?=$|\s)/iu;
+const STOP_COMMAND = /^\/stop(?=$|\s)/iu;
+const SKIP_COMMAND = /^\/skip(?=$|\s)/iu;
 const VERSION_COMMAND = /^\/version(?=$|\s)/iu;
 const STOP_USAGE = '用法：/stop（不带参数）';
 const VERSION_USAGE = '用法：/version（不带参数）';
@@ -70,8 +71,14 @@ export async function runControlCommand(text, harness, state, key, {
 
   if (version) {
     return /^\/version$/iu.test(command)
-      ? commandResult(`dsh-im v${manifest.version}`)
+      ? commandResult(t('版本：dsh-im v{version}（连接状态与版本：/status）', { version: manifest.version }))
       : commandResult(t(VERSION_USAGE));
+  }
+
+  if (SKIP_COMMAND.test(command)) {
+    return /^\/skip$/iu.test(command)
+      ? commandResult(t('/skip 已移除：停止任务用 /stop，跳歌用 /music skip 或 /music next。'))
+      : commandResult(t('/skip 不带参数：停止任务用 /stop，跳歌用 /music skip。'));
   }
 
   if (stop) {

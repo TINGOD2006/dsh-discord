@@ -48,7 +48,8 @@ import {
   isUserBlocked,
   runOwnerCommand,
 } from './owner-commands.mjs';
-import { isMusicCommand, runMusicCommand } from './music-commands.mjs';
+import { isMusicCommand, isRetiredMusicShortcut, runMusicCommand, runRetiredMusicShortcut } from './music-commands.mjs';
+import manifest from '../../../package.json' with { type: 'json' };
 import { TURN_PRIORITY, TurnScheduler } from './turn-scheduler.mjs';
 import {
   rememberConnectionTestTarget,
@@ -649,6 +650,7 @@ export class TextHarnessBridge {
       ? runControlCommand
       : isOwnerCommand(text) ? runOwnerCommand
       : isMusicCommand(text) ? runMusicCommand
+      : isRetiredMusicShortcut(text) ? runRetiredMusicShortcut
       : (isModelCommand(text)
           ? runModelCommand
           : (isPresetCommand(text) ? runPresetCommand : null));
@@ -1448,7 +1450,8 @@ export class TextHarnessBridge {
     const runner = isControlCommand(command) ? runControlCommand
       : isOwnerCommand(command) ? runOwnerCommand
         : isMusicCommand(command) ? runMusicCommand
-        : null;
+          : isRetiredMusicShortcut(command) ? runRetiredMusicShortcut
+            : null;
     if (!runner) return null;
     if (runner === runOwnerCommand && !this.#canRunOwnerCommand(senderId)) return '只有主人可以使用这条命令。';
     const result = await runner(command, this.#harness, this.#state, key, {
@@ -1594,7 +1597,10 @@ export class TextHarnessBridge {
       }
       if (!hasImages && !hasFiles && command === '/status') {
         await this.#harness.ensureRunning({ signal: this.#signal });
-        await this.#bot.sendText(target, t('{label}机器人与 DeepSeek Harness 连接正常。', { label: this.#descriptor.label }));
+        await this.#bot.sendText(target, t('{label}机器人与 DeepSeek Harness 连接正常。\n版本：dsh-im v{version}', {
+          label: this.#descriptor.label,
+          version: manifest.version,
+        }));
         return;
       }
       const workspaceCommand = !hasImages && !hasFiles

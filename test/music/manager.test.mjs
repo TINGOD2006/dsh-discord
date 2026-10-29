@@ -35,7 +35,7 @@ test('chat music tool reaches the real manager with voice checks and accepted pl
     try{return await createMusicTool().execute({action:'play',query:'song',reason:'目前使用者要求播放song'},{agent:{session}});}finally{close();}
   };
   try{
-    await invoke('user');await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,128000);
+    await invoke('user');await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,192000);
     await assert.rejects(invoke('other'),/目前所在/);assert.equal(f.played.length,1);
     assert.match((await f.manager.nowplaying(f.request)).message,/song/);
   }finally{await f.manager.destroy();}
@@ -47,7 +47,7 @@ test('normalization finishes and voice Ready is reached before any playback',asy
     normalize({input:'normalized.ogg',title:'song',release(){}});await until(()=>f.played.length===1);
     assert.equal(f.played[0].metadata.lufs,-20);assert.equal(f.played[0].input,'normalized.ogg');assert.equal(f.connections[0].subscribed!=null,true);
     assert.equal(f.played[0].volume.value,MUSIC_DEFAULT_VOLUME);assert.equal(MUSIC_DEFAULT_VOLUME,0.6);
-    assert.equal(f.played[0].encoder.bitrate,64000);
+    assert.equal(f.played[0].encoder.bitrate,192000);
   }finally{await f.manager.destroy();}
 });
 
@@ -132,9 +132,9 @@ test('transport reconnect pauses and resumes the same track without clearing its
   }finally{await f.manager.destroy();}
 });
 
-test('voice channel bandwidth caps the music encoder bitrate',async()=>{
+test('voice channel bandwidth never caps the music encoder bitrate',async()=>{
   const f=fixture();f.guild.channels.cache.set('voice',{bitrate:16000});
-  try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,16000);}
+  try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,192000);}
   finally{await f.manager.destroy();}
 });
 
@@ -155,19 +155,21 @@ test('bitrate rebuild preserves playback position, volume and pause state, and a
   }finally{await f.manager.destroy();}
 });
 
-test('bitrate respects channel cap and caller permissions, validates values, and avoids unnecessary rebuilds',async()=>{
+test('bitrate ignores the channel setting, respects the caller, validates values, and avoids redundant rebuilds',async()=>{
   const f=fixture({nativeTransport:true});f.guild.channels.cache.set('voice',{bitrate:64000});
   try{
     await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
-    assert.match((await f.manager.bitrate({...f.request,kbps:128})).message,/目前輸出：64 kbps；頻道上限：64 kbps/);
-    await f.manager.bitrate({...f.request,kbps:256});assert.equal(f.played.length,1);
-    assert.match((await f.manager.bitrate({...f.request,senderId:'other'})).message,/目標碼率：256/);
+    assert.match((await f.manager.bitrate({...f.request,kbps:128})).message,/目前輸出：128 kbps/);
+    assert.match((await f.manager.bitrate({...f.request,kbps:128})).message,/頻道設定：64 kbps/);
+    assert.equal(f.played.length,2,'the first change rebuilds the stream');
+    await f.manager.bitrate({...f.request,kbps:128});assert.equal(f.played.length,2,'the same rate is a no-op');
+    assert.match((await f.manager.bitrate({...f.request,senderId:'other'})).message,/目標碼率：128/);
     await assert.rejects(f.manager.bitrate({...f.request,senderId:'other',kbps:32}),/目前所在/);
     for(const kbps of [0,15,385,NaN,Infinity,64.5,'128'])assert.match((await f.manager.bitrate({...f.request,kbps})).message,/用法/);
-    assert.equal(f.played.length,1);
-    f.guild.channels.cache.set('voice',{bitrate:256000});await f.manager.bitrate({...f.request,kbps:256});assert.equal(f.transports[1].options.bitrate,256000);
-    await f.manager.stop(f.request);await f.manager.play({...f.request,query:'again'});await until(()=>f.played.length===3);
-    assert.equal(f.transports[2].options.bitrate,256000);
+    assert.equal(f.played.length,2);
+    f.guild.channels.cache.set('voice',{bitrate:256000});await f.manager.bitrate({...f.request,kbps:256});assert.equal(f.transports[2].options.bitrate,256000);
+    await f.manager.stop(f.request);await f.manager.play({...f.request,query:'again'});await until(()=>f.played.length===4);
+    assert.equal(f.transports[3].options.bitrate,256000);
   }finally{await f.manager.destroy();}
 });
 
@@ -179,7 +181,7 @@ test('failed bitrate rebuild restores the old settings and stream',async()=>{
     await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
     await assert.rejects(f.manager.bitrate({...f.request,kbps:256}),/fixture encoder/);
     assert.equal(f.transports[0].destroyed,false);assert.equal(f.connections[0].subscribed.paused,false);
-    assert.match((await f.manager.bitrate(f.request)).message,/目標碼率：128 kbps[\s\S]*目前輸出：128 kbps/);
+    assert.match((await f.manager.bitrate(f.request)).message,/目標碼率：192 kbps[\s\S]*目前輸出：192 kbps/);
   }finally{await f.manager.destroy();}
 });
 
@@ -209,7 +211,7 @@ test('stereo default permits 320 kbps, mono caps output without losing target, a
   const f=fixture({nativeTransport:true});f.guild.channels.cache.set('voice',{bitrate:384000});
   try{
     await f.manager.play({...f.request,query:'first'});await f.manager.play({...f.request,query:'second'});await until(()=>f.played.length===1);
-    assert.equal(f.transports[0].options.channels,2);assert.equal(f.transports[0].options.bitrate,128000);
+    assert.equal(f.transports[0].options.channels,2);assert.equal(f.transports[0].options.bitrate,192000);
     await f.manager.bitrate({...f.request,kbps:320});assert.equal(f.transports[1].options.bitrate,320000);
     assert.match((await f.manager.bitrate(f.request)).message,/目標碼率：320[\s\S]*目前輸出：320/);
     f.played[1].playbackDuration=12340;await f.manager.pause(f.request);
@@ -222,7 +224,9 @@ test('stereo default permits 320 kbps, mono caps output without losing target, a
     await f.manager.next(f.request);await until(()=>f.played.length===5);assert.equal(f.transports[4].options.channels,1);
     await f.manager.channels({...f.request,count:2});assert.equal(f.transports[5].options.bitrate,320000);
     assert.match((await f.manager.bitrate(f.request)).message,/目標碼率：320/);
-    f.guild.channels.cache.set('voice',{bitrate:64000});await f.manager.channels({...f.request,count:2});assert.equal(f.transports[6].options.bitrate,64000);
+    f.guild.channels.cache.set('voice',{bitrate:64000});await f.manager.channels({...f.request,count:2});
+    assert.equal(f.transports.length,6,'a channel bitrate change alone never rebuilds the stream');
+    assert.match((await f.manager.channels(f.request)).message,/頻道設定：64 kbps/);
     await assert.rejects(f.manager.channels({...f.request,senderId:'other',count:1}),/目前所在/);
     assert.match((await f.manager.channels({...f.request,senderId:'other'})).message,/雙聲道/);
     for(const count of [0,3,6,NaN,'2'])assert.match((await f.manager.channels({...f.request,count})).message,/用法/);

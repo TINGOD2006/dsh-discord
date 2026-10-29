@@ -4,14 +4,18 @@ import { Readable } from 'node:stream';
 import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from '../../src/channels/discord/music-transport.mjs';
 import { startMusicHealth } from '../../src/channels/discord/music-health.mjs';
 
-test('voice bitrate respects the actual channel and never exceeds codec limits', () => {
-  assert.equal(voiceBitrate(64000), 64000); assert.equal(voiceBitrate(256000), 128000); assert.equal(voiceBitrate(undefined), 64000);
-  assert.equal(voiceBitrate(16000),16000);
-  assert.equal(voiceBitrate(64000,128000),64000);assert.equal(voiceBitrate(384000,256000),256000);
-  assert.equal(voiceBitrate(8000,128000),8000);assert.equal(voiceBitrate(undefined,384000),64000);
-  assert.equal(voiceBitrate(384000,999000),384000);
-  assert.equal(voiceBitrate(384000,320000,2),320000);assert.equal(voiceBitrate(128000,320000,2),128000);
-  assert.equal(voiceBitrate(384000,320000,1),256000);assert.equal(voiceBitrate(undefined,320000,2),64000);
+test('voice bitrate ignores the channel setting and only honours the codec ceiling', () => {
+  // A plain server reports 64 kbps, but that is a client-side setting Discord
+  // never applies to bot Opus streams — the requested rate wins.
+  assert.equal(voiceBitrate(64000), 192000);
+  assert.equal(voiceBitrate(64000, 128000), 128000);
+  assert.equal(voiceBitrate(undefined, 384000), 384000);
+  assert.equal(voiceBitrate(384000, 999000), 384000);
+  assert.equal(voiceBitrate(384000, 320000, 2), 320000);
+  assert.equal(voiceBitrate(128000, 320000, 2), 320000);
+  assert.equal(voiceBitrate(384000, 320000, 1), 256000);
+  assert.equal(voiceBitrate(16000, 16000), 16000);
+  assert.equal(voiceBitrate(8000, 8000), 8000);
 });
 
 function resourceLib(producer) {

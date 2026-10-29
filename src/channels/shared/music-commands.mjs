@@ -8,14 +8,32 @@ import { t } from './i18n.mjs';
  * methods take the channel id and answer with `{ message }`.
  */
 
-export const MUSIC_COMMAND_NAMES = Object.freeze(['play', 'join', 'next', 'pause', 'resume', 'queue', 'leave', 'music']);
+export const MUSIC_COMMAND_NAMES = Object.freeze(['play', 'music']);
 
-const MUSIC_COMMAND = /^\/(play|join|next|pause|resume|queue|leave|music)(?=$|\s)/iu;
+const MUSIC_COMMAND = /^\/(play|music)(?=$|\s)/iu;
+
+// Shortcut spellings that used to exist as top-level commands. They now resolve
+// to `/music <name>`: one surface per action, and the retired spelling answers
+// with the replacement instead of leaking into the chat as an ordinary message.
+export const RETIRED_MUSIC_SHORTCUTS = Object.freeze(['join', 'next', 'pause', 'resume', 'queue', 'leave']);
+
+const RETIRED_SHORTCUT = /^\/(join|next|pause|resume|queue|leave)(?=$|\s)/iu;
 
 export const MUSIC_COMMAND_USAGE = '/play <链接|关键词>';
 
 export function isMusicCommand(text) {
   return typeof text === 'string' && MUSIC_COMMAND.test(text.trim());
+}
+
+export function isRetiredMusicShortcut(text) {
+  return typeof text === 'string' && RETIRED_SHORTCUT.test(text.trim());
+}
+
+/** Answer a retired shortcut by naming the `/music` subcommand that replaced it. */
+export function runRetiredMusicShortcut(text) {
+  const match = typeof text === 'string' ? RETIRED_SHORTCUT.exec(text.trim()) : null;
+  if (!match) return null;
+  return { message: t('/{name} 已合併到 /music：請改用 /music {name}。', { name: match[1].toLowerCase() }) };
 }
 
 export function parseMusicCommand(text) {
@@ -61,7 +79,7 @@ export async function runMusicCommand(
   if (parsed.name === 'help' && /^play(?=$|\s)/i.test(parsed.argument)) {
     return { message: '點歌請直接用 /play <網址或關鍵詞>。' };
   }
-  if (parsed.argument && !['volume', 'bitrate', 'channels', 'help'].includes(parsed.name)) {
+  if (parsed.argument && !['play', 'volume', 'bitrate', 'channels', 'help'].includes(parsed.name)) {
     return { message: '這個音樂控制指令不接受額外文字；請單獨使用 /music stop、/music skip 等指令。' };
   }
   if (!music) return { message: t('音乐功能没开嘛。') };
@@ -75,6 +93,9 @@ export async function runMusicCommand(
     : Promise.resolve(ready).then(() => music[name](args));
   try {
     switch (parsed.name) {
+      case 'play':
+        // `/play` is the only way in for a fresh request; `/music play` stays gone.
+        return await invoke('play', { ...request, query: parsed.argument });
       case 'join':
         return await invoke('join');
       case 'next':

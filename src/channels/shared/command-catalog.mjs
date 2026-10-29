@@ -22,6 +22,10 @@ function defineCatalogCommand(name, description, help, { aliases = [], ...option
 // Handlers still own parsing and authorization; privateOnly is descriptive.
 // enabled: false removes a definition from both consumers; menuVisible: false
 // hides a command (or alias) only from the native menu, leaving help available.
+//
+// Every command here must earn its line: a name that only lists what another
+// command already lists (or means exactly what another command means) is a
+// second interface for one action. Lists live on the switching command itself.
 export const SHARED_COMMAND_CATALOG = Object.freeze([
   defineCatalogCommand('new', '开启一个全新会话', [
     '/new  开启一个全新会话',
@@ -39,47 +43,36 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
     '/workspace 工作区序号或绝对路径  切换工作区',
   ], { aliases: ['ws'] }),
   defineCatalogCommand('conv', '设置当前对话专属工作区', [
-    '/conv 或 /conversation  查看当前对话工作区',
+    '/conv  查看当前对话工作区',
     '/conv 工作区绝对路径或序号  设置当前对话专属工作区',
     '/conv clear  清除专属工作区，回到 bot 默认工作区',
-  ], { aliases: ['conversation'] }),
+  ]),
   defineCatalogCommand('workspacelist', '列出工作区绝对路径', [
     '/workspacelist  列出工作区绝对路径',
-    '/ws、/wsl、/workspaces  工作区命令别名',
-  ], { aliases: ['workspaces', 'wsl'] }),
+  ]),
   defineCatalogCommand('sessionlist', '列出会话 ID 和标题', [
-    '/sessionlist 或 /sessions [工作区序号或绝对路径]  列出会话 ID 和标题',
+    '/sessionlist [工作区序号或绝对路径]  列出会话 ID 和标题',
     '/sessionlist --limit N  仅列出当前工作区前 N 个会话',
-  ], { aliases: ['sessions'] }),
+  ]),
   defineCatalogCommand('session', '将当前聊天绑定到指定会话', [
     '/session Session ID 或当前工作区序号  将当前聊天绑定到指定会话',
   ]),
-  defineCatalogCommand('models', '按序号列出所有可用模型', [
-    '/models  按序号列出所有可用模型',
-  ]),
-  defineCatalogCommand('reasoninglist', '按序号列出当前模型可用推理等级', [
-    '/reasoninglist 或 /reasonings  按序号列出当前模型可用推理等级',
-  ], { aliases: ['reasonings'] }),
   defineCatalogCommand('reasoning', '查看或切换当前推理等级', [
     '/reasoning [序号、等级ID或 --default]  查看或切换当前推理等级',
+    '不带参数时列出全部可用推理等级',
   ]),
   defineCatalogCommand('model', '查看或切换当前会话模型', [
     '/model [序号或完整模型ID] [推理等级ID]  查看或切换当前会话模型',
-    '示例：先发 /models，再发 /model 2 [推理等级ID]',
+    '不带参数时列出全部可用模型',
   ]),
-  defineCatalogCommand('presetlist', '列出可用 Agent Preset', [
-    '/presetlist 或 /presets  按序号列出可用 Agent Preset',
-  ], { aliases: ['presets'] }),
   defineCatalogCommand('preset', '查看或设置新会话 Agent Preset', [
     '/preset [序号或完整ID]  查看或设置当前机器人 Agent Preset',
+    '不带参数时列出全部 Preset',
     '纯数字 ID：/preset id:<ID>',
     '/preset --default  跟随 Host 默认',
   ]),
   defineCatalogCommand('stop', '停止当前任务', [
     '/stop  停止当前任务（跳歌用 /music skip，不要用 /stop）',
-  ]),
-  defineCatalogCommand('skip', '停止当前任务（等同 /stop，不是跳歌）', [
-    '/skip  停止当前任务（等同 /stop；要跳歌请用 /music skip 或 /next）',
   ]),
   defineCatalogCommand('digest', '查看最近一段时间的群聊摘要（仅主人）', [
     '/digest [小时]  查看最近群聊摘要（默认 24 小时，最多 720 小时）',
@@ -113,29 +106,11 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
     '/play [链接或关键词]  加入你所在的语音频道并播放；不带参数时播放你刚发的音频附件',
   ]),
   defineCatalogCommand('music', '音樂專用控制指令', [
-    '/music skip /music stop  跳歌或停止音樂；原 /skip /stop 仍控制 AI 任務',
+    '/music skip /music stop  跳歌或停止音樂；/stop 只停 AI 任務',
     '/music pause /music resume /music queue /music nowplaying /music volume 0–100 /music leave',
-    '/music bitrate [16–384]  查看或設定播放碼率（kbps，受聲道及語音頻道上限限制）',
+    '/music bitrate [16–384]  查看或設定播放碼率（kbps，受聲道與編碼上限約束）',
     '/music channels [1|2]  查看或設定單聲道／雙聲道；320 kbps 請選 2',
     '/music status  查看 UDP 往返、封包緩衝與播放健康狀態',
-  ]),
-  defineCatalogCommand('join', '让机器人进入你所在的语音频道', [
-    '/join  让机器人进入你所在的语音频道（需要 Connect + Speak 权限）',
-  ]),
-  defineCatalogCommand('next', '跳到下一首', [
-    '/next  跳到下一首',
-  ]),
-  defineCatalogCommand('pause', '暂停播放', [
-    '/pause  暂停播放',
-  ]),
-  defineCatalogCommand('resume', '继续播放', [
-    '/resume  继续播放',
-  ]),
-  defineCatalogCommand('queue', '查看当前歌单', [
-    '/queue  查看当前歌单',
-  ]),
-  defineCatalogCommand('leave', '离开语音频道', [
-    '/leave  断开语音频道并清空歌单',
   ]),
   defineCatalogCommand('steer', '纠偏当前任务', [
     '/steer 补充指令  纠偏当前任务',
@@ -149,11 +124,8 @@ export const SHARED_COMMAND_CATALOG = Object.freeze([
   defineCatalogCommand('cancel', '取消当前批次', [
     '/cancel  取消当前批次',
   ], { privateOnly: true }),
-  defineCatalogCommand('status', '检查连接状态', [
-    '/status  检查连接状态',
-  ]),
-  defineCatalogCommand('version', '查看插件版本', [
-    '/version  查看插件版本',
+  defineCatalogCommand('status', '检查连接状态与插件版本', [
+    '/status  检查连接状态与插件版本',
   ]),
   defineCatalogCommand('help', '显示帮助', [
     '/help  显示本帮助',
@@ -175,10 +147,10 @@ export const COMMAND_HELP_SECTIONS = Object.freeze([
   Object.freeze({ id: 'misc', title: '其他' }),
 ]);
 
-const MUSIC_NAMES = new Set(['play', 'music', 'join', 'next', 'pause', 'resume', 'queue', 'leave']);
+const MUSIC_NAMES = new Set(['play', 'music']);
 const WORKSPACE_NAMES = new Set(['workspace', 'conv', 'workspacelist', 'sessionlist', 'session']);
-const MODEL_NAMES = new Set(['models', 'model', 'reasoninglist', 'reasoning', 'presetlist', 'preset']);
-const SESSION_NAMES = new Set(['new', 'compact', 'clear', 'history', 'stop', 'skip', 'steer', 'batch', 'send', 'cancel']);
+const MODEL_NAMES = new Set(['model', 'reasoning', 'preset']);
+const SESSION_NAMES = new Set(['new', 'compact', 'clear', 'history', 'stop', 'steer', 'batch', 'send', 'cancel']);
 
 /** Which help section a command belongs to; explicit lists win over privateOnly. */
 export function commandSectionName(item) {

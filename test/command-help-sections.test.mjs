@@ -34,7 +34,8 @@ test('commands land in the section a reader expects', () => {
   assert.match(lines('owner'), /\/digest/);
   assert.match(lines('session'), /\/new/);
   assert.match(lines('workspace'), /\/sessionlist/);
-  assert.match(lines('model'), /\/models/);
+  assert.match(lines('model'), /\/model \[/);
+  assert.match(lines('model'), /不带参数时列出全部可用模型/);
   assert.match(lines('misc'), /\/status/);
 });
 
@@ -54,7 +55,12 @@ test('sections cover exactly the same commands as the flat list', () => {
   assert.equal(new Set(flat).size, flat.length, 'no help line is printed twice');
 });
 
-test('/skip says it is not the music skip', () => {
-  const skip = commandsForChannel('discord').find((item) => item.name === 'skip');
-  assert.match(skip.help.join('\n'), /\/music skip/);
+test('折叠掉的命令不再出现在帮助里', () => {
+  const names = new Set(commandsForChannel('discord').map((item) => item.name));
+  for (const retired of ['skip', 'models', 'reasoninglist', 'presetlist', 'version', 'join', 'next', 'pause', 'resume', 'queue', 'leave']) {
+    assert.equal(names.has(retired), false, `${retired} was folded into another command`);
+  }
+  const help = commandHelpLines('discord').join('\n');
+  assert.doesNotMatch(help, /\/models/);
+  assert.doesNotMatch(help, /\/skip/);
 });

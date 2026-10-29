@@ -25,7 +25,7 @@ export function playbackEncoderArgs(input, { volume = 0.6, bitrate = MUSIC_PLAYB
   return ['-nostdin', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1',
     ...(offsetSeconds > 0 ? ['-ss', offsetSeconds.toFixed(3)] : []), '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
     '-af', `volume=${volume.toFixed(6)}`, '-ar', '48000', '-ac', String(count), '-c:a', 'libopus', '-threads', '1',
-    '-application', 'audio', '-vbr', 'on', '-compression_level', '10', '-b:a', String(rate), '-frame_duration', '20',
+    '-application', 'audio', '-vbr', 'off', '-compression_level', '0', '-b:a', String(rate), '-frame_duration', '20',
     '-page_duration', '20000', '-flush_packets', '1', '-f', 'ogg', 'pipe:1'];
 }
 
