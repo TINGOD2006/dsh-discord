@@ -2052,10 +2052,13 @@ export class DiscordRuntime {
             botId: this.#config.platformId, commandLike, expectedAnswer,
             continuation: bridge.canAppendInput(normalized),
             activeFollowup: activeUntil >= Date.now(),
+            fromOwner: !!this.#config.ownerUserId && String(normalized.senderId) === String(this.#config.ownerUserId),
           });
           normalized.addressed = decision.reply;
           if (!decision.reply) bridge.flushInput(normalized);
-          this.#logger.event?.('reply.decided', { messageId, reply: decision.reply, reason: decision.reason });
+          // `reason` is redacted by the log pipeline, so the rule name rides along
+          // separately; without it a skipped reply is undiagnosable after the fact.
+          this.#logger.event?.('reply.decided', { messageId, reply: decision.reply, reason: decision.reason, rule: decision.reason });
           if (decision.reply) {
             accessDecision ??= evaluateInboundAccess(this.#accessPolicy, { conversationType: normalized.kind, senderIds: [normalized.senderId],
               text: normalized.content, hasImages: normalized.images.length > 0, hasFiles: normalized.files.length > 0 });

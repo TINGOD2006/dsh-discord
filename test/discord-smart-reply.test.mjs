@@ -21,7 +21,12 @@ test('smart replies answer direct requests and bot replies while keeping member 
   for (const text of ['幫我', '請分析這個程式', '2+2是多少？', '如何改善速度', 'What is this?', '幫我查聊天記錄']) assert.equal(decide(text).reply, true, text);
   for (const text of ['好', '謝謝', '收到！', '👍', '哈哈', '我剛下班', '今天吃了麵']) assert.equal(decide(text).reply, false, text);
   assert.equal(decide('可以幫我嗎', { replyTo: { authorId: 'other' } }).reply, false);
+  assert.equal(decide('我剛下班', { mentionedUserIds: ['other'] }).reply, false);
   assert.equal(decide('如何修復', { mentionedUserIds: ['other'] }).reply, false);
+  // The owner asked for this mode; their plain chatter is still meant for the bot.
+  assert.equal(decide('我剛下班', {}, { fromOwner: true }).reply, true);
+  assert.equal(decide('幫我報警抓他 @other', { mentionedUserIds: ['other'] }, { fromOwner: true }).reply, true);
+  assert.equal(decide('好', {}, { fromOwner: true }).reply, false);
   assert.equal(decide('謝謝', { addressed: true }).reply, true);
   assert.equal(decide('好', { replyTo: { authorId: 'bot' } }).reply, true);
   assert.equal(decide('/stop', {}, { commandLike: true }).reply, true);

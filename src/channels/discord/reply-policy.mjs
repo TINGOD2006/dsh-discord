@@ -6,7 +6,7 @@ const REQUEST = /^(?:請|请|麻煩|麻烦|幫我|帮我|協助|协助|拜託|�
 const FOLLOWUP = /^(?:繼續|继续|再(?:短|長|长|詳|详|說|说|來|来|試|试|給|给)|換(?:個|个|一|種|种)|還有|还有|那(?:就|這|这|你|再)|就這|就这|不是|不對|不对|改成|加上|去掉|不用|保留|改用|同意|採用|采用|確定|确定|好[，,].+)|\b(?:continue|go on|shorter|longer|more detail|instead|try again|change it|add|remove|yes|no)\b/iu;
 
 export function decideSmartReply(message, {
-  botId, commandLike = false, expectedAnswer = false, continuation = false, activeFollowup = false,
+  botId, commandLike = false, expectedAnswer = false, continuation = false, activeFollowup = false, fromOwner = false,
 } = {}) {
   const decision = (reply, reason) => ({ reply, reason });
   if (message.senderIsBot) return decision(false, 'bot-message');
@@ -16,9 +16,12 @@ export function decideSmartReply(message, {
   const replyAuthor = message.replyTo?.authorId;
   if (replyAuthor) return decision(String(replyAuthor) === String(botId), String(replyAuthor) === String(botId) ? 'reply-to-bot' : 'reply-to-member');
   if (message.replyTo) return decision(false, 'reply-target-unknown');
-  if (message.mentionedUserIds?.some(id => String(id) !== String(botId))) return decision(false, 'addressed-to-member');
   const text = String(message.content ?? '').trim();
   if (!/[\p{L}\p{N}]/u.test(text) || ACK.test(text)) return decision(false, 'acknowledgement');
+  // The owner is who asked for this mode; staying silent on their plain chatter is
+  // the behaviour they report as broken, so their messages always get an answer.
+  if (fromOwner) return decision(true, 'owner');
+  if (message.mentionedUserIds?.some(id => String(id) !== String(botId))) return decision(false, 'addressed-to-member');
   if (QUESTION.test(text) || REQUEST.test(text)) return decision(true, 'request');
   if (continuation) return decision(true, 'input-continuation');
   if (activeFollowup && FOLLOWUP.test(text)) return decision(true, 'followup');
