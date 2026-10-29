@@ -322,6 +322,13 @@ export class DiscordApi {
     );
   }
 
+  deleteMessage({ channelId, messageId, signal }) {
+    return this.#request(
+      `channels/${snowflake(channelId, 'channel id')}/messages/${snowflake(messageId, 'message id')}`,
+      { method: 'DELETE', signal, expectBody: false, retry: false },
+    );
+  }
+
   sendTyping({ channelId, signal }) {
     return this.#request(`channels/${snowflake(channelId, 'channel id')}/typing`, {
       method: 'POST',

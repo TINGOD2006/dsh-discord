@@ -74,9 +74,12 @@ export class MusicPanelManager {
       panel = null;
     }
     if (!panel) {
-      panel = { channelId: snapshot.channelId, messageId: null, lastEditAt: 0 };
+      panel = { channelId: snapshot.channelId, messageId: null, lastEditAt: 0, trackId: null };
       this.#panels.set(key, panel);
     }
+    // A new song gets a new card below its "now playing" line; the old card is
+    // retired so history does not fill up with dead transport rows.
+    if (this.#trackChanged(panel, snapshot)) await this.#retire(panel);
     await this.#render(key, panel, snapshot, { force: true });
     this.#startTimer(key);
     return panel.messageId;
@@ -95,8 +98,25 @@ export class MusicPanelManager {
       this.#stopTimer(key);
       return panel.messageId;
     }
+    if (this.#trackChanged(panel, snapshot)) await this.#retire(panel);
     await this.#render(key, panel, snapshot, { force });
     return panel.messageId;
+  }
+
+  #trackChanged(panel, snapshot) {
+    const next = snapshot?.trackId ?? null;
+    return Boolean(panel?.trackId && next && panel.trackId !== next);
+  }
+
+  /** Drop the previous song's card; a manually deleted one is already gone. */
+  async #retire(panel) {
+    const messageId = panel.messageId;
+    panel.messageId = null;
+    panel.lastEditAt = 0;
+    panel.trackId = null;
+    if (!messageId) return;
+    try { await this.#api.deleteMessage({ channelId: panel.channelId, messageId }); }
+    catch (error) { if (!isMissingMessage(error)) this.#log('warn', 'music.panel.retire', error); }
   }
 
   async #render(guildId, panel, snapshot, { force = false } = {}) {
@@ -106,11 +126,13 @@ export class MusicPanelManager {
         const message = await this.#api.createMessage({ channelId: panel.channelId, ...body });
         panel.messageId = String(message?.id ?? '') || null;
         panel.lastEditAt = this.#now();
+        panel.trackId = snapshot?.trackId ?? null;
         return panel.messageId;
       }
       if (!force && this.#now() - panel.lastEditAt < 1500) return panel.messageId;
       await this.#api.editMessage({ channelId: panel.channelId, messageId: panel.messageId, ...body });
       panel.lastEditAt = this.#now();
+      panel.trackId = snapshot?.trackId ?? panel.trackId;
     } catch (error) {
       // A manually deleted card answers 404: forget the id so the next change posts
       // a fresh card instead of failing on every tick.

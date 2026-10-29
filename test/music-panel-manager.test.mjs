@@ -4,7 +4,7 @@ import { MusicPanelManager } from '../src/channels/discord/music-panel-manager.m
 
 class FakeApi {
   #next = 1;
-  created = []; edits = []; failEdit = null;
+  created = []; edits = []; deleted = []; failEdit = null;
   async createMessage({ channelId, ...body }) {
     const id = `m${this.#next++}`;
     this.created.push({ channelId, id, ...body });
@@ -15,15 +15,22 @@ class FakeApi {
     this.edits.push({ channelId, messageId, ...body });
     return { id: messageId };
   }
+  async deleteMessage({ channelId, messageId }) {
+    this.deleted.push({ channelId, messageId });
+    return null;
+  }
 }
 
 function registry(state = 'playing') {
   let current = state;
+  let trackId = 'track-1';
   return {
     get state() { return current; },
     set state(value) { current = value; },
+    get trackId() { return trackId; },
+    set trackId(value) { trackId = value; },
     snapshot: () => ({
-      state: current, title: '晴天', positionMs: 1000, durationMs: 200_000,
+      state: current, trackId, title: '晴天', positionMs: 1000, durationMs: 200_000,
       volume: 60, loop: 'off', queue: ['下一首'], requester: '<@1>', channelId: 'chan-1',
     }),
   };
@@ -93,5 +100,24 @@ test('a snapshot failure never throws at the caller', async () => {
   try {
     assert.equal(await panel.sync('g1'), null);
     assert.equal(api.created.length, 0);
+  } finally { await panel.destroy(); }
+});
+
+test('a new track gets a fresh card below it and the old one is deleted', async () => {
+  const api = new FakeApi();
+  const store = registry();
+  const panel = new MusicPanelManager({ api, registry: store, intervalMs: 60_000 });
+  try {
+    await panel.sync('g1');
+    assert.equal(api.created.length, 1);
+    const first = panel.messageIdFor('g1');
+
+    store.trackId = 'track-2';
+    await panel.sync('g1');
+
+    assert.deepEqual(api.deleted, [{ channelId: 'chan-1', messageId: first }], 'old card retired');
+    assert.equal(api.created.length, 2, 'a new card is posted for the new song');
+    assert.notEqual(panel.messageIdFor('g1'), first);
+    assert.equal(api.edits.length, 0, 'the old message is never edited again');
   } finally { await panel.destroy(); }
 });

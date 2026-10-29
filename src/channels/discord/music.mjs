@@ -447,6 +447,7 @@ export class MusicManager {
     const track = room.current;
     return {
       state: track ? room.state : 'preparing',
+      trackId: track?.id ?? null,
       title: track?.title ?? track?.query ?? null,
       url: track?.source?.url ?? null,
       positionMs: this.#positionMs(room),
