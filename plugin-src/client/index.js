@@ -321,10 +321,10 @@ export function IMSettingsTab({
       h('span', { className: 'dim-githubAction' },
         h('a', {
           className: 'dim-githubLink',
-          href: 'https://github.com/xmanrui/dsh-im',
+          href: 'https://github.com/TINGOD2006/dsh-discord',
           target: '_blank',
           rel: 'noopener noreferrer',
-          'aria-label': 'dsh-im GitHub',
+          'aria-label': 'DSH-Discord GitHub',
           'aria-describedby': githubTooltipId,
         },
         h('svg', {
