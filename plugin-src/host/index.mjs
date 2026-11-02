@@ -4,7 +4,7 @@ import { installMusicTools } from '../../src/channels/shared/music-access.mjs';
 // dsh-discord：只保留 Discord 频道的 host 侧实现。
 import { apply as applyDiscord } from './channels/discord/index.mjs';
 import { installOutboundArtifactTool } from '../../src/channels/shared/semantic/artifact.mjs';
-import { installDiscordHandoff, installDiscordPersona } from '../../src/channels/discord/persona.mjs';
+import { installDiscordHandoff, installDiscordPersona, installDiscordReplyHygiene } from '../../src/channels/discord/persona.mjs';
 import { getDiscordPersonaLibrary } from '../../src/channels/discord/persona-library.mjs';
 import { installHostLanguage } from './host-language.mjs';
 import { installHostLanguageRpc } from './host-language-rpc.mjs';
@@ -130,6 +130,7 @@ export function createImHostPlugin(internals = {}) {
         installMusicTools(artifactCtx);
         installDiscordPersona(artifactCtx, { text: personaText });
         installDiscordHandoff(artifactCtx, { config });
+        installDiscordReplyHygiene(artifactCtx);
       });
     } else {
       installOutboundArtifactTool(ctx);
@@ -138,6 +139,7 @@ export function createImHostPlugin(internals = {}) {
       installMusicTools(ctx);
       installDiscordPersona(ctx, { text: personaText });
       installDiscordHandoff(ctx, { config });
+      installDiscordReplyHygiene(ctx);
     }
     const logger = typeof ctx?.logger === 'function'
       ? ctx.logger(name)

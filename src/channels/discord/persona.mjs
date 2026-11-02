@@ -70,6 +70,19 @@ export function installDiscordPersona(ctx, { text = '' } = {}) {
   }
 }
 
+/** Keeps the bot's own bookkeeping out of the group chat. */
+export const DISCORD_REPLY_HYGIENE_CONTEXT_NAME = 'dsh-im:discord-reply-hygiene';
+
+/**
+ * House rule that survives every persona switch: the bot runs plenty of internal
+ * machinery (memory archival, index read-backs, tool calls, verification), and
+ * saying any of it out loud turns a chat reply into a status report. The persona
+ * text belongs to the operator, so this rule lives in code instead.
+ */
+export const DISCORD_REPLY_HYGIENE_PROMPT = [
+  '回覆守則（優先於人格）：內部保養靜默完成。記憶歸檔、索引讀回（bm25、rank 之類）、工具呼叫與驗證結果、日誌、檔案路徑、程式指令、模型名稱與版本，一律不寫進回覆，也不要報告剛做完什麼維護或檢查；只回覆對方說的那件事。',
+].join('\n');
+
 /** The handoff summary a switched-away Session left behind. */
 export const DISCORD_HANDOFF_CONTEXT_NAME = 'dsh-im:discord-handoff';
 
@@ -142,4 +155,18 @@ export function installDiscordHandoff(ctx, { config = {} } = {}) {
       if (sessionId) handoffCache.delete(sessionId);
     }, { global: true });
   }
+}
+
+/**
+ * Register the reply-hygiene rule at order 122, after the persona and the
+ * handoff, for Discord Sessions only.
+ */
+export function installDiscordReplyHygiene(ctx) {
+  ctx.systemPrompt.context({
+    name: DISCORD_REPLY_HYGIENE_CONTEXT_NAME,
+    order: 122,
+    text: (assembly) => (sessionChannelOf(sessionIdOf(assembly)) === DISCORD_PERSONA_CHANNEL
+      ? DISCORD_REPLY_HYGIENE_PROMPT
+      : ''),
+  });
 }
