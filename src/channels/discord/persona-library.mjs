@@ -63,6 +63,8 @@ export class DiscordPersonaLibrary {
   #root;
   #logger;
   #cache = null;
+  #indexCache = null;
+  #activeCache = null;
 
   constructor({ dshHome, root: explicitRoot, logger } = {}) {
     const root = explicitRoot
@@ -103,6 +105,14 @@ export class DiscordPersonaLibrary {
     const { activeId } = this.#active();
     if (!activeId) return '';
     return this.#bodyText(activeId);
+  }
+
+  /**
+   * { activeId, epoch } only. The message path calls this on every turn, so it
+   * must not touch the persona bodies the way `snapshot()` does for the card.
+   */
+  pointer() {
+    return this.#active();
   }
 
   read(id) {
@@ -182,6 +192,7 @@ export class DiscordPersonaLibrary {
     mkdirSync(this.directory, { recursive: true });
     writeAtomic(this.#activePath, `${JSON.stringify(next)}\n`);
     this.#cache = null;
+    this.#activeCache = null;
     return next;
   }
 
@@ -225,17 +236,40 @@ export class DiscordPersonaLibrary {
     }
   }
 
+  /**
+   * mtime+size stamp of a file, or null when it does not exist. The persona text
+   * resolver runs on every turn, so the index and the pointer are cached against
+   * this stamp instead of being re-read and re-parsed each time.
+   */
+  #stamp(path) {
+    try {
+      const { mtimeMs, size } = statSync(path);
+      return `${mtimeMs}:${size}`;
+    } catch {
+      return null;
+    }
+  }
+
   #items() {
-    this.#migrateLegacyPersona();
+    // The migration only matters while the library does not exist yet; checking
+    // the index stamp first keeps the per-turn path down to one stat call.
+    let stamp = this.#stamp(this.#indexPath);
+    if (stamp === null) {
+      this.#migrateLegacyPersona();
+      stamp = this.#stamp(this.#indexPath);
+    }
+    if (this.#indexCache && this.#indexCache.stamp === stamp) return this.#indexCache.items;
     const index = readJson(this.#indexPath);
+    let items = [];
     if (index === null) {
-      if (existsSync(this.#indexPath)) {
+      if (stamp !== null) {
         this.#logger?.warn?.('[dsh-discord] personas/index.json is unreadable; treating the library as empty');
       }
-      return [];
+    } else if (Array.isArray(index.items)) {
+      items = index.items.filter((item) => item && typeof item.id === 'string' && PERSONA_ID_PATTERN.test(item.id));
     }
-    if (!Array.isArray(index.items)) return [];
-    return index.items.filter((item) => item && typeof item.id === 'string' && PERSONA_ID_PATTERN.test(item.id));
+    this.#indexCache = { stamp, items };
+    return items;
   }
 
   /**
@@ -255,18 +289,26 @@ export class DiscordPersonaLibrary {
   #active() {
     // Read order matters: a legacy persona.md makes the library exist, so the
     // migration has to run before the pointer is read as "none".
-    this.#migrateLegacyPersona();
+    let stamp = this.#stamp(this.#activePath);
+    if (this.#stamp(this.#indexPath) === null) {
+      this.#migrateLegacyPersona();
+      stamp = this.#stamp(this.#activePath);
+    }
+    if (this.#activeCache && this.#activeCache.stamp === stamp) return this.#activeCache.value;
     const active = readJson(this.#activePath);
     const activeId = typeof active?.activeId === 'string' && PERSONA_ID_PATTERN.test(active.activeId)
       ? active.activeId
       : null;
     const epoch = Number.isSafeInteger(active?.epoch) && active.epoch >= 0 ? active.epoch : 0;
-    return { activeId, epoch };
+    const value = { activeId, epoch };
+    this.#activeCache = { stamp, value };
+    return value;
   }
 
   #writeIndex(index) {
     mkdirSync(this.directory, { recursive: true });
     writeAtomic(this.#indexPath, `${JSON.stringify(index, null, 2)}\n`);
+    this.#indexCache = null;
   }
 
   /**
@@ -286,6 +328,8 @@ export class DiscordPersonaLibrary {
       items: [{ id: DEFAULT_PERSONA_ID, name: DEFAULT_PERSONA_NAME, createdAt: now, updatedAt: now }],
     });
     writeAtomic(this.#activePath, `${JSON.stringify({ activeId: DEFAULT_PERSONA_ID, epoch: 0 })}\n`);
+    this.#indexCache = null;
+    this.#activeCache = null;
     renameSync(legacy, migrated);
   }
 }

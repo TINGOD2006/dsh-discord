@@ -1500,12 +1500,15 @@ export class DiscordRuntime {
         // Read lazily per message: the settings card can activate another persona
         // while the bot is running, and that has to retire the Session bound to
         // the old one.
-        personaEpoch: () => personas.snapshot().epoch,
+        // `pointer()` reads only personas/active.json (cached by mtime), while
+        // `snapshot()` also stats and reads every persona body for the card's
+        // character counts — far too much work for a per-message check.
+        personaEpoch: () => personas.pointer().epoch,
         // Same lazy read, plus the id: a switch needs to know which persona it is
         // leaving and whether the target already owns a Session here.
         personaState: () => {
-          const snapshot = personas.snapshot();
-          return { id: snapshot.activeId, epoch: snapshot.epoch };
+          const pointer = personas.pointer();
+          return { id: pointer.activeId, epoch: pointer.epoch };
         },
         personaLinks: getDiscordPersonaLinks(this.#config),
         // Runs detached after the old Session is unbound: the summary is written
