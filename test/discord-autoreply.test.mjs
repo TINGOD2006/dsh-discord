@@ -421,6 +421,20 @@ test('smart mode skips side conversations and merges a short request burst into 
   } finally { await f.runtime.stop(); }
 }));
 
+test('on mode folds a same-author burst into one turn', async () => scratch(async dir => {
+  const f = await fixture(dir, { runtimeOptions: { replyDelay: { quietMs: 80, maxWaitMs: 200 } } });
+  try {
+    await f.runtime.start();
+    assert.match((await f.command('on', { channelId: PARENT })).content, /已开启/);
+    const first = f.message('幫我', { channelId: PARENT });
+    const second = f.message('分析這段文字', { channelId: PARENT });
+    await Promise.all([first, second]);
+    assert.equal(f.prompts.length, 1, 'one burst must produce one turn');
+    assert.match(body(f.prompts[0].prompt), /幫我\n\n分析這段文字/);
+    assert.equal(f.errors.length, 0, JSON.stringify(f.errors));
+  } finally { await f.runtime.stop(); }
+}));
+
 test('smart input windows preserve actor FIFO and /stop cancels an unfinished burst immediately', async () => scratch(async dir => {
   const f = await fixture(dir, { runtimeOptions: { smartReplyDelay: { quietMs: 500, maxWaitMs: 1000 } } });
   try {

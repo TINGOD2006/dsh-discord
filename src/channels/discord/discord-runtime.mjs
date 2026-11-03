@@ -982,7 +982,8 @@ export class DiscordRuntime {
   #historyMeta = new WeakMap();
   #historySessionIds = new Map();
   #smartParticipants = new Map();
-  #smartReplyDelay;
+  /** Same-author burst window; applies to every auto-reply mode, not just smart. */
+  #replyDelay;
   #accessPolicy;
   #logger;
   #diagnostics;
@@ -1060,7 +1061,11 @@ export class DiscordRuntime {
     createWebSocket = (url) => new WebSocket(url),
     createMusicManager = (options) => new MusicWorkerManager(options),
     random = Math.random,
-    smartReplyDelay = { quietMs: 1200, maxWaitMs: 4000 },
+    // A burst of same-author messages is read as one turn in every mode: the
+    // window closes after `quietMs` of silence, or `maxWaitMs` after the first
+    // message, whichever comes first.
+    replyDelay = { quietMs: 2000, maxWaitMs: 8000 },
+    smartReplyDelay = replyDelay,
   }) {
     if (!config || !token || !harness || !state) {
       throw new TypeError('DiscordRuntime requires config, token, Harness, and state');
@@ -1070,7 +1075,7 @@ export class DiscordRuntime {
     this.#token = token;
     this.#harness = harness;
     this.#state = state;
-    this.#smartReplyDelay = smartReplyDelay;
+    this.#replyDelay = smartReplyDelay;
     this.#contextEnhancement = contextEnhancement;
     this.#groupHistory = groupHistory;
     this.#accessPolicy = accessPolicy;
@@ -2063,10 +2068,19 @@ export class DiscordRuntime {
             accessDecision ??= evaluateInboundAccess(this.#accessPolicy, { conversationType: normalized.kind, senderIds: [normalized.senderId],
               text: normalized.content, hasImages: normalized.images.length > 0, hasFiles: normalized.files.length > 0 });
             if (accessDecision.allowed && !commandLike && !expectedAnswer) {
-              normalized.replyDelay = this.#smartReplyDelay;
+              normalized.replyDelay = this.#replyDelay;
               this.#rememberSmartParticipant(normalized);
             }
           }
+        }
+        // Every other mode folds a same-author burst too: three short messages
+        // deserve one answer, not three half-answers. Commands, music and
+        // interaction replies keep their own lanes and never wait here.
+        if (normalized.conversationRoute?.autoReplyMode !== 'smart' && !normalized.senderIsBot) {
+          const commandLike = isSharedLocalCommand(normalized.content) || isMusicCommand(normalized.content);
+          const expectedAnswer = bridge.expectsInteractionReply(normalized);
+          const willReply = normalized.addressed === true || normalized.conversationRoute?.autoReplyMode === 'on';
+          if (willReply && !commandLike && !expectedAnswer) normalized.replyDelay = this.#replyDelay;
         }
         const completion = bridge.accept(normalized, {
           contextSnapshot: route.contextSnapshot,

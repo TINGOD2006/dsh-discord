@@ -177,6 +177,9 @@ test('real Gateway chat reads no archive for self-contained requests and filters
   // DSH home instead of silently inheriting the developer's real persona library.
   const personaHome = await mkdtemp(join(tmpdir(), 'dsh-ctx-persona-'));
   const runtime = new DiscordRuntime({ config: { platformId: '123', botId: 'fixture', dshHome: personaHome }, token: 'fixture-only', groupHistory: store,
+    // This test is about archive reads, not burst folding: keep the input window
+    // short so each delivered message still becomes its own turn promptly.
+    replyDelay: { quietMs: 20, maxWaitMs: 60 },
     state: { hasSeen: id => seen.has(id), markSeen: async id => { seen.add(id); }, sessionFor: () => 'chat' },
     harness: { ensureRunning: async () => {}, workspaceSession: () => ({ sessionExists: async () => true, ask: async (prompt, config) => { prompts.push(prompt); options.push(config); return 'answer'; } }) },
     logger: { info() {}, warn(...args) { errors.push(args); }, error(...args) { errors.push(args); } }, createMusicManager: () => ({ execute: async () => ({ message: 'ok' }), destroy: async () => {} }),

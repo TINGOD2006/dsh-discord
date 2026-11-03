@@ -23,7 +23,7 @@ export class MessageInputWindow {
     };
     signal?.addEventListener('abort', this.#onAbort, { once: true });
     this.#quietTimer = this.#set(() => this.finish(), this.#quietMs);
-    this.#maxTimer = this.#set(() => this.finish(), Math.max(this.#quietMs, Math.min(4000, maxWaitMs)));
+    this.#maxTimer = this.#set(() => this.finish(), Math.max(this.#quietMs, Math.min(8000, maxWaitMs)));
     if (signal?.aborted) this.#onAbort();
   }
 
