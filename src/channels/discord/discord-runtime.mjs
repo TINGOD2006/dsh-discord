@@ -1,5 +1,5 @@
 import { captureGroupHistory, groupHistoryEntry } from '../shared/group-history.mjs';
-import { extractConnectionEvidence, createConnectionDiagnostics, atConnectionStage } from '../shared/connection-error.mjs';
+import { extractConnectionEvidence, createConnectionDiagnostics, atConnectionStage, gatewaySocketError } from '../shared/connection-error.mjs';
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
 import { chunkMarkdownText } from '../shared/markdown-chunks.mjs';
 import { createTextDeliveryBlock } from '../shared/semantic/delivery.mjs';
@@ -21,7 +21,7 @@ import { DiscordApi } from './discord-api.mjs';
 import { handleApplicationCommand, syncApplicationCommands } from './discord-commands.mjs';
 import { MusicWorkerManager } from './music-worker.mjs';
 import { MusicPanelManager } from './music-panel-manager.mjs';
-import { createMusicControlServer } from './music-control-server.mjs';
+import { createMusicControlServer, writeConsoleUrlFile } from './music-control-server.mjs';
 import { parsePanelCustomId } from './music-panel.mjs';
 import { isMusicCommand } from '../shared/music-commands.mjs';
 import { musicIntentActions } from '../shared/music-access.mjs';
@@ -1722,7 +1722,7 @@ export class DiscordRuntime {
         this.#scheduleReconnect();
       });
       addSocketListener(socket, 'error', (event) => {
-        const error = event?.error ?? new Error('WebSocket error');
+        const error = gatewaySocketError(event);
         if (generation !== this.#generation || this.#stopped) return;
         this.#status.error = this.#diagnostics.report(error, { operation: 'connection.monitor', botId: this.#config?.botId, automatic: true }).publicError;
         this.#status.lastError = this.#status.error.message;
@@ -1764,7 +1764,8 @@ export class DiscordRuntime {
     });
     this.#musicControlBase = await control.start();
     this.#musicControl = control;
-    this.#logger.info?.('[dsh-im:discord] 音樂控制台已啟動', this.#musicControlBase);
+    const consoleFile = await writeConsoleUrlFile(this.#config, this.#musicControlBase).catch(() => null);
+    this.#logger.info?.('[dsh-im:discord] 音樂控制台已啟動', consoleFile ?? '(網址寫入失敗，請檢查 DSH_HOME)');
     return this.#musicControlBase;
   }
 

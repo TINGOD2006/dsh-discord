@@ -32,6 +32,21 @@ export function connectionErrorChain(error) {
   return { chain, truncated: queue.some(e => e && typeof e === 'object' && !seen.has(e)) || chain.some(e => Array.isArray(e.errors) && e.errors.length > 16) };
 }
 
+/**
+ * Normalize a WebSocket `error` event into an Error the diagnostics can classify.
+ *
+ * undici surfaces network failures as bare TypeErrors with no `code`, so the
+ * evidence extractor can only report them as "unknown". Tagging them keeps the
+ * reason actionable (UND_ERR_SOCKET already carries a hint) without inventing
+ * detail the runtime does not have.
+ */
+export function gatewaySocketError(event) {
+  const raw = event?.error ?? new Error('WebSocket error');
+  const error = raw instanceof Error ? raw : new Error(String(raw));
+  if (!error.code) error.code = error.name === 'TypeError' ? 'UND_ERR_SOCKET' : 'discord-gateway-error';
+  return error;
+}
+
 export function extractConnectionEvidence(error) {
   const { chain, truncated } = connectionErrorChain(error);
   const errors = chain.map(e => ({

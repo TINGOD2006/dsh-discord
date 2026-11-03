@@ -1,5 +1,8 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 /**
  * Local web console for the music card. Discord messages cannot carry a slider,
@@ -229,4 +232,21 @@ button:disabled{opacity:.45;cursor:default}
   setInterval(() => { void poll(); }, 1000);
 })();
 </script></body></html>`;
+}
+
+/**
+ * Where the console URL is parked. The URL embeds the per-boot token, so it must
+ * not land in the shared channel log; a 0600 file next to the other integration
+ * state keeps it discoverable without widening who can read it.
+ */
+export function consoleUrlPath(config) {
+  const home = config?.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh');
+  return join(home, 'integrations', 'dsh-discord', 'music-console.url');
+}
+
+export async function writeConsoleUrlFile(config, url) {
+  const file = consoleUrlPath(config);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${url}\n`, { mode: 0o600 });
+  return file;
 }

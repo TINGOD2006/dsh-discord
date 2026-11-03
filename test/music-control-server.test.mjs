@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { createMusicControlServer, createMusicControlHandler, controlPage } from '../src/channels/discord/music-control-server.mjs';
+import { createMusicControlServer, createMusicControlHandler, controlPage, consoleUrlPath, writeConsoleUrlFile } from '../src/channels/discord/music-control-server.mjs';
 
 const GUILD = 'guild-1';
 
@@ -101,4 +104,17 @@ test('controlPage escapes the injected scope', () => {
   const page = controlPage({ base: '/music/t/g</script>', guildId: 'g1' });
   assert.ok(!page.includes('</script>"/'));
   assert.match(page, /\\u003c/);
+});
+
+test('the console URL goes to a file instead of the shared log', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-console-'));
+  try {
+    const url = 'http://127.0.0.1:1234/music/secret-token/guild-1/';
+    const file = await writeConsoleUrlFile({ dshHome: home }, url);
+    assert.equal(file, consoleUrlPath({ dshHome: home }));
+    assert.equal(file, join(home, 'integrations', 'dsh-discord', 'music-console.url'));
+    assert.equal((await readFile(file, 'utf8')).trim(), url);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });
