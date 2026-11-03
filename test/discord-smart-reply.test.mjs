@@ -112,17 +112,37 @@ test('input windows reset the quiet deadline, cap total delay and keep the lates
   assert.equal(saves.length, 3);
 });
 
-test('input windows never combine another actor, another quote, attachments or oversized input; cancellation releases the waiter', async () => {
+test('input windows never combine another actor, another conversation or oversized input; cancellation releases the waiter', async () => {
   const time = clock();
   const window = new MessageInputWindow({ ...base, content: '幫我', replyTo: { messageId: 'quoted' } }, { ...time });
   assert.equal(window.canAppend({ ...base, senderId: 'another', content: '內容' }), false);
-  assert.equal(window.canAppend({ ...base, content: '內容', replyTo: { messageId: 'different' } }), false);
-  assert.equal(window.canAppend({ ...base, content: '內容', images: [{}] }), false);
-  assert.equal(window.canAppend({ ...base, content: 'x'.repeat(20000), replyTo: { messageId: 'quoted' } }), false);
+  assert.equal(window.canAppend({ ...base, conversationId: 'elsewhere', content: '內容' }), false);
+  assert.equal(window.canAppend({ ...base, content: 'x'.repeat(20000) }), false);
+  assert.equal(window.canAppend({ ...base, content: '', plainText: false }), false);
   window.finish({ cancel: true });
   assert.equal(await window.ready, false);
   time.advance(10000);
   assert.equal(window.closed, true);
+});
+
+test('a quote or an attachment no longer splits one person burst into two turns', async () => {
+  const time = clock(), saves = [];
+  const window = new MessageInputWindow({ ...base, content: '幫我', replyTo: { messageId: 'quoted' } }, {
+    ...time, persist: async message => saves.push(message.content),
+  });
+  // Replying to a different message, then sending a picture, still belongs to the
+  // same request: the first message keeps the reply target.
+  assert.equal(window.append({ ...base, messageId: 'two', content: '看這個', replyTo: { messageId: 'other' } }), true);
+  assert.equal(window.append({ ...base, messageId: 'three', content: '', images: [{ url: 'a.png' }] }), true);
+  assert.equal(window.append({ ...base, messageId: 'four', content: '順便說一下', files: [{ name: 'a.txt' }] }), true);
+  time.advance(1200);
+  assert.equal(await window.ready, true);
+  assert.equal(window.message.content, '幫我\n\n看這個\n\n順便說一下');
+  assert.deepEqual(window.message.images, [{ url: 'a.png' }]);
+  assert.deepEqual(window.message.files, [{ name: 'a.txt' }]);
+  assert.deepEqual(window.message.coalescedEventIds, ['two', 'three', 'four']);
+  assert.equal(window.message.replyTo.messageId, 'quoted');
+  assert.equal(saves.length, 3);
 });
 
 test('stop can still cancel after the quiet timer fires while a durable save is finishing', async () => {

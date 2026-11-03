@@ -803,18 +803,24 @@ export class TextHarnessBridge {
     const toQueue = (options) => (exit
       ? exit(options)
       : this.#enqueueMessage(message, messageId, senderId, key, options));
-    const plainText = !hasInboundImages(message) && !hasInboundFiles(message)
+    // A burst is one request even when it mixes text and attachments: "看這個"
+    // followed by a screenshot is one question, and answering it twice is noise.
+    // Steering and the older coalescing lane keep the stricter text-only rule.
+    const textOnly = !hasInboundImages(message) && !hasInboundFiles(message)
       && message.plainText !== false
       && Boolean(controlTextOf(message));
+    const hasMedia = hasInboundImages(message) || hasInboundFiles(message);
+    const foldable = (message.plainText !== false || hasMedia)
+      && (Boolean(controlTextOf(message)) || hasMedia);
     const input = this.#inputWindows.get(key);
-    if (message.replyDelay && plainText && input?.canAppend(message)) {
+    if (message.replyDelay && foldable && input?.canAppend(message)) {
       input.append(message);
       const release = () => this.#acceptedMessageIds.delete(messageId);
       void input.completion.then(release, release);
       return input.completion;
     }
     if (input) input.finish();
-    if (message.replyDelay && plainText && !this.#pendingInteractions.has(key) && !this.#approvals.hasPending(key)) {
+    if (message.replyDelay && foldable && !this.#pendingInteractions.has(key) && !this.#approvals.hasPending(key)) {
       const window = new MessageInputWindow(message, {
         ...message.replyDelay, signal: this.#signal,
         persist: updated => this.#recordPendingMessage(updated, messageId, senderId, key),
@@ -836,7 +842,7 @@ export class TextHarnessBridge {
       return window.completion;
     }
     const author = this.#turnAuthors.get(key);
-    if (author !== undefined && plainText
+    if (author !== undefined && textOnly
       && this.#autoSteerSameSender && this.#autoSteerLimit > 0
       && author.senderId === senderId && author.steered < this.#autoSteerLimit) {
       const text = this.#steerTextFor(message, messageId, senderId);
@@ -853,7 +859,7 @@ export class TextHarnessBridge {
     if (!this.#scheduler.isBusy(key) && !this.#pendingInteractions.has(key) && !this.#approvals.hasPending(key)) {
       const open = this.#coalescing.get(key);
       if (open !== undefined) {
-        if (open.senderId === senderId && plainText && open.members.length < MAX_COALESCE_MEMBERS) {
+        if (open.senderId === senderId && textOnly && open.members.length < MAX_COALESCE_MEMBERS) {
           open.members.push({ message, messageId });
           return Promise.resolve();
         }
@@ -861,7 +867,7 @@ export class TextHarnessBridge {
         // message dispatches on its own while the window keeps collecting.
         return toQueue();
       }
-      if (this.#coalesceWindowMs > 0 && plainText) {
+      if (this.#coalesceWindowMs > 0 && textOnly) {
         const opened = { senderId, members: [{ message, messageId }] };
         const timer = setTimeout(() => {
           // A rejected state write here used to surface as an unhandled rejection
