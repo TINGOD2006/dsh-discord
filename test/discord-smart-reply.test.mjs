@@ -41,6 +41,39 @@ test('short follow-ups require an active conversation or a compatible open input
   assert.equal(decide('再短一點', { replyTo: { authorId: 'other' } }, { activeFollowup: true }).reply, false);
 });
 
+test('traditional and Cantonese questions are not silently ignored', () => {
+  for (const text of ['凍河諧音梗是甚麼', '點解咁慢', '邊個係主人', '係咪壞咗', '有冇人', '點樣改']) {
+    assert.equal(decide(text).reply, true, text);
+  }
+  // Simplified forms keep working.
+  assert.equal(decide('这是什么').reply, true);
+});
+
+test('a bare question mark asks to be answered while stickers stay silent', () => {
+  assert.equal(decide('？？？').reply, true);
+  assert.equal(decide('?').reply, true);
+  assert.equal(decide('').reply, false);
+  assert.equal(decide('👍').reply, false);
+  assert.equal(decide('<:Osaka_cry:1>').reply, false);
+});
+
+test('casual imperatives count as requests', () => {
+  for (const text of ['啟動一下原神', '装个原神', '安裝這個', '陪我聊兩句', '教我寫這個']) {
+    assert.equal(decide(text).reply, true, text);
+  }
+  // Plain statements still stay quiet.
+  for (const text of ['我剛下班', '今天吃了麵', '開會中']) assert.equal(decide(text).reply, false, text);
+});
+
+test('momentum answers a person the bot was just talking to', () => {
+  assert.equal(decide('是Donk').reply, false);
+  assert.equal(decide('是Donk', {}, { momentum: true }).reply, true);
+  assert.equal(decide('你針對我', {}, { momentum: true }).reply, true);
+  // Acknowledgements and messages aimed at another member stay quiet.
+  assert.equal(decide('謝謝', {}, { momentum: true }).reply, false);
+  assert.equal(decide('是Donk', { mentionedUserIds: ['other'] }, { momentum: true }).reply, false);
+});
+
 function clock() {
   let at = 0, seq = 0; const timers = new Map();
   return {

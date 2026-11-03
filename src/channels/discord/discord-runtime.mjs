@@ -2057,6 +2057,7 @@ export class DiscordRuntime {
             botId: this.#config.platformId, commandLike, expectedAnswer,
             continuation: bridge.canAppendInput(normalized),
             activeFollowup: activeUntil >= Date.now(),
+            momentum: activeUntil >= Date.now(),
             fromOwner: !!this.#config.ownerUserId && String(normalized.senderId) === String(this.#config.ownerUserId),
           });
           normalized.addressed = decision.reply;
