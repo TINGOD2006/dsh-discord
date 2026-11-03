@@ -6,6 +6,8 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { id, isRecord, safeQrSource, text } from '../shared/api-helpers.js';
+export { safeQrSource };
 
 export const WHATSAPP_RPC_CHANNEL = '/whatsapp';
 
@@ -27,20 +29,6 @@ export const WHATSAPP_ENDPOINTS = Object.freeze({
 
 const PROVISION_STATES = new Set(['starting', 'pending', 'connecting', 'connected', 'failed', 'cancelled']);
 const BOT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
-const QR_DATA_URL = /^data:image\/(?:png|webp);base64,[a-z\d+/]+={0,2}$/i;
-
-function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function text(value, fallback, max = 240) {
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : fallback;
-}
-
-function id(value) {
-  const result = text(value, '', 128);
-  return /^[a-z\d_-]+$/i.test(result) ? result : undefined;
-}
 
 function timestamp(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -59,11 +47,6 @@ export function unwrapRpcResult(result) {
     throw error;
   }
   return result.value;
-}
-
-export function safeQrSource(value) {
-  return typeof value === 'string' && value.length <= 2 * 1024 * 1024 && QR_DATA_URL.test(value)
-    ? value : undefined;
 }
 
 export function normalizeProvisioning(value, now = Date.now()) {

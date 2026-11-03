@@ -7,6 +7,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { isRecord } from '../shared/api-helpers.js';
 
 export const DINGTALK_RPC_CHANNEL = '/dingtalk';
 
@@ -45,10 +46,6 @@ const HEALTH_STATES = new Set(['healthy', 'checking', 'degraded', 'offline']);
 const FORBIDDEN_ERROR_FIELDS = /(client[_-]?secret|secret[_-]?ref|device[_-]?code|app[_-]?secret|access[_-]?token|token)/i;
 const QR_DATA_URL = /^data:image\/(?:png|webp);base64,[a-z\d+/]+={0,2}$/i;
 const MAX_QR_SOURCE_LENGTH = 2 * 1024 * 1024;
-
-function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function optionalString(value, maxLength = 240) {
   if (typeof value !== 'string') return undefined;

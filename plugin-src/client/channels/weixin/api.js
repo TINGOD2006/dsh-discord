@@ -7,6 +7,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { isRecord } from '../shared/api-helpers.js';
 
 export const WEIXIN_RPC_CHANNEL = '/weixin';
 export const WEIXIN_ENDPOINTS = Object.freeze({
@@ -38,10 +39,6 @@ const PROVISION_STATES = new Set([
   'failed',
   'cancelled',
 ]);
-
-function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function string(value, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;

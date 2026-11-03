@@ -7,6 +7,7 @@ import { normalizeModelCatalog, normalizeModelSelection, SET_MODEL_ENDPOINT } fr
 import { normalizeLastMessageError } from '../../last-message-error.js';
 import { normalizeAccessPolicy } from '../../../../src/channels/shared/access-policy.mjs';
 import { normalizeContextEnhancementConfig } from '../../../../src/channels/shared/context-enhancement.mjs';
+import { id, isRecord, text } from '../shared/api-helpers.js';
 
 export const WECOM_APP_RPC_CHANNEL = '/wecom-app';
 
@@ -27,19 +28,6 @@ export const WECOM_APP_ENDPOINTS = Object.freeze({
 });
 
 const ACCOUNT_STATES = new Set(['connected', 'connecting', 'offline', 'error']);
-
-function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function text(value, fallback, max = 240) {
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : fallback;
-}
-
-function id(value) {
-  const result = text(value, '', 128);
-  return /^[a-z\d_-]+$/i.test(result) ? result : undefined;
-}
 
 function optionalUrl(value) {
   const raw = text(value, '', 512);
