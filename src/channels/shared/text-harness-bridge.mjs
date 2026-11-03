@@ -388,7 +388,11 @@ export class TextHarnessBridge {
     this.#fifo = chatOrder === 'fifo';
     if (this.#fifo) {
       this.#scheduler = new TurnScheduler({ order: 'fifo' });
-      this.#coalesceWindowMs = 0; this.#autoSteerSameSender = false;
+      // FIFO still refuses the pre-turn coalescing window (it would delay a turn
+      // that FIFO promises to start immediately), but same-sender steering stays
+      // available: the steered text joins the turn already at the head of the
+      // queue, so no other sender is overtaken.
+      this.#coalesceWindowMs = 0;
     }
     // Channel-supplied conversation context pipeline (collect/render/consume/deliver).
     // Channels own what context means and how it is framed; the bridge only runs

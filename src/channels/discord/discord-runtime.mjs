@@ -1483,6 +1483,11 @@ export class DiscordRuntime {
         replyTimeoutMs: this.#replyTimeoutMs,
         // Ordinary Discord turns retain receipt order, without merging or steering.
         chatOrder: 'fifo',
+        // A follow-up from the author whose turn is already running joins that
+        // turn instead of waiting for the next one: "再補一句" belongs to the
+        // answer being written, not to a second answer after it.
+        autoSteerSameSender: true,
+        autoSteerLimit: 5,
         // Recent-history context: a channel conversation is not the bot's own
         // turn log, so messages the bot never saw arrive here as a rendered
         // <dsh_im_recent_chat> block ahead of the prompt.

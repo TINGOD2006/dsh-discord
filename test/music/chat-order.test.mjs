@@ -11,7 +11,7 @@ function state() { const seen=new Set();return {hasSeen:id=>seen.has(id),markSee
 const message=(id,senderId)=>({messageId:id,senderId,kind:'group',conversationId:'room',guildId:'guild',content:id,addressed:true,
   plainText:true,images:[],files:[],replyTarget:{channelId:'room'}});
 
-test('Discord FIFO keeps separate @ turns in arrival order across owners and follow-ups',async()=>{
+test('Discord FIFO keeps cross-sender arrival order while a same-sender follow-up steers into the running turn',async()=>{
   const lifetime=new AbortController(),prompts=[];let finish;let steering=0;
   const bridge=new DiscordHarnessBridge({signal:lifetime.signal,state:state(),bot:{sendText:async()=>{}},chatOrder:'fifo',ownerUserId:'owner',
     coalesceWindowMs:20,autoSteerSameSender:true,autoSteerLimit:10,
@@ -29,10 +29,12 @@ test('Discord FIFO keeps separate @ turns in arrival order across owners and fol
     // A prompt is either a plain string or a block array once the speaker label
     // and the guest guard wrap it, so compare the text, not the wire shape.
     const texts=prompts.map(prompt=>Array.isArray(prompt)?prompt.map(part=>part?.text??'').join('\n'):String(prompt));
-    const expected=['first','second','third','fourth',...Array.from({length:8},(_,i)=>`turn-${i+5}`)];
+    // 'fourth' and the even-numbered turns come from the author whose turn is
+    // already running, so they join that turn instead of queueing behind it.
+    const expected=['first','second','third','turn-5','turn-7','turn-9','turn-11'];
     assert.equal(texts.length,expected.length);
     expected.forEach((id,index)=>assert(texts[index].includes(id),`turn ${index} kept its arrival place: ${texts[index]}`));
-    assert.equal(steering,0);
+    assert.equal(steering,5);
   }finally{finish?.();lifetime.abort();}
 });
 
