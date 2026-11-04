@@ -1064,7 +1064,7 @@ export class DiscordRuntime {
     // A burst of same-author messages is read as one turn in every mode: the
     // window closes after `quietMs` of silence, or `maxWaitMs` after the first
     // message, whichever comes first.
-    replyDelay = { quietMs: 2000, maxWaitMs: 8000 },
+    replyDelay = { quietMs: 3500, maxWaitMs: 8000 },
     smartReplyDelay = replyDelay,
   }) {
     if (!config || !token || !harness || !state) {

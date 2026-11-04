@@ -6,7 +6,8 @@ const MAX_CHARS = 16000;
 const MAX_MEDIA = 10;
 
 export class MessageInputWindow {
-  #quietMs; #quietTimer; #maxTimer; #clear; #set; #persist; #pending = Promise.resolve(); #resolve;
+  #quietMs; #graceMs; #now; #lastAppendAt = 0; #maxElapsed = false;
+  #quietTimer; #maxTimer; #clear; #set; #persist; #pending = Promise.resolve(); #resolve;
   #signal; #onAbort;
   #canceled = false;
   closed = false;
@@ -14,12 +15,15 @@ export class MessageInputWindow {
   completion = null;
 
   constructor(message, {
-    quietMs = 1200, maxWaitMs = 4000, persist, signal,
+    quietMs = 1200, maxWaitMs = 4000, graceMs = 300, now = Date.now, persist, signal,
     setTimer = setTimeout, clearTimer = clearTimeout,
   } = {}) {
     this.message = message;
     this.message.coalescedInputs = [{ messageId: message.messageId, text: message.archiveText ?? message.content }];
-    this.#quietMs = Math.max(0, Math.min(3000, quietMs));
+    this.#quietMs = Math.max(0, Math.min(4000, quietMs));
+    this.#graceMs = Math.max(0, Math.min(1000, graceMs));
+    this.#now = now;
+    this.#lastAppendAt = now();
     this.#set = setTimer; this.#clear = clearTimer; this.#persist = persist;
     this.ready = new Promise(resolve => { this.#resolve = resolve; });
     this.#signal = signal;
@@ -28,9 +32,25 @@ export class MessageInputWindow {
       this.finish({ cancel: true });
     };
     signal?.addEventListener('abort', this.#onAbort, { once: true });
-    this.#quietTimer = this.#set(() => this.finish(), this.#quietMs);
-    this.#maxTimer = this.#set(() => this.finish(), Math.max(this.#quietMs, Math.min(8000, maxWaitMs)));
+    this.#quietTimer = this.#set(() => this.#settle(), this.#quietMs);
+    this.#maxTimer = this.#set(() => { this.#maxElapsed = true; this.finish(); }, Math.max(this.#quietMs, Math.min(8000, maxWaitMs)));
     if (signal?.aborted) this.#onAbort();
+  }
+
+  /**
+   * Close the window, but let a message that landed within the last `graceMs`
+   * still join. The quiet timer can fire a few milliseconds before a burst's
+   * last message reaches us, and answering without it is exactly the "話說一半
+   * 就被回" bug this window exists to prevent. `maxWaitMs` still wins.
+   */
+  #settle() {
+    if (this.closed) return;
+    const idle = this.#now() - this.#lastAppendAt;
+    if (!this.#maxElapsed && idle < this.#graceMs) {
+      this.#quietTimer = this.#set(() => this.#settle(), this.#graceMs - idle);
+      return;
+    }
+    this.finish();
   }
 
   canAppend(message) {
@@ -72,7 +92,8 @@ export class MessageInputWindow {
     const saved = Promise.resolve().then(() => this.#persist?.(snapshot));
     this.#pending = Promise.all([this.#pending, saved]).then(() => {}, () => {});
     this.#clear(this.#quietTimer);
-    this.#quietTimer = this.#set(() => this.finish(), this.#quietMs);
+    this.#lastAppendAt = this.#now();
+    this.#quietTimer = this.#set(() => this.#settle(), this.#quietMs);
     if (this.message.coalescedInputs.length === MAX_INPUTS) this.finish();
     return true;
   }
