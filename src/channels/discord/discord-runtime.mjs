@@ -533,7 +533,44 @@ function discordReplyAttachment(attachment) {
   return { kind, ...(name ? { name } : {}) };
 }
 
-function discordReplySnapshot(message, fallbackMessageId) {
+/**
+ * Quoted pictures as downloadable sources.
+ *
+ * A reply carries only a filename in `attachments`, which tells the model that
+ * somebody pointed at a picture but not what the picture shows. The bytes are
+ * the point of the quote, so the snapshot keeps a lazy source for each quoted
+ * image; the shared reply layer downloads them into the same prompt.
+ */
+function discordReplyImages(message, fetchImpl) {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const images = [];
+  for (const attachment of attachments) {
+    const source = discordImageSource(attachment, fetchImpl);
+    if (source) images.push(source);
+  }
+  // A sticker is an image without an attachment; its CDN link is the picture.
+  if (Array.isArray(message?.sticker_items)) {
+    for (const sticker of message.sticker_items) {
+      if (sticker?.format_type === 3) continue; // Lottie stickers have no raster frame.
+      const url = typeof sticker?.url === 'string' && sticker.url ? sticker.url : null;
+      if (!url) continue;
+      const mediaType = imageMediaTypeFromUrl(url);
+      if (!mediaType) continue;
+      images.push({
+        ...(typeof sticker.name === 'string' && sticker.name ? { name: sticker.name } : {}),
+        mediaType,
+        load: (options) => fetchImageBuffer(url, {
+          ...options,
+          fetchImpl,
+          allowedHosts: DISCORD_IMAGE_HOSTS,
+        }),
+      });
+    }
+  }
+  return images;
+}
+
+function discordReplySnapshot(message, fallbackMessageId, fetchImpl) {
   if (!message || typeof message !== 'object') return null;
   const messageId = typeof message.id === 'string' && message.id
     ? message.id : fallbackMessageId;
@@ -550,16 +587,18 @@ function discordReplySnapshot(message, fallbackMessageId) {
       ...(typeof sticker?.name === 'string' && sticker.name ? { name: sticker.name } : {}),
     })));
   }
+  const images = discordReplyImages(message, fetchImpl);
   return {
     ...(messageId ? { messageId: String(messageId) } : {}),
     ...(authorId ? { authorId } : {}),
     ...(authorName ? { authorName } : {}),
     content: typeof message.content === 'string' ? message.content : '',
     attachments,
+    ...(images.length > 0 ? { images } : {}),
   };
 }
 
-function discordReplyReference(message, loadReply) {
+function discordReplyReference(message, loadReply, fetchImpl) {
   const channelId = String(message?.channel_id ?? '');
   const referenceId = typeof message?.message_reference?.message_id === 'string'
     && message.message_reference.message_id
@@ -588,7 +627,7 @@ function discordReplyReference(message, loadReply) {
           unavailableReason: 'not-found',
         };
       }
-      return discordReplySnapshot(message.referenced_message, referenceId) ?? undefined;
+      return discordReplySnapshot(message.referenced_message, referenceId, fetchImpl) ?? undefined;
     }
   }
   if (!referenceId) return undefined;
@@ -602,7 +641,7 @@ function discordReplyReference(message, loadReply) {
       const referenced = await loadReply({ channelId, messageId: referenceId, signal });
       if (!referenced || String(referenced.id ?? '') !== referenceId
         || String(referenced.channel_id ?? '') !== channelId) return null;
-      const snapshot = discordReplySnapshot(referenced, referenceId);
+      const snapshot = discordReplySnapshot(referenced, referenceId, fetchImpl);
       Object.assign(reference, snapshot);
       return snapshot;
     })(),
@@ -623,7 +662,7 @@ export function normalizeDiscordMessage(message, botId, {
     .find((value) => typeof value === 'string' && value.trim()) || '用户';
   const speakerName = safeHistoryName(stripHistoryMarkup(senderName)).replace(/[<>]/gu, '');
   const tag = senderTag(message.author.id);
-  const replyTo = discordReplyReference(message, loadReply);
+  const replyTo = discordReplyReference(message, loadReply, fetchImpl);
   const attachmentImages = Array.isArray(message.attachments)
     ? message.attachments.map((attachment) => discordImageSource(attachment, fetchImpl)).filter(Boolean)
     : [];

@@ -1,8 +1,12 @@
 import { INJECTED_CONTEXT_TAGS } from '../context-enhancement.mjs';
-import { promptContentForMessage } from '../image-prompt.mjs';
+import { imagePartsBestEffort, promptContentForMessage } from '../image-prompt.mjs';
 
 const REPLY_CONTENT_MAX_CODE_POINTS = 8_000;
 const REPLY_ATTACHMENTS_MAX = 20;
+// A quote is context for the current turn, not a new request: a handful of
+// quoted pictures is enough to answer, and the limit keeps one reply from
+// spending the whole turn's image budget on someone else's photo album.
+const REPLY_IMAGES_MAX = 4;
 const REPLY_AUTHOR_NAME_MAX_CODE_POINTS = 256;
 const REPLY_ATTACHMENT_NAME_MAX_CODE_POINTS = 255;
 
@@ -80,7 +84,7 @@ function errorUnavailableReason(error) {
 function mergeDefined(base, loaded) {
   const merged = { ...base };
   for (const key of [
-    'messageId', 'authorId', 'authorName', 'content', 'attachments', 'unavailableReason',
+    'messageId', 'authorId', 'authorName', 'content', 'attachments', 'images', 'unavailableReason',
   ]) {
     if (loaded[key] !== undefined) merged[key] = loaded[key];
   }
@@ -104,24 +108,44 @@ async function resolveReference(reference, signal) {
   }
 }
 
+function cleanImages(value) {
+  if (!Array.isArray(value)) return { images: [], truncated: false };
+  const images = [];
+  let truncated = false;
+  for (const source of value) {
+    if (!objectReference(source)) continue;
+    if (images.length === REPLY_IMAGES_MAX) {
+      truncated = true;
+      break;
+    }
+    images.push(source);
+  }
+  return { images, truncated };
+}
+
 function normalizeReference(reference) {
   const authorName = cleanString(reference.authorName, REPLY_AUTHOR_NAME_MAX_CODE_POINTS);
   const content = cleanString(reference.content, REPLY_CONTENT_MAX_CODE_POINTS, { multiline: true });
   const { attachments, truncated: attachmentsTruncated } = cleanAttachments(reference.attachments);
+  const { images, truncated: imagesTruncated } = cleanImages(reference.images);
   let unavailableReason = cleanUnavailableReason(reference.unavailableReason);
-  if (!content.value && attachments.length === 0 && !unavailableReason) {
+  if (!content.value && attachments.length === 0 && images.length === 0 && !unavailableReason) {
     unavailableReason = 'not-delivered';
   }
   const truncated = authorName.truncated
     || content.truncated
-    || attachmentsTruncated;
+    || attachmentsTruncated
+    || imagesTruncated;
   return {
-    note: REPLY_NOTE,
-    ...(authorName.value ? { authorName: authorName.value } : {}),
-    ...(content.value ? { content: content.value } : {}),
-    ...(attachments.length > 0 ? { attachments } : {}),
-    ...(unavailableReason ? { unavailableReason } : {}),
-    ...(truncated ? { truncated: true } : {}),
+    block: {
+      note: REPLY_NOTE,
+      ...(authorName.value ? { authorName: authorName.value } : {}),
+      ...(content.value ? { content: content.value } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(unavailableReason ? { unavailableReason } : {}),
+      ...(truncated ? { truncated: true } : {}),
+    },
+    images,
   };
 }
 
@@ -142,7 +166,10 @@ export async function promptContentForInboundMessage(message, { signal, deferIma
   if (!hasReplyReference(message)) {
     return promptContentForMessage(message, { signal, deferImages });
   }
-  const reference = normalizeReference(await resolveReference(message.replyTo, signal));
+  const { block, images } = normalizeReference(await resolveReference(message.replyTo, signal));
   const currentContent = await promptContentForMessage(message, { signal, deferImages });
-  return [{ type: 'text', text: replyBlock(reference) }, ...currentContent];
+  // The quoted pictures ride along as ordinary image parts: the model sees what
+  // the user pointed at instead of a filename it can only guess about.
+  const quoted = deferImages ? [] : await imagePartsBestEffort(images, { signal });
+  return [{ type: 'text', text: replyBlock(block) }, ...quoted, ...currentContent];
 }

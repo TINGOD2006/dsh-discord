@@ -194,6 +194,106 @@ export function hasInboundPrompt(message) {
   return Boolean(cleanText(message?.content)) || hasInboundImages(message);
 }
 
+/**
+ * Load one admitted image source into a model-facing image part.
+ * @param source - `{data}` or `{load}` image source, as the channel delivered it.
+ * @param index - zero-based position, for diagnostics only.
+ * @returns the `{type:'image'}` content part.
+ * @throws ImagePromptError when the bytes are missing, oversized, or unsupported.
+ */
+async function imagePartFromSource(source, index, { signal, maxImageBytes }) {
+  if (Number.isFinite(source?.size) && source.size > maxImageBytes) {
+    throw new ImagePromptError(
+      'image-too-large',
+      `Image ${index + 1} declares ${source.size} bytes; the limit is ${maxImageBytes}`,
+      t('图片超过 5 MB，请压缩后重试。'),
+    );
+  }
+  let result;
+  try {
+    result = source?.data === undefined
+      ? await source?.load?.({ signal, maxBytes: maxImageBytes })
+      : source.data;
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
+    if (error instanceof ImagePromptError) throw error;
+    throw new ImagePromptError(
+      'image-download-failed',
+      `Unable to download image ${index + 1}: ${error?.message ?? String(error)}`,
+      t('图片下载失败，请重新发送后再试。'),
+      { cause: error },
+    );
+  }
+  const loaded = loadedImage(result);
+  if (!loaded?.data.length) {
+    throw new ImagePromptError(
+      'invalid-image-data',
+      `Image ${index + 1} returned no data`,
+      t('未能读取图片内容，请重新发送。'),
+    );
+  }
+  if (loaded.data.length > maxImageBytes) {
+    throw new ImagePromptError(
+      'image-too-large',
+      `Image ${index + 1} contains ${loaded.data.length} bytes; the limit is ${maxImageBytes}`,
+      t('图片超过 5 MB，请压缩后重试。'),
+    );
+  }
+  const mediaType = detectedImageMediaType(loaded.data);
+  if (!mediaType) {
+    throw new ImagePromptError(
+      'unsupported-image-type',
+      `Image ${index + 1} is not JPEG, PNG, GIF, or WebP`,
+      t('暂不支持该图片格式，请发送 JPEG、PNG、WebP 或 GIF 图片。'),
+    );
+  }
+  const name = safeName(loaded.name ?? source?.name);
+  return {
+    type: 'image',
+    mediaType,
+    data: loaded.data.toString('base64'),
+    ...(name ? { name } : {}),
+  };
+}
+
+/**
+ * Load context images that must never fail the turn they decorate.
+ *
+ * A quoted picture is background for the user's own message: when it cannot be
+ * downloaded, oversized, or in an unsupported format, the right answer is to
+ * answer without it rather than to reject a message the model can still read.
+ *
+ * @param sources - image sources in delivery order.
+ * @param options.maxImages - how many of them to attempt.
+ * @returns the parts that loaded, silently dropping the rest.
+ */
+export async function imagePartsBestEffort(sources, {
+  signal,
+  maxImageBytes = DEFAULT_MAX_IMAGE_BYTES,
+  maxImages = DEFAULT_MAX_IMAGES,
+  maxTotalImageBytes = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
+} = {}) {
+  const list = Array.isArray(sources) ? sources.filter(Boolean) : [];
+  const parts = [];
+  let totalBytes = 0;
+  for (const [index, source] of list.entries()) {
+    if (parts.length >= maxImages) break;
+    signal?.throwIfAborted();
+    if (Number.isFinite(source?.size) && totalBytes + source.size > maxTotalImageBytes) continue;
+    try {
+      const part = await imagePartFromSource(source, index, { signal, maxImageBytes });
+      const bytes = Buffer.byteLength(part.data, 'base64');
+      if (totalBytes + bytes > maxTotalImageBytes) continue;
+      totalBytes += bytes;
+      parts.push(part);
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
+      // Context is an enhancement: a broken quoted picture is skipped.
+    }
+  }
+  return parts;
+}
+
 export async function promptContentForMessage(message, {
   signal,
   deferImages = false,
