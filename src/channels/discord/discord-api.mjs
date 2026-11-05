@@ -244,8 +244,21 @@ export class DiscordApi {
     });
   }
 
-  createMessage({ channelId, content, embeds, components, replyToMessageId, signal }) {
-    const card = messageBody({ content, embeds, components });
+  /**
+   * Messages after an id, newest first (Discord's own order).
+   *
+   * Used by the startup catch-up: a bot that was offline has no gateway events
+   * for the gap, but REST still has the messages it is allowed to read.
+   */
+  listMessages({ channelId, after, limit = 100, signal } = {}) {
+    const id = snowflake(channelId, 'channel id');
+    const size = Math.min(100, Math.max(1, Number.isInteger(limit) ? limit : 100));
+    const query = new URLSearchParams({ limit: String(size) });
+    if (after) query.set('after', snowflake(after, 'message id'));
+    return this.#request(`channels/${id}/messages?${query.toString()}`, { method: 'GET', signal });
+  }
+
+  createMessage({ channelId, content, embeds, components, replyToMessageId, signal }) {    const card = messageBody({ content, embeds, components });
     return this.#request(`channels/${snowflake(channelId, 'channel id')}/messages`, {
       method: 'POST',
       signal,

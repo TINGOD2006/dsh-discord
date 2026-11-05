@@ -1,4 +1,5 @@
 import { captureGroupHistory, groupHistoryEntry } from '../shared/group-history.mjs';
+import { catchUpEntry, parseConversationKey, selectCatchUpMessages } from './catchup.mjs';
 import { extractConnectionEvidence, createConnectionDiagnostics, atConnectionStage, gatewaySocketError } from '../shared/connection-error.mjs';
 import { createEditableMessageStream, splitMessageText } from '../shared/editable-message-stream.mjs';
 import { chunkMarkdownText } from '../shared/markdown-chunks.mjs';
@@ -1661,6 +1662,11 @@ export class DiscordRuntime {
           this.#sessionId = packet.d?.session_id ?? null;
           this.#resumeUrl = packet.d?.resume_gateway_url ?? null;
           markReady();
+          // A fresh identify means the gateway has no backlog for us: anything
+          // said while DSH was closed exists only in REST.
+          void this.#catchUpMissedMessages().catch((error) => {
+            this.#logger.warn?.('[dsh-im:discord] catch-up failed:', error?.message ?? 'unknown');
+          });
         } else if (packet.t === 'RESUMED') {
           markReady();
         } else if (packet.t === 'GUILD_CREATE') {
@@ -1958,6 +1964,11 @@ export class DiscordRuntime {
       images: preflight?.images?.length ?? 0,
       files: preflight?.files?.length ?? 0,
     });
+    // Advance the catch-up watermark even for messages this bot will not answer:
+    // it records "seen up to here", not "replied to this".
+    if (preflight?.kind && preflight?.conversationId && typeof this.#state.setLastMessageId === 'function') {
+      void this.#state.setLastMessageId(`${preflight.kind}:${preflight.conversationId}`, messageId).catch(() => {});
+    }
     const configuredReply = this.#state.threadAutoReply?.(preflight?.conversationId);
     const freeCommand = configuredReply === true || configuredReply === 'smart';
     const fastCommand = isMusicCommand(preflight?.content) || isControlCommand(preflight?.content) || isOwnerCommand(preflight?.content);
@@ -2116,6 +2127,61 @@ export class DiscordRuntime {
       }
       throw error;
     }
+  }
+
+  /**
+   * Fill the hole a stopped bot leaves behind.
+   *
+   * Discord does not queue events for a disconnected bot, so anything said
+   * while DSH was closed is invisible to the gateway. REST still has it, so on
+   * every fresh READY (not RESUMED) each bound conversation is read forward
+   * from its watermark and archived. Nothing is answered: the point is that the
+   * next turn knows what was said, not that an hour-old question gets a reply.
+   */
+  async #catchUpMissedMessages() {
+    const store = this.#groupHistory, state = this.#state;
+    if (!store || !state) return;
+    const keys = typeof state.sessionKeys === 'function' ? state.sessionKeys() : [];
+    if (!keys.length) return;
+    let archived = 0;
+    for (const key of keys) {
+      const target = parseConversationKey(key);
+      if (!target) continue;
+      try {
+        const watermark = state.lastMessageIdFor(key);
+        if (!watermark) {
+          // First run for this conversation: start from now instead of pulling
+          // the channel's whole history into the archive.
+          const latest = await this.#api.listMessages({ channelId: target.channelId, limit: 1 });
+          const newest = Array.isArray(latest) ? latest[0]?.id : null;
+          if (newest) await state.setLastMessageId(key, newest);
+          continue;
+        }
+        const fetched = [];
+        let cursor = watermark;
+        for (let page = 0; page < 2; page += 1) {
+          const batch = await this.#api.listMessages({ channelId: target.channelId, after: cursor, limit: 100 });
+          if (!Array.isArray(batch) || !batch.length) break;
+          fetched.push(...batch);
+          const newest = batch.reduce((max, item) => (BigInt(item.id) > BigInt(max) ? item.id : max), batch[0].id);
+          if (newest === cursor) break;
+          cursor = newest;
+          if (batch.length < 100) break;
+        }
+        const selected = selectCatchUpMessages(fetched, { limit: 200 });
+        for (const raw of selected) {
+          await store.capture(catchUpEntry(raw, {
+            channelId: target.channelId,
+            groupName: this.#channels.get(target.channelId)?.name,
+          }));
+          archived += 1;
+        }
+        if (selected.length) await state.setLastMessageId(key, selected[selected.length - 1].id);
+      } catch (error) {
+        this.#logger.warn?.(`[dsh-im:discord] catch-up skipped ${key}:`, error?.message ?? 'unknown');
+      }
+    }
+    if (archived) this.#logger.event?.('discord.catchup', { botId: this.#config.botId, archived });
   }
 
   #sendGateway(socket, payload) {

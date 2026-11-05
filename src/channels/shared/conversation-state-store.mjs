@@ -80,6 +80,17 @@ function normalizeState(value) {
   // An empty queue leaves no key behind, so an untouched state file keeps the
   // shape earlier versions wrote.
   const pendingMessages = normalizePendingMessages(value.pendingMessages);
+  // Per-conversation watermark for the startup catch-up: the last message id
+  // this bot has already handled. Absent until the first message arrives, so an
+  // untouched state file keeps the shape earlier versions wrote.
+  const lastMessageIds = {};
+  if (value.lastMessageIds && typeof value.lastMessageIds === 'object' && !Array.isArray(value.lastMessageIds)) {
+    for (const [key, id] of Object.entries(value.lastMessageIds)) {
+      if (typeof key === 'string' && key && typeof id === 'string' && /^\d{5,30}$/u.test(id)) {
+        lastMessageIds[key] = id;
+      }
+    }
+  }
   const normalized = {
     version: 1,
     sessions,
@@ -88,6 +99,7 @@ function normalizeState(value) {
     seenMessageIds: Array.isArray(value.seenMessageIds)
       ? value.seenMessageIds.filter((id) => typeof id === 'string' && id).slice(-1_000)
       : [],
+    ...(Object.keys(lastMessageIds).length ? { lastMessageIds } : {}),
     cursor: Number.isSafeInteger(value.cursor) && value.cursor >= 0 ? value.cursor : null,
     // Only written once a persona is switched, so untouched bots keep the old
     // file shape.
@@ -202,6 +214,31 @@ export class ConversationStateStore {
 
   async clearSessions() {
     this.#state.sessions = {};
+    await this.#persist();
+  }
+
+  /** Conversation keys with a bound Session, for the startup catch-up. */
+  sessionKeys() {
+    return Object.keys(this.#state.sessions);
+  }
+
+  /**
+   * The last message id this conversation has already handled.
+   *
+   * A watermark, not a dedupe set: the catch-up reads forward from here, so it
+   * must survive restarts and must never move backwards.
+   */
+  lastMessageIdFor(key) {
+    const id = this.#state.lastMessageIds?.[key];
+    return typeof id === 'string' && id ? id : null;
+  }
+
+  async setLastMessageId(key, messageId) {
+    if (typeof key !== 'string' || !key) return;
+    if (typeof messageId !== 'string' || !/^\d{5,30}$/u.test(messageId)) return;
+    const current = this.#state.lastMessageIds ?? {};
+    if (current[key] === messageId) return;
+    this.#state.lastMessageIds = { ...current, [key]: messageId };
     await this.#persist();
   }
 
