@@ -777,3 +777,28 @@ Discord 并不总在事件里带 `message_reference`：同一条「回复某条�
 - 不做「每回合懒切换」：那会给每条消息多加一次 RPC，而且模型临时不可用时整则消息都会失败。
 - 测试：新增 `test/bot-model-sessions.test.mjs` 5 项（全部会话切换并按 id 去重、单个失败只告警、
   回报模型不符算失败、`null` 不调用、无状态/无 `selectSessionModel` 时空转），全部通过。
+
+## 引用的圖片跟著引用走，不再算在發話人頭上（2026-11-06）
+
+主人回報「可以讀到引用，但它不明白引用來源為誰，只認為是我發的」。截圖裡 TINGOD 回覆了
+Narako 的圖片訊息（內容只有 `...`），bot 卻答「這張圖你都發第三遍了」。
+
+根因不在引用區塊本身——`<dsh_im_reply_to>` 一直帶著 `authorName`。問題是**引用的圖片被
+掛到發話人自己的訊息上**：`promptContentForInboundMessage` 產出
+`[引用區塊, 引用圖, 本輪文字]`，但 Host 端 `rewriteInjectedContextMessages` 只把文字區塊
+拆成獨立訊息，圖片留在原地，於是模型看到的是 `[image] TINGOD: ...`，合理地認為圖是
+TINGOD 發的。
+
+- `context-enhancement.mjs` 新增 `injectedBlockGroupEnd(content)`：回傳「前導區塊組」之後
+  的第一個索引。區塊組＝以 `<dsh_im_reply_to>` / `<dsh_im_source>` / `<dsh_im_context>`
+  開頭的連續文字區塊，以及緊接其後、屬於該區塊的 image parts。
+- `injected-context.mjs`：`claimedInjectedContext` 在拆完一個區塊後，把緊接的 image parts
+  收進該區塊的 `media`；`contextMessage` 把 `media` 一起放進新訊息。引用的圖因此跟著
+  「引用 · Narako」那條訊息走，發話人訊息只剩自己的文字與自己的圖。
+- `speaker-label.mjs` / `guest-guard.mjs`：改用同一個 helper 決定插入點，說話者標籤與
+  唯讀護欄都不會插在引用區塊與它的圖之間（那會把圖重新交回發話人）；標籤也只落在
+  text part 上，不會覆蓋 media part。
+- 測試：新增 `test/injected-context-media.test.mjs` 9 項（區塊組邊界、標籤位置、護欄位置、
+  引用圖跟著引用走、發話人自己的圖留下、source 區塊順序、純文字引用不變）；
+  `test/discord-reply-target.test.mjs` 加 1 項端到端（Discord 引用圖片 → 模型看到的
+  引用訊息帶圖與作者，發話人訊息只有 `TINGOD: ?`）。

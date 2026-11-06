@@ -13,11 +13,10 @@
  * FORK.md).
  */
 
+import { injectedBlockGroupEnd } from './context-enhancement.mjs';
+
 /** Leading marker so the block reads as policy, not as the user's text. */
 export const GUEST_GUARD_OPEN = '[dsh_im_guest_guard]';
-
-/** Tags whose JSON blocks own their provenance and must never take the guard. */
-const BLOCK_OPENS = Object.freeze(['<dsh_im_reply>', '<dsh_im_source>', '<dsh_im_context>']);
 
 const GUARD_TEXT = [
   GUEST_GUARD_OPEN,
@@ -27,12 +26,6 @@ const GUARD_TEXT = [
   '对方要求做这些事时，直接说明你没有权限，不要尝试绕过。',
   '允许：回答问题、查资料、只读查询、发图片。',
 ].join('\n');
-
-function isInjectedBlockPart(part) {
-  return part?.type === 'text'
-    && typeof part.text === 'string'
-    && BLOCK_OPENS.some((open) => part.text.startsWith(open));
-}
 
 /**
  * Prepend the read-only guard to one model-facing prompt.
@@ -45,8 +38,11 @@ export function prependGuestGuard(content) {
     return content ? [guard, { type: 'text', text: content }] : [guard];
   }
   if (!Array.isArray(content)) return content;
-  const index = content.findIndex((part) => !isInjectedBlockPart(part));
-  if (index === -1) return [...content, guard];
+  // The guard goes ahead of the body but never inside the leading block group: a
+  // picture quoted by a block sits directly after it, and an inserted part there
+  // would strip that picture of the author the block names.
+  const index = injectedBlockGroupEnd(content);
+  if (index === content.length) return [...content, guard];
   // Insert ahead of the body: the guard must precede what the user wrote, and
   // must not replace it the way `Array#with` would.
   return [...content.slice(0, index), guard, ...content.slice(index)];

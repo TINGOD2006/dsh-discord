@@ -10,20 +10,7 @@
  * stay unlabelled.
  */
 
-import { INJECTED_CONTEXT_TAGS } from './context-enhancement.mjs';
-
-/** Tags whose JSON blocks own their provenance and must never absorb a label. */
-const BLOCK_OPENS = Object.freeze([
-  INJECTED_CONTEXT_TAGS.replyOpen,
-  INJECTED_CONTEXT_TAGS.sourceOpen,
-  INJECTED_CONTEXT_TAGS.contextOpen,
-]);
-
-function isInjectedBlockPart(part) {
-  return part?.type === 'text'
-    && typeof part.text === 'string'
-    && BLOCK_OPENS.some((open) => part.text.startsWith(open));
-}
+import { injectedBlockGroupEnd } from './context-enhancement.mjs';
 
 /**
  * Prefix the message body of one model-facing prompt with `speakerName: `.
@@ -40,7 +27,12 @@ export function prependSpeakerLabel(content, speakerName) {
   if (!name) return content;
   if (typeof content === 'string') return content ? `${name}: ${content}` : content;
   if (!Array.isArray(content)) return content;
-  const index = content.findIndex((part) => part?.type === 'text' && !isInjectedBlockPart(part));
-  if (index === -1) return [{ type: 'text', text: `${name}:` }, ...content];
-  return content.with(index, { ...content[index], text: `${name}: ${content[index].text ?? ''}` });
+  // The label never lands inside the leading block group: a picture quoted by a
+  // block travels right after it, and a label inserted there would attach that
+  // picture to the sender's own message instead of to the quote. It also never
+  // lands on a media part, which carries no text to prefix.
+  const index = injectedBlockGroupEnd(content);
+  const target = content.findIndex((part, at) => at >= index && part?.type === 'text');
+  if (target === -1) return [{ type: 'text', text: `${name}:` }, ...content];
+  return content.with(target, { ...content[target], text: `${name}: ${content[target].text ?? ''}` });
 }

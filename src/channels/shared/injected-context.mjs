@@ -324,10 +324,13 @@ function contextMessage(block, newId, plugin) {
   const source = block.form === 'notice' && typeof block.summary === 'string'
     ? { kind: `plugin:${plugin}`, form: 'notice', summary: block.summary }
     : { kind: `plugin:${plugin}`, form: block.form };
+  // A quoted picture travels with the block that names its author: an image part
+  // carries no text, so it is only ever paired by position.
+  const media = Array.isArray(block.media) ? block.media : [];
   return {
     id: newId(),
     role: 'user',
-    content: [{ type: 'text', text: block.text }],
+    content: [{ type: 'text', text: block.text }, ...media],
     source,
   };
 }
@@ -364,14 +367,26 @@ function claimedInjectedContext(message, labels) {
       || part.type !== 'text' || typeof part.text !== 'string') break;
     const split = splitLeadingInjectedContext(part.text, { labels });
     if (split === null) break;
+    const placed = [];
     for (const block of split.blocks) {
       (block.position === 'before' ? before : after).push(block);
+      placed.push(block);
     }
     index += 1;
     if (split.rest.length > 0) {
       headText = split.rest;
       break;
     }
+    // Pictures that continue a block travel directly after it — a quoted picture
+    // follows the reply block naming its author. They move with that block, so the
+    // author named by the block stays the author the model sees on the picture.
+    const media = [];
+    while (index < content.length && content[index]?.type === 'image') {
+      media.push(content[index]);
+      index += 1;
+    }
+    const carrier = placed.at(-1);
+    if (media.length > 0 && carrier !== undefined) carrier.media = media;
   }
   if (before.length === 0 && after.length === 0) return null;
   const remaining = content.slice(index);

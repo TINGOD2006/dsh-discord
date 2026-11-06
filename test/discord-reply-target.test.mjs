@@ -5,6 +5,8 @@ import { discordReplyTargetId, groupHistoryEntry } from '../src/channels/shared/
 import { normalizeDiscordMessage } from '../src/channels/discord/discord-runtime.mjs';
 import { promptContentForInboundMessage } from '../src/channels/shared/semantic/reply-reference.mjs';
 import { historyContextNeeded } from '../src/channels/shared/history-context.mjs';
+import { rewriteInjectedContextMessages } from '../src/channels/shared/injected-context.mjs';
+import { prependSpeakerLabel } from '../src/channels/shared/speaker-label.mjs';
 
 test('a lazy direct quote is fetched once and does not authorize another archive read after it is supplied', async () => {
   let loads = 0;
@@ -158,4 +160,31 @@ test('a quote keeps at most four pictures', async () => {
   const parts = await promptContentForInboundMessage(quotedImageMessage({ fetchImpl: pngFetch, attachments }));
   assert.equal(parts.filter((part) => part.type === 'image').length, 4);
   assert.match(parts[0].text, /"truncated":true/);
+});
+
+test('a quoted picture reaches the model on the quote, not on the sender message', async () => {
+  // The whole turn as the bridge assembles it: quote block, quoted picture,
+  // speaker label, then the Host split that materializes the blocks.
+  const message = quotedImageMessage({ fetchImpl: pngFetch });
+  const labelled = prependSpeakerLabel(
+    await promptContentForInboundMessage(message),
+    message.speakerName,
+  );
+  const rewritten = rewriteInjectedContextMessages([{
+    id: 'm1',
+    role: 'user',
+    content: labelled,
+    source: { kind: 'user', rpcId: 'r1' },
+  }], { labels: { reply: '引用' } });
+  assert.equal(rewritten.length, 2);
+  const [quote, sender] = rewritten;
+  // The picture stays beside the block naming Narako, so the model cannot read
+  // it as something TINGOD sent.
+  assert.deepEqual(quote.content.map((part) => part.type), ['text', 'image']);
+  assert.match(quote.content[0].text, /Narako/);
+  assert.equal(quote.content[1].name, 'image.png');
+  assert.equal(quote.source.summary, '引用 · Narako');
+  // The sender message carries only the sender's own words.
+  assert.deepEqual(sender.content.map((part) => part.type), ['text']);
+  assert.equal(sender.content[0].text, 'TINGOD: ?');
 });

@@ -23,6 +23,48 @@ export const INJECTED_CONTEXT_TAGS = Object.freeze({
 /** Separator the producer joins prefix blocks with, and the splitter consumes. */
 export const INJECTED_CONTEXT_SEPARATOR = '\n\n';
 
+/** Tags that open a JSON block owning its provenance, and the media after it. */
+const INJECTED_BLOCK_OPENS = Object.freeze([
+  INJECTED_CONTEXT_TAGS.replyOpen,
+  INJECTED_CONTEXT_TAGS.sourceOpen,
+  INJECTED_CONTEXT_TAGS.contextOpen,
+]);
+
+/**
+ * Index of the first content part that is not owned by the leading block group.
+ *
+ * A producer writes its blocks as leading text parts and may continue a block with
+ * the pictures it quotes: those travel as image parts directly after the block that
+ * names their author, because an image part carries no text to be paired by. Any
+ * text inserted inside that run — a speaker label or a guest guard — would separate
+ * a quoted picture from the quote it belongs to and hand it to the user's own
+ * message instead, so callers insert at the returned index.
+ *
+ * @param {Array<Object>} content - a structured prompt content array.
+ * @returns {number} the first index the block group does not own.
+ */
+export function injectedBlockGroupEnd(content) {
+  if (!Array.isArray(content)) return 0;
+  let index = 0;
+  let inGroup = false;
+  while (index < content.length) {
+    const part = content[index];
+    if (part?.type === 'text' && typeof part.text === 'string'
+      && INJECTED_BLOCK_OPENS.some((open) => part.text.startsWith(open))) {
+      inGroup = true;
+      index += 1;
+      continue;
+    }
+    // Only a picture continuing the block it follows belongs to the group.
+    if (inGroup && part?.type === 'image') {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
 export const CONTEXT_ENHANCEMENT_GUIDANCE_MAX_LENGTH = 8_000;
 export const CONTEXT_GROUP_GUIDANCE_EXAMPLE = `仅依据当前消息的 <dsh_im_source> 中实际提供的字段理解来源；没有提供的字段不要猜测或补全。
 当前消息来自群聊，请使用严肃、克制、简洁的表达方式。`;
