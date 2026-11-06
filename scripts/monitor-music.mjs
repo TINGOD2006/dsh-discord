@@ -20,7 +20,7 @@ const CAUSES = {
   'gateway': 'Discord Gateway 連線或 Intents 設定需檢查',
   'music-runtime': '音樂執行階段發生錯誤，需查看本機顯示的錯誤',
   'music-notification': '音樂提示訊息回覆失敗，不能據此判定語音串流或 UDP 中斷',
-  'transport-quality': '播放鏈路出現音訊供應缺口、主程序延遲或 UDP 往返抖動；需對照統計定位，不能直接判定網際網路丟包',
+  'transport-quality': '播放鏈路出現音訊供應缺口、主程序延遲或掉幀；需對照統計定位，不能直接判定網際網路丟包',
 };
 
 export function classifyMusicLog(row) {
@@ -35,7 +35,7 @@ export function classifyMusicLog(row) {
     let detail = {};
     try { detail = JSON.parse(text.slice(text.lastIndexOf('{'))); } catch {}
     const metrics = {};
-    for (const key of ['udpPingMs', 'wsPingMs', 'udpJitterMs', 'eventLoopMaxMs', 'framesRead', 'sourceStarved', 'maxReadGapMs', 'bufferedMs', 'bitrate', 'channels']) {
+    for (const key of ['wsPingMs', 'eventLoopMaxMs', 'framesRead', 'sourceStarved', 'missedFrames', 'maxReadGapMs', 'readGapP95Ms', 'peakReadGapMs', 'bufferedMs', 'bitrate', 'channels']) {
       metrics[key] = Number.isFinite(detail[key]) && detail[key] >= 0 ? detail[key] : null;
     }
     metrics.encoder = detail.encoder === 'ffmpeg' ? 'ffmpeg' : null;

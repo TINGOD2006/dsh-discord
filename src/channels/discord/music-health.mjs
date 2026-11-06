@@ -6,17 +6,22 @@ const metric = value => Number.isFinite(value) && value >= 0 ? Math.round(value)
 /** Local scheduling/keepalive telemetry; it does not measure remote RTP packet loss. */
 export function startMusicHealth(room, log, { intervalMs = 10000 } = {}) {
   const delay = monitorEventLoopDelay({ resolution: 20 }); delay.enable();
-  let lastUdp = null, lastStarved = 0, degraded = false, healthy = 0, latest = null;
+  let lastStarved = 0, degraded = false, healthy = 0, latest = null;
   const sample = () => {
     if (!room.transport || !room.current || !['playing', 'reconnecting'].includes(room.state)) { delay.reset(); return; }
     const audio = room.transport.snapshot();
     let ping; try { ping = room.connection?.ping; } catch {}
-    const udpPingMs = metric(ping?.udp), wsPingMs = metric(ping?.ws);
-    const udpJitterMs = udpPingMs !== null && lastUdp !== null ? Math.abs(udpPingMs - lastUdp) : null;
-    if (udpPingMs !== null) lastUdp = udpPingMs;
+    const wsPingMs = metric(ping?.ws);
+    // @discordjs/voice 0.19.2 never updates VoiceUDPSocket.ping (it is marked
+    // deprecated and no keep-alive round trip is tracked), so `ping.udp` is always
+    // undefined. Reporting a number here would be fiction; only the WS RTT is real.
     const sourceStarved = Math.max(0, audio.sourceStarved - lastStarved); lastStarved = audio.sourceStarved;
-    latest = { udpPingMs, wsPingMs, udpJitterMs, execution: isMainThread ? 'main' : 'worker', eventLoopMaxMs: metric(delay.max / 1e6),
-      framesRead: audio.framesRead, sourceStarved, maxReadGapMs: audio.maxReadGapMs, readGapP95Ms: metric(audio.readGapP95Ms), bufferedMs: audio.bufferedMs,
+    // The player counts a frame it could not fill and stops at maxMissedFrames (10).
+    // That is the closest local proxy for what a listener hears as a gap.
+    const missedFrames = metric(room.player?.state?.missedFrames);
+    latest = { wsPingMs, execution: isMainThread ? 'main' : 'worker', eventLoopMaxMs: metric(delay.max / 1e6),
+      framesRead: audio.framesRead, sourceStarved, missedFrames, maxReadGapMs: audio.maxReadGapMs, readGapP95Ms: metric(audio.readGapP95Ms),
+      peakReadGapMs: metric(audio.peakReadGapMs), bufferedMs: audio.bufferedMs,
       bitrate: audio.bitrate, channels: [1, 2].includes(audio.channels) ? audio.channels : null, encoder: audio.encoder === 'ffmpeg' ? 'ffmpeg' : null,
       inlineEncoding: audio.inlineEncoding === false ? false : null,
       connectionState: room.connection?.state?.status ?? 'unknown', rtpPacketLoss: null };
@@ -24,7 +29,8 @@ export function startMusicHealth(room, log, { intervalMs = 10000 } = {}) {
     log('info', 'music.transport.stats', latest);
     // A read gap above ~45 ms means the 20 ms clock missed a whole frame, which
     // is a local stall rather than the normal 15.6 ms Windows timer quantisation.
-    const problem = sourceStarved > 0 || latest.eventLoopMaxMs > 100 || udpPingMs > 500 || udpJitterMs > 100 || latest.maxReadGapMs > 45;
+    // maxReadGapMs is windowed (~10 s), so a single spike no longer latches this.
+    const problem = sourceStarved > 0 || latest.eventLoopMaxMs > 100 || latest.maxReadGapMs > 45;
     if (problem) {
       healthy = 0;
       if (!degraded) { degraded = true; log('warn', 'music.transport.degraded', latest); }

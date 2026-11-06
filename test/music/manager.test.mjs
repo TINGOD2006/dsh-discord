@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { MusicManager, MUSIC_DEFAULT_VOLUME } from '../../src/channels/discord/music.mjs';
+import { MusicManager, MUSIC_DEFAULT_VOLUME, describeError } from '../../src/channels/discord/music.mjs';
 import { DiscordHarnessBridge } from '../../src/channels/discord/discord-bridge.mjs';
 import { handleApplicationCommand } from '../../src/channels/discord/discord-commands.mjs';
 import { createMusicRequestContext, createMusicTool, musicAccess } from '../../src/channels/shared/music-access.mjs';
@@ -430,4 +430,38 @@ test('a paused song stays paused when its replacement resource becomes readable 
     await until(()=>f.connections[0].subscribed.state.status==='playing');assert.equal(f.connections[0].subscribed.paused,true);
     await f.manager.resume(f.request);assert.equal(f.connections[0].subscribed.paused,false);
   }finally{await f.manager.destroy();}
+});
+
+test('card controls require the clicker to be in the bot voice channel, while the console path stays open',async()=>{
+  const f=fixture();try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    // A card button press always carries the clicker's voice state. Someone who is
+    // not in a voice channel, or is in a different one, must not be able to pause
+    // the room's playback — the card is readable by the whole text channel.
+    assert.deepEqual(await f.manager.control('guild','pause',{userId:'other',voiceChannelId:null}),
+      {ok:false,message:'請先加入機器人目前所在的語音頻道再操作音樂'});
+    assert.equal((await f.manager.control('guild','pause',{userId:'other',voiceChannelId:'elsewhere'})).ok,false);
+    assert.equal((await f.manager.snapshot('guild')).state,'playing');
+    // The listener in the bot's channel may control it.
+    assert.equal((await f.manager.control('guild','pause',{userId:'user',voiceChannelId:'voice'})).ok,true);
+    assert.equal((await f.manager.snapshot('guild')).state,'paused');
+    // The loopback console omits voiceChannelId entirely and is already gated by a
+    // per-boot token, so it must keep working.
+    assert.equal((await f.manager.control('guild','resume')).ok,true);
+    assert.equal((await f.manager.snapshot('guild')).state,'playing');
+  }finally{await f.manager.destroy();}
+});
+
+test('a voice error with an empty message still logs something actionable',()=>{
+  // @discordjs/voice hands back bare socket errors: 2026-11-06 12:54 logged
+  // `music.connection.error` with an empty string and no clue what failed.
+  assert.equal(describeError(new Error('')),'Error');
+  const coded=Object.assign(new Error(''),{code:4006});
+  assert.equal(describeError(coded),'Error code=4006');
+  const closed=Object.assign(new Error('socket closed'),{closeCode:4014});
+  assert.equal(describeError(closed),'socket closed closeCode=4014');
+  assert.equal(describeError(new Error('outer',{cause:Object.assign(new Error(''),{closeCode:4014})})),
+    'outer cause: Error closeCode=4014');
+  assert.equal(describeError('plain text'),'plain text');
+  assert.equal(describeError(undefined),'');
 });

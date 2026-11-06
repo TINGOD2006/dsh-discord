@@ -16,7 +16,7 @@ test('only real YouTube host and video shapes reach the direct route',()=>{
 
 test('music uses constant gain, leaves peak headroom and invalidates the louder cache profile',()=>{
   assert.equal(MUSIC_LOUDNESS.integrated,-20);assert.equal(MUSIC_LOUDNESS.truePeak,-3);
-  assert.equal(MUSIC_CACHE_VERSION,3);
+  assert.equal(MUSIC_CACHE_VERSION,4);
   assert.equal(normalizationFilter({input_i:-10,input_tp:-1,input_lra:25}),'volume=-10.000000dB');
   assert.equal(normalizationFilter({input_i:-30,input_tp:-2,input_lra:25}),'volume=-1.000000dB');
   assert.equal(normalizationFilter(null),'anull');

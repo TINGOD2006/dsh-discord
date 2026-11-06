@@ -9,7 +9,7 @@ const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/p
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav', '.webm', '.mp4']);
 const hash = value => createHash('sha256').update(value).digest('hex');
 export const MUSIC_LOUDNESS = Object.freeze({ integrated: -20, truePeak: -3, lra: 11, sampleRate: 48000 });
-export const MUSIC_CACHE_VERSION = 3;
+export const MUSIC_CACHE_VERSION = 4;
 
 export function loudnessAnalysisFilter() {
   return `loudnorm=I=${MUSIC_LOUDNESS.integrated}:TP=${MUSIC_LOUDNESS.truePeak}:LRA=${MUSIC_LOUDNESS.lra}:print_format=json`;
@@ -281,7 +281,7 @@ export class MusicAudioPipeline {
     const loudness = loudnessStats(stderr);
     const rendered = join(dir, 'normalized.flac');
     await this.#run(this.#tools.ffmpeg, ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
-      '-af', normalizationFilter(loudness), '-ar', '48000', '-ac', '2', '-c:a', 'flac', '-sample_fmt', 's32', '-threads', '1', rendered], { cwd: dir, signal, timeoutMs: 180_000 });
+      '-af', normalizationFilter(loudness), '-ar', '48000', '-ac', '2', '-c:a', 'flac', '-sample_fmt', 's16', '-threads', '1', rendered], { cwd: dir, signal, timeoutMs: 180_000 });
     const actual = await this.#probe(rendered, dir, signal);
     if (!completeDuration(duration, actual)) throw new Error('音量處理後的音訊不完整');
     if (signal.aborted) throw abortError();

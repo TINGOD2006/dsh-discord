@@ -27,10 +27,23 @@ test('the encoder keeps a fixed 20 ms packet size at the requested rate', () => 
   const args = playbackEncoderArgs('/tmp/a.flac', { bitrate: 192000 });
   const at = (flag) => args[args.indexOf(flag) + 1];
   assert.equal(at('-vbr'), 'off', 'CBR keeps every 20 ms packet the same size for UDP pacing');
-  assert.equal(at('-compression_level'), '0');
   assert.equal(at('-b:a'), '192000');
   assert.equal(at('-application'), 'audio');
   assert.equal(at('-frame_duration'), '20');
+});
+
+test('encoder search effort only rises once the rate has room for it', () => {
+  // 64 kbps is bit-starved: cl 10 buys 0.02 dB for 1.3x the CPU, so stay cheap.
+  // At 128 kbps and above it buys ~1.1 dB of SNR and still runs 7.8x real time.
+  const level = (bitrate) => {
+    const args = playbackEncoderArgs('/tmp/a.flac', { bitrate });
+    return args[args.indexOf('-compression_level') + 1];
+  };
+  assert.equal(level(64000), '0');
+  assert.equal(level(96000), '0');
+  assert.equal(level(128000), '10');
+  assert.equal(level(192000), '10');
+  assert.equal(level(384000), '10');
 });
 
 test('a seek keeps the encoder flags and adds the offset', () => {

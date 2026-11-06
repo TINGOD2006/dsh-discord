@@ -1859,9 +1859,19 @@ export class DiscordRuntime {
         return true;
       }
       if (!['pause', 'resume', 'next'].includes(action)) return false;
+      // The card is visible to the whole text channel, so a button press must be
+      // held to the same rule as the slash commands: only someone sitting in the
+      // bot's voice channel may change playback. Without this, any reader of the
+      // card could stop the music (see the 2026-11-06 14:06 resume attempt).
+      const voiceChannelId = interaction?.member?.voice?.channel_id ?? interaction?.member?.voice?.channelId ?? null;
+      const result = await music.control(guildId, action, { userId, voiceChannelId: voiceChannelId ? String(voiceChannelId) : null });
+      if (result?.ok === false) {
+        await reply({ type: 4, data: { flags: 64, content: String(result.message ?? '無法操作').slice(0, 1900) } });
+        this.#logger.event?.('music.card.action', { action, guildId, userId, ok: false });
+        return true;
+      }
       await reply({ type: 6 });
-      const result = await music.control(guildId, action);
-      this.#logger.event?.('music.card.action', { action, guildId, userId, ok: result?.ok !== false });
+      this.#logger.event?.('music.card.action', { action, guildId, userId, ok: true });
       await panel?.refresh(guildId, { force: true });
       return true;
     } catch (error) {

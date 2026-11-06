@@ -37,12 +37,13 @@ test('a missing log alerts once and recovery can establish a fresh baseline',asy
 });
 
 test('voice health statistics stay private and regular samples do not produce notifications',()=>{
-  const text=line('log','music.transport.stats {"udpPingMs":42,"wsPingMs":25,"sourceStarved":0,"channels":1,"encoder":"ffmpeg","inlineEncoding":false,"privateToken":"never-print"}','info');
+  const text=line('log','music.transport.stats {"wsPingMs":25,"sourceStarved":0,"missedFrames":0,"readGapP95Ms":17,"channels":1,"encoder":"ffmpeg","inlineEncoding":false,"privateToken":"never-print"}','info');
   const result=consumeMusicLog(text,null,Date.parse(ts));
-  assert.equal(result.report.transport.udpPingMs,42);assert.equal(result.report.transport.rtpPacketLoss,null);
+  assert.equal(result.report.transport.wsPingMs,25);assert.equal(result.report.transport.readGapP95Ms,17);
+  assert.equal(result.report.transport.missedFrames,0);assert.equal(result.report.transport.rtpPacketLoss,null);
   assert.equal(result.report.transport.channels,1);assert.equal(result.report.transport.encoder,'ffmpeg');assert.equal(result.report.transport.inlineEncoding,false);
   assert.equal(result.report.notifications.length,0);assert(!JSON.stringify(result.report).includes('never-print'));
-  const warning=consumeMusicLog(text+line('log','music.transport.degraded {"udpPingMs":600,"sourceStarved":3}','warn'),result.state,Date.parse(ts));
+  const warning=consumeMusicLog(text+line('log','music.transport.degraded {"missedFrames":4,"sourceStarved":3}','warn'),result.state,Date.parse(ts));
   assert.equal(warning.report.notifications[0].code,'transport-quality');
 });
 

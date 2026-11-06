@@ -96,7 +96,7 @@ $env:DSK_DISCORD_NODE = 'D:\MediaTools\node.exe'
 | `/music pause`、`/music resume` | 暫停、繼續 |
 | `/music queue`、`/music nowplaying` | 查看佇列、目前歌曲 |
 | `/music volume percent:0–100` | 調整音量，預設 60% |
-| `/music status` | 查看 UDP／WebSocket ping、碼率、緩衝及主程序延遲 |
+| `/music status` | 查看 WebSocket ping、碼率、緩衝、掉幀及主程序延遲 |
 | `/music join`、`/music leave` | 加入、離開語音頻道 |
 
 **`/stop` 與 `/skip` 保留為 AI 任務控制；控制音樂請使用 `/music stop` 與 `/music skip`。**
@@ -113,7 +113,7 @@ $env:DSK_DISCORD_NODE = 'D:\MediaTools\node.exe'
 
 1. YouTube 單曲網址驗證後直接處理；關鍵詞先取得最多五個真實候選。
 2. DSH 在獨立音樂 Session 中選擇候選；超過十秒或結果無效時，改用已驗證的搜尋首選並提示。
-3. 完整下載、檢查時長並建立 48 kHz、24-bit 雙聲道無損 FLAC 正規化快取；播放時由 FFmpeg 子程序按所選聲道與碼率輸出 Opus，再直接提交播放器。320 kbps 是實際編碼輸出，仍會經過音量處理與轉碼，不代表原檔免轉碼直通或提升原音源品質。
+3. 完整下載、檢查時長並建立 48 kHz、16-bit 雙聲道無損 FLAC 正規化快取；播放時由 FFmpeg 子程序按所選聲道與碼率輸出 Opus，再直接提交播放器。輸出是 ≤384 kbps 的 Opus，16-bit 精度已遠超過所需，同曲快取由 34.6 MB 降到 16.5 MB。320 kbps 是實際編碼輸出，仍會經過音量處理與轉碼，不代表原檔免轉碼直通或提升原音源品質。
 
 Bilibili BV／av 影片、au 音訊及 b23 分享連結直接使用原站音源；移除追蹤參數，保留 `p` 分 P 選擇，未指定時播放第一 P。Bilibili 解析或下載失敗會直接回報來源錯誤。其他網頁先嘗試取得標題，再到 YouTube 搜尋。另外支援主機可讀的音訊檔及可辨識的公開音訊直連。
 
@@ -123,9 +123,9 @@ Bilibili BV／av 影片、au 音訊及 b23 分享連結直接使用原站音源�
 
 `/music status` 提供目前連線與音訊管線狀態。語音連線、播放器與發送時鐘在獨立 worker 執行，主程序阻塞時已開始的播放仍可繼續；音量與編碼由 FFmpeg 子程序處理。開播前預備約 480 ms 的音訊內容，狀態中的「音訊預讀」代表備妥音訊量，不是實際等待或端到端延遲。音量指令會從目前位置重建串流，可能短暫停頓。語音斷線會保留歌曲並有限次重試；整機負載或外部 UDP 網路不穩仍可能造成斷續。
 
-播放碼率預設跟隨語音頻道設定（一般伺服器 64 kbps），`/music bitrate` 是明確覆寫。先前版本預設 192 kbps 且不理會頻道設定，等於在 64 kbps 頻道上送出三倍流量；上行頻寬較窄或線路不穩時，這會放大 UDP 抖動。若仍斷續，先看 `/music status` 的「讀取間隔 P95」：16–32 ms 屬 Windows 15.6 ms 計時器量化，超過 45 ms 才是本機管線停頓；「WebSocket」往返超過 150 ms 會附上網路提醒，可先降碼率或更換語音區域。
+播放碼率預設跟隨語音頻道設定（一般伺服器 64 kbps），`/music bitrate` 是明確覆寫。先前版本預設 192 kbps 且不理會頻道設定，等於在 64 kbps 頻道上送出三倍流量；上行頻寬較窄或線路不穩時，這會放大 UDP 抖動。若仍斷續，先看 `/music status` 的「讀取間隔 P95」：16–32 ms 屬 Windows 15.6 ms 計時器量化，窗口峰值超過 45 ms 才是本機管線停頓；再看「掉幀」——那是播放器自己的 20 ms 幀漏接計數，累積到 10 幀就會停止播放，比任何推論都更貼近聽感。「WebSocket 往返」超過 150 ms 會附上網路提醒，可先降碼率或更換語音區域。
 
-**UDP ping 是保活往返時間，不是接收端 RTP 丟包率。** 本機回送成功也不能證明 Discord 外部線路穩定。`music.playing` 僅表示音訊已提交播放器，實際聽感需在語音頻道確認。
+**本專案自 0.19.2 起沒有 UDP 往返可看。** `@discordjs/voice` 已標記 `VoiceUDPSocket.ping` 棄用且不再更新（保活訊息不再追蹤），所以 `udpPingMs`／`udpJitterMs` 一律是空的——舊版曾把它當成異常條件，等於永遠不會觸發。目前也沒有外部語音接收端的 RTP 丟包統計；本機回送成功不能證明 Discord 外部線路穩定。`music.playing` 僅表示音訊已提交播放器，實際聽感需在語音頻道確認。
 
 被動監測：
 

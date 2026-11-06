@@ -36,16 +36,20 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
   catch (error) { encoder.destroy(); throw error; }
   const buffer = new PassThrough({ objectMode: true, highWaterMark: bufferFrames });
   let resource, destroyed = false, streamError;
-  const stats = { framesRead: 0, sourceStarved: 0, maxReadGapMs: 0 };
-  // A short ring of read intervals: the P95 separates the unavoidable Windows
-  // 15.6 ms timer quantisation from a real stall in the encoder or the pipe.
-  const gapRing = new Float64Array(256);
+  const stats = { framesRead: 0, sourceStarved: 0, peakReadGapMs: 0 };
+  // A ring of read intervals: the P95 separates the unavoidable Windows 15.6 ms
+  // timer quantisation from a real stall in the encoder or the pipe. Both the P95
+  // and the maximum are windowed — a lifetime maximum meant one spike latched the
+  // health check into "degraded" for the rest of the song. 512 slots at one read
+  // per 20 ms is ~10.2 s, matching the health sampler's interval.
+  const GAP_WINDOW = 512;
+  const gapRing = new Float64Array(GAP_WINDOW);
   let gapIndex = 0, gapCount = 0, lastRead = null;
-  const gapP95 = () => {
-    if (!gapCount) return 0;
-    const size = Math.min(gapCount, gapRing.length);
+  const gapWindow = () => {
+    const size = Math.min(gapCount, GAP_WINDOW);
+    if (!size) return null;
     const sorted = Array.from(gapRing.subarray(0, size)).sort((a, b) => a - b);
-    return Math.round(sorted[Math.min(size - 1, Math.floor(size * 0.95))]);
+    return { p95: Math.round(sorted[Math.min(size - 1, Math.floor(size * 0.95))]), max: Math.round(sorted[size - 1]) };
   };
   const fail = error => { streamError = error; buffer.destroy(error); };
   producer.playStream.on('error', fail);
@@ -82,8 +86,8 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
       const now = performance.now();
       if (lastRead !== null) {
         const gap = now - lastRead;
-        stats.maxReadGapMs = Math.max(stats.maxReadGapMs, gap);
-        gapRing[gapIndex++ % gapRing.length] = gap; gapCount++;
+        stats.peakReadGapMs = Math.max(stats.peakReadGapMs, gap);
+        gapRing[gapIndex++ % GAP_WINDOW] = gap; gapCount++;
       }
       lastRead = now;
       const packet = read();
@@ -93,8 +97,11 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
     };
     if (signal?.aborted) throw abortError();
     return { resource, destroy, offsetSeconds, resetTiming: () => { lastRead = null; },
-      snapshot: () => ({ ...stats, maxReadGapMs: Math.round(stats.maxReadGapMs), readGapP95Ms: gapP95(), bufferedFrames: buffer.readableLength,
-        bufferedMs: buffer.readableLength * 20, bitrate: playbackBitrate(bitrate, count), channels: count, encoder: 'ffmpeg', inlineEncoding: false }) };
+      // `maxReadGapMs` is the windowed maximum, so the health check can recover;
+      // `peakReadGapMs` keeps the whole-song spike for post-mortem diagnostics.
+      snapshot: () => { const window = gapWindow(); return { ...stats, maxReadGapMs: window?.max ?? 0, readGapP95Ms: window?.p95 ?? 0,
+        peakReadGapMs: Math.round(stats.peakReadGapMs), bufferedFrames: buffer.readableLength,
+        bufferedMs: buffer.readableLength * 20, bitrate: playbackBitrate(bitrate, count), channels: count, encoder: 'ffmpeg', inlineEncoding: false }; } };
   } catch (error) { destroy(); throw error; }
 }
 

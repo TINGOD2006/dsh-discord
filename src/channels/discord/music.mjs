@@ -48,6 +48,27 @@ export function positionFromFrames(offsetSeconds, framesRead, frameMs = 20) {
   return Math.max(0, Math.round(base * 1000 + frames * frameMs));
 }
 
+/**
+ * Voice-layer errors frequently arrive with an empty message (a bare ws/udp
+ * socket error, or a close without a reason), which used to log as
+ * `music.connection.error ` with nothing to act on. Keep the name, the code and
+ * the Discord close code so a reconnect failure stays diagnosable.
+ */
+export function describeError(error) {
+  if (!(error instanceof Error)) return String(error ?? '');
+  const parts = [];
+  if (error.message) parts.push(error.message);
+  if (!error.message && error.name) parts.push(error.name);
+  if (Number.isFinite(error.code)) parts.push(`code=${error.code}`);
+  else if (typeof error.code === 'string' && error.code) parts.push(error.code);
+  if (Number.isFinite(error.closeCode)) parts.push(`closeCode=${error.closeCode}`);
+  if (error.cause instanceof Error && error.cause !== error) {
+    const cause = describeError(error.cause);
+    if (cause && !parts.includes(cause)) parts.push(`cause: ${cause}`);
+  }
+  return parts.join(' ') || 'unknown error';
+}
+
 /** Per-guild playback. A cancelled preparation can never resurrect a stopped track. */
 export class MusicManager {
   #token; #logger; #runtime; #pipeline; #notify; #client; #login; #library;
@@ -94,7 +115,9 @@ export class MusicManager {
     };
     return this.#commands.run(guildId, command, activeSignal => this[command]({ ...args, signal: activeSignal }), signal, authorize);
   }
-  #log(level, event, detail) { try { this.#logger?.(level, event, detail instanceof Error ? detail.message : detail); } catch {} }
+  #log(level, event, detail) {
+    try { this.#logger?.(level, event, detail instanceof Error ? describeError(detail) : detail); } catch {}
+  }
   async #say(channelId, message) { try { await this.#notify?.(channelId, message); } catch (error) { this.#log('warn', 'music.notice.failed', error); } }
   async #libs() {
     if (this.#library) return this.#library;
@@ -353,12 +376,15 @@ export class MusicManager {
     const mode = room.bitrateExplicit ? '手動指定' : '跟隨頻道';
     const channel = room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : `尚無資料（本機以 ${fallbackLimit} 編碼）`;
     const wsPing = Number.isFinite(ping?.ws) ? ping.ws : null;
+    // @discordjs/voice 0.19.2 no longer tracks a UDP keep-alive round trip, so
+    // `ping.udp` is permanently undefined; printing it as a metric was noise.
     // A high voice-WebSocket RTT is the only local hint that the UDP path is
     // degraded; the bot cannot see the receiver's RTP loss.
     const network = wsPing !== null && wsPing > 150
       ? `\n網路提醒：語音 WebSocket 往返 ${Math.round(wsPing)} ms 偏高，UDP 音訊可能斷續；可先 /music bitrate 降低碼率，或在 Discord 頻道設定換一個語音區域。`
       : '';
-    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps（${mode}）\n頻道設定：${channel}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；讀取間隔 P95：${number(frames?.readGapP95Ms)} ms；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。${network}` };
+    const missed = Number.isFinite(health?.missedFrames) ? `${health.missedFrames} 幀` : '尚無資料';
+    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nWebSocket 往返：${number(ping?.ws)} ms（0.19.2 起不提供 UDP 往返）\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps（${mode}）\n頻道設定：${channel}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；掉幀：${missed}（上限 10）；讀取間隔 P95：${number(frames?.readGapP95Ms)} ms（近 10 秒峰值 ${number(frames?.maxReadGapMs)} ms，整首峰值 ${number(frames?.peakReadGapMs)} ms）；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\n以上皆為本機指標；尚無接收端 RTP 丟包統計。${network}` };
   }
   async volume({ channelId, senderId, percent, deltaPercent, signal }) {
     const { room } = await this.#context(channelId, senderId, { signal });
@@ -511,10 +537,22 @@ export class MusicManager {
     return { ok: true, message };
   }
 
-  /** Console path: a guild id, with no text channel or sender to resolve. */
-  async control(guildId, action, { positionMs } = {}) {
+  /**
+   * Console path: a guild id, with no text channel or sender to resolve.
+   *
+   * Card buttons also land here, so `voiceChannelId` carries the clicker's voice
+   * state. It stays `undefined` for the loopback console (which is already gated
+   * by a per-boot token); a button press always passes a value, and `null` means
+   * "not in a voice channel" — those presses are refused, exactly like the slash
+   * commands refuse them at `#context`.
+   */
+  async control(guildId, action, { positionMs, userId = null, voiceChannelId } = {}) {
     const room = this.#guilds.get(String(guildId));
     if (!room || room.leaving) return { ok: false, message: '目前沒有播放中的歌曲' };
+    if (voiceChannelId !== undefined && (!voiceChannelId || !room.channelId || String(voiceChannelId) !== String(room.channelId))) {
+      this.#log('info', 'music.card.refused', { guildId: String(guildId), action, userId, reason: voiceChannelId ? 'other-channel' : 'not-in-voice' });
+      return { ok: false, message: '請先加入機器人目前所在的語音頻道再操作音樂' };
+    }
     if (action === 'pause') {
       if (room.state !== 'playing') return { ok: false, message: '目前沒有可暫停的歌曲' };
       room.player?.pause(); room.transport?.resetTiming?.(); room.state = 'paused'; this.#changed(room);

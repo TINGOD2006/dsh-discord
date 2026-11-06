@@ -18,6 +18,18 @@ export function playbackBitrate(value = MUSIC_PLAYBACK_PROFILE.bitrate, channels
 }
 const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/package.json'));
 
+/**
+ * Opus search effort. Measured on a 20 s 48 kHz stereo slice, higher complexity
+ * only pays off once the target rate leaves room for it: at 64 kbps the encoder
+ * is bit-starved and cl 0/cl 10 differ by 0.02 dB, while at 128 kbps cl 10 gains
+ * ~1.1 dB of SNR for 179 ms -> 235 ms per 30 s of audio (still 7.8x real time, and
+ * the first packet arrives in ~65 ms). Keep 64 kbps cheap, spend the CPU above it.
+ */
+export function playbackComplexity(bitrate) {
+  const rate = Number(bitrate);
+  return Number.isFinite(rate) && rate >= 128000 ? 10 : 0;
+}
+
 export function playbackEncoderArgs(input, { volume = 0.6, bitrate = MUSIC_PLAYBACK_PROFILE.bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels, offsetSeconds = 0 } = {}) {
   if (!Number.isFinite(volume) || volume < 0 || volume > 1) throw new Error('播放音量無效');
   if (!Number.isFinite(offsetSeconds) || offsetSeconds < 0) throw new Error('播放位置無效');
@@ -25,7 +37,7 @@ export function playbackEncoderArgs(input, { volume = 0.6, bitrate = MUSIC_PLAYB
   return ['-nostdin', '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1',
     ...(offsetSeconds > 0 ? ['-ss', offsetSeconds.toFixed(3)] : []), '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
     '-af', `volume=${volume.toFixed(6)}`, '-ar', '48000', '-ac', String(count), '-c:a', 'libopus', '-threads', '1',
-    '-application', 'audio', '-vbr', 'off', '-compression_level', '0', '-b:a', String(rate), '-frame_duration', '20',
+    '-application', 'audio', '-vbr', 'off', '-compression_level', String(playbackComplexity(rate)), '-b:a', String(rate), '-frame_duration', '20',
     '-page_duration', '20000', '-flush_packets', '1', '-f', 'ogg', 'pipe:1'];
 }
 

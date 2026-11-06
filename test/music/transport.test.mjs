@@ -87,15 +87,28 @@ test('retry exhaustion and caller cancellation remain bounded', async () => {
   await assert.rejects(recoverMusicVoice(connection, libs, { signal: controller.signal }), { name: 'AbortError' });
 });
 
-test('health telemetry distinguishes ping from RTP loss and deduplicates degraded transitions', () => {
-  const logs = [], room = { state: 'playing', current: {}, connection: { state: { status: 'ready' }, ping: { udp: 50, ws: 30 } },
-    transport: { snapshot: () => ({ framesRead: 100, sourceStarved: 0, maxReadGapMs: 20, bufferedMs: 400, bitrate: 64000 }) } };
+test('health telemetry flags degraded playback from local frame delivery and deduplicates transitions', () => {
+  const logs = [];
+  let gap = 20, missed = 0;
+  const room = { state: 'playing', current: {}, connection: { state: { status: 'ready' }, ping: { ws: 30 } },
+    player: { state: { missedFrames: 0 } },
+    transport: { snapshot: () => ({ framesRead: 100, sourceStarved: 0, maxReadGapMs: gap, readGapP95Ms: gap, peakReadGapMs: 120, bufferedMs: 400, bitrate: 64000 }) } };
   const health = startMusicHealth(room, (...args) => logs.push(args), { intervalMs: 100000 });
   try {
-    health.sample(); assert.equal(health.snapshot().rtpPacketLoss, null);
-    room.connection.ping.udp = 600; health.sample(); health.sample();
+    health.sample();
+    // 0.19.2 no longer tracks a UDP keep-alive round trip, so the bot must report
+    // that it has no receiver-side loss figure rather than inventing one.
+    assert.equal(health.snapshot().rtpPacketLoss, null);
+    assert.equal(health.snapshot().missedFrames, 0);
+    // The sliding window is what recovers: a one-off spike must not pin the room
+    // to degraded forever (that was the bug).
+    gap = 60; health.sample(); health.sample();
     assert.equal(logs.filter(([, event]) => event === 'music.transport.degraded').length, 1);
-    room.connection.ping.udp = 50; for (let n = 0; n < 4; n++) health.sample();
+    gap = 20; for (let n = 0; n < 4; n++) health.sample();
     assert.equal(logs.filter(([, event]) => event === 'music.transport.recovered').length, 1);
+    // Missed frames are the player's own dropout counter; surface them even when
+    // local delivery looks clean.
+    room.player.state.missedFrames = missed = 3; health.sample();
+    assert.equal(health.snapshot().missedFrames, missed);
   } finally { health.destroy(); }
 });

@@ -13,7 +13,7 @@ test('playback defaults to 192 kbps stereo and accepts higher rates with fixed 2
   const args=playbackEncoderArgs('fixture.ogg',{volume:0.35,bitrate:192000,offsetSeconds:12.34});
   const value=flag=>args[args.indexOf(flag)+1];
   assert.equal(value('-b:a'),'192000');assert.equal(value('-ac'),'2');assert.equal(value('-vbr'),'off');
-  assert.equal(value('-compression_level'),'0');assert.equal(value('-frame_duration'),'20');
+  assert.equal(value('-compression_level'),'10');assert.equal(value('-frame_duration'),'20');
   assert.equal(value('-ss'),'12.340');assert.equal(value('-af'),'volume=0.350000');assert.equal(args.at(-1),'pipe:1');
   assert.throws(()=>playbackEncoderArgs('fixture',{volume:NaN}),/無效/);
   assert.throws(()=>playbackEncoderArgs('fixture',{channels:6}),/聲道數/);
@@ -30,7 +30,7 @@ test('lossless cache and real 320/384 kbps Opus preserve separate stereo channel
     source=await pipeline.prepare(input,{allowLocalFile:true});assert(source.input.endsWith('audio.flac'));
     const probe=await runMusicProcess(tools.ffprobe,['-v','error','-show_entries','stream=codec_name,channels,sample_rate,bits_per_raw_sample','-of','json',source.input],{cwd:dir});
     const cached=JSON.parse(probe.stdout).streams[0];assert.equal(cached.codec_name,'flac');assert.equal(cached.channels,2);
-    assert.equal(cached.sample_rate,'48000');assert.equal(cached.bits_per_raw_sample,'24');
+    assert.equal(cached.sample_rate,'48000');assert.equal(cached.bits_per_raw_sample,'16');
     for(const kbps of [320,384]){
       const encoder=createMusicEncoder(source.input,{channels:2,bitrate:kbps*1000,volume:0.6});const chunks=[];
       try{for await(const chunk of encoder.stream)chunks.push(chunk);}finally{encoder.destroy();}
