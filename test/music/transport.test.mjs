@@ -4,18 +4,26 @@ import { Readable } from 'node:stream';
 import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from '../../src/channels/discord/music-transport.mjs';
 import { startMusicHealth } from '../../src/channels/discord/music-health.mjs';
 
-test('voice bitrate ignores the channel setting and only honours the codec ceiling', () => {
-  // A plain server reports 64 kbps, but that is a client-side setting Discord
-  // never applies to bot Opus streams — the requested rate wins.
-  assert.equal(voiceBitrate(64000), 192000);
-  assert.equal(voiceBitrate(64000, 128000), 128000);
-  assert.equal(voiceBitrate(undefined, 384000), 384000);
+test('the default bitrate follows the channel setting and the codec ceiling', () => {
+  // A plain server reports 64 kbps. Sending three times that costs bandwidth on
+  // every listener's uplink, so the default follows the channel; `/music bitrate`
+  // is the explicit override.
+  assert.equal(voiceBitrate(64000), 64000);
+  assert.equal(voiceBitrate(64000, 192000), 64000);
+  assert.equal(voiceBitrate(128000, 192000), 128000);
+  assert.equal(voiceBitrate(undefined, 192000), 192000);
   assert.equal(voiceBitrate(384000, 999000), 384000);
   assert.equal(voiceBitrate(384000, 320000, 2), 320000);
-  assert.equal(voiceBitrate(128000, 320000, 2), 320000);
   assert.equal(voiceBitrate(384000, 320000, 1), 256000);
   assert.equal(voiceBitrate(16000, 16000), 16000);
   assert.equal(voiceBitrate(8000, 8000), 8000);
+});
+
+test('an explicit bitrate ignores the channel setting but not the codec ceiling', () => {
+  assert.equal(voiceBitrate(64000, 192000, 2, { respectChannel: false }), 192000);
+  assert.equal(voiceBitrate(64000, 320000, 2, { respectChannel: false }), 320000);
+  assert.equal(voiceBitrate(64000, 999000, 2, { respectChannel: false }), 384000);
+  assert.equal(voiceBitrate(64000, 999000, 1, { respectChannel: false }), 256000);
 });
 
 function resourceLib(producer) {
@@ -34,7 +42,7 @@ test('Opus prebuffer is bounded and directly forwards externally encoded packets
   const audio = await createBufferedMusicResource(libs, 'normalized.ogg', { volume: 0.6, bitrate: 64000,
     encoderFactory:(input,options)=>{encoderOptions=options;return{stream:producer, destroy(){producer.destroy();}};} });
   try {
-    assert(audio.snapshot().bufferedFrames >= 24); assert(audio.snapshot().bufferedFrames <= 48);
+    assert(audio.snapshot().bufferedFrames >= 24); assert(audio.snapshot().bufferedFrames <= 72);
     assert.equal(encoderOptions.volume,0.6);assert.equal(encoderOptions.bitrate,64000);assert.equal(audio.snapshot().bitrate,64000);
     assert.equal(audio.resource.volume,undefined);assert.equal(audio.resource.encoder,undefined);
     assert.deepEqual(libs.calls.map(call => call.inlineVolume), [false, false]);

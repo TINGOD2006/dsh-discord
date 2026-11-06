@@ -8,22 +8,26 @@ import { createMusicEncoder, MUSIC_PLAYBACK_PROFILE, playbackBitrate, playbackCh
  *
  * `channelBitrate` is the voice channel's *client* setting (64 kbps on a plain
  * server, up to 384 kbps with boosts). Discord does not police a bot's Opus
- * stream against it, but clamping to it used to drag every ordinary channel
- * down to 64 kbps — below the source and below what the encoder can do. The
- * requested rate now wins and only the codec ceiling applies; the channel
- * number is still reported for the status lines.
+ * stream against it, but sending three times the channel's configured rate
+ * costs bandwidth on every listener's uplink and makes an already degraded
+ * network path worse. The default therefore follows the channel when it is
+ * known; `/music bitrate` is an explicit override that ignores it.
  */
-export function voiceBitrate(channelBitrate, requestedBitrate = MUSIC_PLAYBACK_PROFILE.bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels) {
+export function voiceBitrate(channelBitrate, requestedBitrate = MUSIC_PLAYBACK_PROFILE.bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels,
+  { respectChannel = true } = {}) {
   const requested = Number.isFinite(requestedBitrate) && requestedBitrate > 0
     ? requestedBitrate
     : MUSIC_PLAYBACK_PROFILE.bitrate;
-  return playbackBitrate(requested, channels);
+  const ceiling = playbackBitrate(requested, channels);
+  if (!respectChannel) return ceiling;
+  const channel = Number.isFinite(channelBitrate) && channelBitrate > 0 ? channelBitrate : null;
+  return channel === null ? ceiling : Math.min(ceiling, playbackBitrate(channel, channels));
 }
 
 /** A bounded packet queue decouples short encoder/I/O stalls from the 20ms player clock. */
 export async function createBufferedMusicResource(libs, input, { volume, bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels, metadata, signal,
   offsetSeconds = 0, encoderFactory = createMusicEncoder,
-  bufferFrames = 48, prebufferFrames = 24, timeoutMs = 5000 } = {}) {
+  bufferFrames = 72, prebufferFrames = 24, timeoutMs = 5000 } = {}) {
   if (signal?.aborted) throw abortError();
   const count = playbackChannels(channels);
   const encoder = encoderFactory(input, { volume, bitrate: playbackBitrate(bitrate, count), channels: count, offsetSeconds, signal });
@@ -33,7 +37,16 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
   const buffer = new PassThrough({ objectMode: true, highWaterMark: bufferFrames });
   let resource, destroyed = false, streamError;
   const stats = { framesRead: 0, sourceStarved: 0, maxReadGapMs: 0 };
-  let lastRead = null;
+  // A short ring of read intervals: the P95 separates the unavoidable Windows
+  // 15.6 ms timer quantisation from a real stall in the encoder or the pipe.
+  const gapRing = new Float64Array(256);
+  let gapIndex = 0, gapCount = 0, lastRead = null;
+  const gapP95 = () => {
+    if (!gapCount) return 0;
+    const size = Math.min(gapCount, gapRing.length);
+    const sorted = Array.from(gapRing.subarray(0, size)).sort((a, b) => a - b);
+    return Math.round(sorted[Math.min(size - 1, Math.floor(size * 0.95))]);
+  };
   const fail = error => { streamError = error; buffer.destroy(error); };
   producer.playStream.on('error', fail);
   encoder.stream.on('error', fail);
@@ -67,7 +80,11 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
     const read = resource.read.bind(resource);
     resource.read = () => {
       const now = performance.now();
-      if (lastRead !== null) stats.maxReadGapMs = Math.max(stats.maxReadGapMs, now - lastRead);
+      if (lastRead !== null) {
+        const gap = now - lastRead;
+        stats.maxReadGapMs = Math.max(stats.maxReadGapMs, gap);
+        gapRing[gapIndex++ % gapRing.length] = gap; gapCount++;
+      }
       lastRead = now;
       const packet = read();
       if (packet) stats.framesRead++;
@@ -76,7 +93,7 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
     };
     if (signal?.aborted) throw abortError();
     return { resource, destroy, offsetSeconds, resetTiming: () => { lastRead = null; },
-      snapshot: () => ({ ...stats, maxReadGapMs: Math.round(stats.maxReadGapMs), bufferedFrames: buffer.readableLength,
+      snapshot: () => ({ ...stats, maxReadGapMs: Math.round(stats.maxReadGapMs), readGapP95Ms: gapP95(), bufferedFrames: buffer.readableLength,
         bufferedMs: buffer.readableLength * 20, bitrate: playbackBitrate(bitrate, count), channels: count, encoder: 'ffmpeg', inlineEncoding: false }) };
   } catch (error) { destroy(); throw error; }
 }

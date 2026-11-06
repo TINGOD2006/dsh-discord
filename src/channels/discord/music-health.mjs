@@ -16,13 +16,15 @@ export function startMusicHealth(room, log, { intervalMs = 10000 } = {}) {
     if (udpPingMs !== null) lastUdp = udpPingMs;
     const sourceStarved = Math.max(0, audio.sourceStarved - lastStarved); lastStarved = audio.sourceStarved;
     latest = { udpPingMs, wsPingMs, udpJitterMs, execution: isMainThread ? 'main' : 'worker', eventLoopMaxMs: metric(delay.max / 1e6),
-      framesRead: audio.framesRead, sourceStarved, maxReadGapMs: audio.maxReadGapMs, bufferedMs: audio.bufferedMs,
+      framesRead: audio.framesRead, sourceStarved, maxReadGapMs: audio.maxReadGapMs, readGapP95Ms: metric(audio.readGapP95Ms), bufferedMs: audio.bufferedMs,
       bitrate: audio.bitrate, channels: [1, 2].includes(audio.channels) ? audio.channels : null, encoder: audio.encoder === 'ffmpeg' ? 'ffmpeg' : null,
       inlineEncoding: audio.inlineEncoding === false ? false : null,
       connectionState: room.connection?.state?.status ?? 'unknown', rtpPacketLoss: null };
     delay.reset();
     log('info', 'music.transport.stats', latest);
-    const problem = sourceStarved > 0 || latest.eventLoopMaxMs > 100 || udpPingMs > 500 || udpJitterMs > 100;
+    // A read gap above ~45 ms means the 20 ms clock missed a whole frame, which
+    // is a local stall rather than the normal 15.6 ms Windows timer quantisation.
+    const problem = sourceStarved > 0 || latest.eventLoopMaxMs > 100 || udpPingMs > 500 || udpJitterMs > 100 || latest.maxReadGapMs > 45;
     if (problem) {
       healthy = 0;
       if (!degraded) { degraded = true; log('warn', 'music.transport.degraded', latest); }

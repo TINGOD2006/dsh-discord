@@ -8,11 +8,13 @@ test('the default target is 192 kbps stereo', () => {
   assert.equal(MUSIC_PLAYBACK_PROFILE.channels, 2);
 });
 
-test('a plain 64 kbps channel no longer drags the stream down to 64 kbps', () => {
-  // The channel bitrate is a client-side setting; clamping to it made every
-  // unboosted server sound worse than the source.
-  assert.equal(voiceBitrate(64000, 192000, 2), 192000);
+test('a plain 64 kbps channel is the default target, and an explicit rate overrides it', () => {
+  // The channel bitrate is a client-side setting Discord does not enforce, but
+  // sending three times the configured rate costs bandwidth on every listener's
+  // uplink. The default follows the channel; `/music bitrate` is the override.
+  assert.equal(voiceBitrate(64000, 192000, 2), 64000);
   assert.equal(voiceBitrate(undefined, 192000, 2), 192000);
+  assert.equal(voiceBitrate(64000, 192000, 2, { respectChannel: false }), 192000);
 });
 
 test('the codec ceiling still applies', () => {

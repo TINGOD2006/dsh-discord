@@ -35,7 +35,7 @@ test('chat music tool reaches the real manager with voice checks and accepted pl
     try{return await createMusicTool().execute({action:'play',query:'song',reason:'目前使用者要求播放song'},{agent:{session}});}finally{close();}
   };
   try{
-    await invoke('user');await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,192000);
+    await invoke('user');await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,128000);
     await assert.rejects(invoke('other'),/目前所在/);assert.equal(f.played.length,1);
     assert.match((await f.manager.nowplaying(f.request)).message,/song/);
   }finally{await f.manager.destroy();}
@@ -132,10 +132,19 @@ test('transport reconnect pauses and resumes the same track without clearing its
   }finally{await f.manager.destroy();}
 });
 
-test('voice channel bandwidth never caps the music encoder bitrate',async()=>{
+test('the default bitrate follows the voice channel instead of tripling it',async()=>{
   const f=fixture();f.guild.channels.cache.set('voice',{bitrate:16000});
-  try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,192000);}
+  try{await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);assert.equal(f.played[0].encoder.bitrate,16000);}
   finally{await f.manager.destroy();}
+});
+
+test('an explicit bitrate overrides the voice channel setting',async()=>{
+  const f=fixture();f.guild.channels.cache.set('voice',{bitrate:16000});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    await f.manager.bitrate({...f.request,kbps:192});
+    assert.equal(f.transports[1].options.bitrate,192000);
+  }finally{await f.manager.destroy();}
 });
 
 test('bitrate rebuild preserves playback position, volume and pause state, and applies to subsequent songs',async()=>{
@@ -155,7 +164,7 @@ test('bitrate rebuild preserves playback position, volume and pause state, and a
   }finally{await f.manager.destroy();}
 });
 
-test('bitrate ignores the channel setting, respects the caller, validates values, and avoids redundant rebuilds',async()=>{
+test('an explicit bitrate ignores the channel setting, respects the caller, validates values, and avoids redundant rebuilds',async()=>{
   const f=fixture({nativeTransport:true});f.guild.channels.cache.set('voice',{bitrate:64000});
   try{
     await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);

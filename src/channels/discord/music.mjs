@@ -138,7 +138,7 @@ export class MusicManager {
   }
   #room(id) {
     if (!this.#guilds.has(id)) this.#guilds.set(id, { id, tracks: [], current: null, player: null, connection: null, channelId: null,
-      textChannelId: null, resource: null, transport: null, health: null, bitrate: voiceBitrate(), requestedBitrate: MUSIC_PLAYBACK_PROFILE.bitrate, channelBitrate: null, channels: MUSIC_PLAYBACK_PROFILE.channels, recoveryController: null,
+      textChannelId: null, resource: null, transport: null, health: null, bitrate: voiceBitrate(), requestedBitrate: MUSIC_PLAYBACK_PROFILE.bitrate, channelBitrate: null, channels: MUSIC_PLAYBACK_PROFILE.channels, bitrateExplicit: false, recoveryController: null,
       state: 'idle', volume: MUSIC_DEFAULT_VOLUME, leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false });
     return this.#guilds.get(id);
   }
@@ -167,7 +167,7 @@ export class MusicManager {
     const permissions = voiceChannel?.permissionsFor?.(guild.members?.me);
     if (permissions && (!permissions.has('Connect') || !permissions.has('Speak'))) throw new Error('機器人需要該語音頻道的 Connect 與 Speak 權限');
     room.channelBitrate = voiceChannel?.bitrate ?? null;
-    room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels);
+    room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels, { respectChannel: !room.bitrateExplicit });
     const connection = libs.joinVoiceChannel({ channelId: voiceChannelId, guildId: guild.id, group: `dsh-music-${client.user?.id ?? 'bot'}`,
       adapterCreator: guild.voiceAdapterCreator, selfDeaf: true, selfMute: false });
     room.connection = connection; room.channelId = voiceChannelId;
@@ -350,7 +350,15 @@ export class MusicManager {
     const encoder = frames?.encoder === 'ffmpeg' ? `FFmpeg 子程序／${frames.channels === 2 ? '雙聲道立體聲' : '單聲道'}，主程序不重編碼` : '尚無播放資料';
     const execution = isMainThread ? '主程序' : '獨立 worker';
     const fallbackLimit = `${voiceBitrate() / 1000} kbps`;
-    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps\n頻道設定：${room.channelBitrate ? `${room.channelBitrate / 1000} kbps（客戶端設定，不限制本機編碼）` : `尚無資料（本機以 ${fallbackLimit} 編碼）`}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。` };
+    const mode = room.bitrateExplicit ? '手動指定' : '跟隨頻道';
+    const channel = room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : `尚無資料（本機以 ${fallbackLimit} 編碼）`;
+    const wsPing = Number.isFinite(ping?.ws) ? ping.ws : null;
+    // A high voice-WebSocket RTT is the only local hint that the UDP path is
+    // degraded; the bot cannot see the receiver's RTP loss.
+    const network = wsPing !== null && wsPing > 150
+      ? `\n網路提醒：語音 WebSocket 往返 ${Math.round(wsPing)} ms 偏高，UDP 音訊可能斷續；可先 /music bitrate 降低碼率，或在 Discord 頻道設定換一個語音區域。`
+      : '';
+    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nUDP 往返：${number(ping?.udp)} ms；WebSocket：${number(ping?.ws)} ms\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps（${mode}）\n頻道設定：${channel}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；讀取間隔 P95：${number(frames?.readGapP95Ms)} ms；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\nUDP 往返不是 RTP 丟包率；尚無接收端丟包統計。${network}` };
   }
   async volume({ channelId, senderId, percent, deltaPercent, signal }) {
     const { room } = await this.#context(channelId, senderId, { signal });
@@ -372,10 +380,12 @@ export class MusicManager {
     if (kbps !== undefined) {
       const voiceChannel = guild.channels?.cache.get(voiceChannelId) ?? await guild.channels?.fetch?.(voiceChannelId).catch(() => null);
       signal?.throwIfAborted();
-      const previous = { requestedBitrate: room.requestedBitrate, bitrate: room.bitrate };
+      const previous = { requestedBitrate: room.requestedBitrate, bitrate: room.bitrate, bitrateExplicit: room.bitrateExplicit };
       room.channelBitrate = voiceChannel?.bitrate ?? room.channelBitrate;
       room.requestedBitrate = kbps * 1000;
-      room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels);
+      // An explicit request wins over the channel setting; the default follows it.
+      room.bitrateExplicit = true;
+      room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels, { respectChannel: false });
       if (room.current && room.resource && room.bitrate !== previous.bitrate) {
         await this.#replacePlayback(room, signal, () => Object.assign(room, previous));
       }
@@ -391,7 +401,7 @@ export class MusicManager {
       const previous = { channels: room.channels, bitrate: room.bitrate };
       room.channelBitrate = voiceChannel?.bitrate ?? room.channelBitrate;
       room.channels = count;
-      room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels);
+      room.bitrate = voiceBitrate(room.channelBitrate, room.requestedBitrate, room.channels, { respectChannel: !room.bitrateExplicit });
       if (room.current && room.resource && (room.channels !== previous.channels || room.bitrate !== previous.bitrate)) {
         await this.#replacePlayback(room, signal, () => Object.assign(room, previous));
       }
@@ -402,17 +412,18 @@ export class MusicManager {
     const frames = room.transport?.snapshot();
     const actual = frames?.bitrate;
     const rate = actual ?? room.bitrate;
-    // The channel's bitrate is a listener-side setting Discord never applies to
-    // bot Opus streams, so it is reported as information and never as a cap.
-    const channel = room.channelBitrate
-      ? `${room.channelBitrate / 1000} kbps（客戶端設定，不限制本機編碼）`
-      : '尚無資料';
+    const channel = room.channelBitrate ? `${room.channelBitrate / 1000} kbps` : '尚無資料';
     const channels = frames?.channels ?? room.channels;
     const ceiling = channels === 1 ? 256 : 384;
-    const hint = room.requestedBitrate > rate
+    // The default follows the channel so an unboosted 64 kbps server is not sent
+    // three times its configured rate; `/music bitrate` is the explicit override.
+    const mode = room.bitrateExplicit
+      ? '手動指定（不受頻道設定限制）'
+      : `跟隨頻道設定${room.channelBitrate ? `（${room.channelBitrate / 1000} kbps）` : ''}`;
+    const hint = room.bitrateExplicit && room.requestedBitrate > rate
       ? `\n目標高於目前輸出；編碼上限為 ${ceiling} kbps（${channels === 1 ? '單聲道' : '雙聲道'}）。`
       : '';
-    return { message: `音樂目標碼率：${room.requestedBitrate / 1000} kbps\n${actual ? '目前輸出' : '預計輸出'}：${rate / 1000} kbps；頻道設定：${channel}\n聲道：${channels === 2 ? '2（雙聲道立體聲）' : '1（單聲道）'}${hint}\n設定沿用至離開語音或外掛重載；/music channels ${MUSIC_PLAYBACK_PROFILE.channels} 及 /music bitrate ${MUSIC_PLAYBACK_PROFILE.bitrate / 1000} 可恢復預設。` };
+    return { message: `音樂目標碼率：${room.requestedBitrate / 1000} kbps\n碼率模式：${mode}\n${actual ? '目前輸出' : '預計輸出'}：${rate / 1000} kbps；頻道設定：${channel}\n聲道：${channels === 2 ? '2（雙聲道立體聲）' : '1（單聲道）'}${hint}\n設定沿用至離開語音或外掛重載；離開語音頻道後回到跟隨頻道設定。` };
   }
   async #replacePlayback(room, signal, rollback, { offsetSeconds: explicitOffset } = {}) {
     const track = room.current, previous = room.transport, oldResource = room.resource, previousState = room.state;
