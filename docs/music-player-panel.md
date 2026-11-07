@@ -7,6 +7,8 @@ Discord 訊息本身沒有滑桿元件，所以「可拖動」的那一半放在
 - 有人點歌、歌曲開始播放時，bot 在該文字頻道貼一張卡片（embed）：曲名、時間軸、播放狀態、佇列數量。
 - 卡片按鈕（`music:<action>:<guildId>`）：暫停／繼續、下一首、佇列（只有按的人看得到）、刷新、移除。
 - 暫停／繼續／下一首要求按的人**自己也在 bot 所在的語音頻道**，規則和 `/music` 指令一致；不在頻道裡的人按了只會收到一則只有自己看得到的提示，不會影響播放。卡片貼在文字頻道，能看到卡片的人不一定在聽，先前任何讀者都能停掉音樂。
+  - 判定由音樂 worker 自己的 discord.js client 快取回答（`guild.voiceStates.cache.get(userId).channelId`），和斜線指令同一個來源。**不要從 interaction 封包讀**：`INTERACTION_CREATE.member` 是 `APIGuildMember`，只有 `deaf`／`mute`，沒有 `voice.channel_id`，讀了永遠是 `undefined`（2026-11-07 就是這樣讓每一顆按鈕都被拒）。
+  - 拒絕原因記在日誌的 `rule` 欄位（`not-in-voice`／`other-channel`），不是 `reason`——日誌管線會把 `reason` 欄位脫敏。
 - 「移除」只刪卡片，不會停止播放。
 - 播放狀態變化時卡片自動更新；播放中每 2.5 秒刷新一次時間軸；卡片被手動刪掉後，下一次狀態變化會重新貼一張。
 - 播放停止或離開語音後，卡片停在「目前沒有播放中的歌曲」，不再刷新。

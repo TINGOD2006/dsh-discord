@@ -538,20 +538,46 @@ export class MusicManager {
   }
 
   /**
+   * The clicker's live voice channel, read from this client's own gateway cache.
+   *
+   * The host cannot answer this: `INTERACTION_CREATE`'s `member` is a plain
+   * `APIGuildMember`, which carries only `deaf`/`mute` — there is no
+   * `voice.channel_id`, so a host-side read is always `undefined` and every
+   * button looked like "not in voice" (2026-11-07, every card press refused).
+   * The worker already runs a discord.js client with the GuildVoiceStates intent
+   * and resolves slash-command senders the same way, so both paths now agree.
+   */
+  async #voiceChannelOf(guildId, userId) {
+    if (!userId) return null;
+    const client = this.#client;
+    if (!client?.guilds) return null;
+    try {
+      const guild = client.guilds.cache?.get(String(guildId))
+        ?? await client.guilds.fetch?.(String(guildId))?.catch?.(() => null);
+      const channelId = guild?.voiceStates?.cache?.get(String(userId))?.channelId;
+      return channelId ? String(channelId) : null;
+    } catch { return null; }
+  }
+
+  /**
    * Console path: a guild id, with no text channel or sender to resolve.
    *
-   * Card buttons also land here, so `voiceChannelId` carries the clicker's voice
-   * state. It stays `undefined` for the loopback console (which is already gated
-   * by a per-boot token); a button press always passes a value, and `null` means
-   * "not in a voice channel" — those presses are refused, exactly like the slash
-   * commands refuse them at `#context`.
+   * Card buttons also land here and pass `requireVoice: true`, because the card is
+   * readable by the whole text channel: only someone sitting in the bot's voice
+   * channel may change playback. The loopback console omits it (it is already gated
+   * by a per-boot token), so the console keeps working.
    */
-  async control(guildId, action, { positionMs, userId = null, voiceChannelId } = {}) {
+  async control(guildId, action, { positionMs, userId = null, requireVoice = false } = {}) {
     const room = this.#guilds.get(String(guildId));
     if (!room || room.leaving) return { ok: false, message: '目前沒有播放中的歌曲' };
-    if (voiceChannelId !== undefined && (!voiceChannelId || !room.channelId || String(voiceChannelId) !== String(room.channelId))) {
-      this.#log('info', 'music.card.refused', { guildId: String(guildId), action, userId, reason: voiceChannelId ? 'other-channel' : 'not-in-voice' });
-      return { ok: false, message: '請先加入機器人目前所在的語音頻道再操作音樂' };
+    if (requireVoice) {
+      const voiceChannelId = await this.#voiceChannelOf(guildId, userId);
+      if (!voiceChannelId || !room.channelId || voiceChannelId !== String(room.channelId)) {
+        // `rule` rather than `reason`: the log pipeline redacts a `reason` field,
+        // which left every refusal undiagnosable.
+        this.#log('info', 'music.card.refused', { guildId: String(guildId), action, userId, rule: voiceChannelId ? 'other-channel' : 'not-in-voice' });
+        return { ok: false, message: '請先加入機器人目前所在的語音頻道再操作音樂' };
+      }
     }
     if (action === 'pause') {
       if (room.state !== 'playing') return { ok: false, message: '目前沒有可暫停的歌曲' };

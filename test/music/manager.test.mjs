@@ -10,7 +10,7 @@ async function until(fn){for(let n=0;n<200;n++){if(fn())return;await tick();}thr
 function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice,nativeTransport=false,customBufferedFactory,deferredPlaying=false}={}) {
   const played=[],connections=[],notices=[],released=[],transports=[];
   const guild={id:'guild',voiceStates:{cache:new Map([['user',{channelId:'voice'}],['other',{channelId:'elsewhere'}]])},voiceAdapterCreator:{},channels:{cache:new Map()}};
-  class Client extends EventEmitter {channels={cache:new Map([['text',{guild}],['text-two',{guild}]])};user={id:'bot'};async login(){return login?.();}isReady(){return true;}destroy(){}}
+  class Client extends EventEmitter {channels={cache:new Map([['text',{guild}],['text-two',{guild}]])};guilds={cache:new Map([['guild',guild]])};user={id:'bot'};async login(){return login?.();}isReady(){return true;}destroy(){}}
   class Player extends EventEmitter {state={status:'idle'};play(resource){const old=this.state;this.paused=false;this.state={status:deferredPlaying?'buffering':'playing',resource};played.push(resource);this.emit('stateChange',old,this.state);if(deferredPlaying)setTimeout(()=>{if(this.state.resource===resource){const old=this.state;this.state={status:'playing',resource};this.emit('stateChange',old,this.state);}},1);}stop(){const old=this.state;this.state={status:'idle'};this.emit('stateChange',old,this.state);}pause(){if(this.state.status==='buffering')return false;this.paused=true;return true;}unpause(){this.paused=false;return true;}}
   const runtime={Client,GatewayIntentBits:{Guilds:1,GuildVoiceStates:128},StreamType:{OggOpus:'ogg'},AudioPlayerStatus:{Idle:'idle',Playing:'playing'},VoiceConnectionStatus:{Ready:'ready',Destroyed:'destroyed',Disconnected:'disconnected',Signalling:'signalling',Connecting:'connecting'},NoSubscriberBehavior:{Pause:'pause'},
     entersState:async(connection)=>{if(ready)await ready();return connection;},
@@ -435,20 +435,40 @@ test('a paused song stays paused when its replacement resource becomes readable 
 test('card controls require the clicker to be in the bot voice channel, while the console path stays open',async()=>{
   const f=fixture();try{
     await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
-    // A card button press always carries the clicker's voice state. Someone who is
-    // not in a voice channel, or is in a different one, must not be able to pause
-    // the room's playback — the card is readable by the whole text channel.
-    assert.deepEqual(await f.manager.control('guild','pause',{userId:'other',voiceChannelId:null}),
+    // A card button press always asks the manager to verify the clicker's voice
+    // state. Someone who is not in a voice channel, or is in a different one,
+    // must not be able to pause the room's playback — the card is readable by the
+    // whole text channel.
+    assert.deepEqual(await f.manager.control('guild','pause',{userId:'other',requireVoice:true}),
       {ok:false,message:'請先加入機器人目前所在的語音頻道再操作音樂'});
-    assert.equal((await f.manager.control('guild','pause',{userId:'other',voiceChannelId:'elsewhere'})).ok,false);
+    assert.equal((await f.manager.control('guild','pause',{userId:'absent',requireVoice:true})).ok,false);
     assert.equal((await f.manager.snapshot('guild')).state,'playing');
     // The listener in the bot's channel may control it.
-    assert.equal((await f.manager.control('guild','pause',{userId:'user',voiceChannelId:'voice'})).ok,true);
+    assert.equal((await f.manager.control('guild','pause',{userId:'user',requireVoice:true})).ok,true);
     assert.equal((await f.manager.snapshot('guild')).state,'paused');
-    // The loopback console omits voiceChannelId entirely and is already gated by a
+    // The loopback console omits requireVoice entirely and is already gated by a
     // per-boot token, so it must keep working.
     assert.equal((await f.manager.control('guild','resume')).ok,true);
     assert.equal((await f.manager.snapshot('guild')).state,'playing');
+  }finally{await f.manager.destroy();}
+});
+
+test('the clicker voice channel comes from the worker gateway cache, not the interaction payload',async()=>{
+  // 2026-11-07: every card button was refused while the clicker sat in the bot's
+  // channel. `INTERACTION_CREATE.member` is an APIGuildMember, which carries only
+  // deaf/mute — reading `member.voice.channel_id` there is always undefined, so
+  // the manager must resolve the voice state from its own client cache.
+  const f=fixture();try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    // 'user' is cached in the bot's channel; 'other' is cached elsewhere.
+    assert.equal((await f.manager.control('guild','pause',{userId:'user',requireVoice:true})).ok,true);
+    assert.equal((await f.manager.control('guild','resume',{userId:'other',requireVoice:true})).ok,false);
+    // A member cached after the press is still resolved live, not snapshotted.
+    f.guild.voiceStates.cache.set('late',{channelId:'voice'});
+    assert.equal((await f.manager.control('guild','resume',{userId:'late',requireVoice:true})).ok,true);
+    // With no clicker id there is nothing to resolve, so the press is refused
+    // rather than silently allowed.
+    assert.equal((await f.manager.control('guild','pause',{userId:'',requireVoice:true})).ok,false);
   }finally{await f.manager.destroy();}
 });
 

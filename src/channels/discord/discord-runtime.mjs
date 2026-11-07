@@ -1863,8 +1863,14 @@ export class DiscordRuntime {
       // held to the same rule as the slash commands: only someone sitting in the
       // bot's voice channel may change playback. Without this, any reader of the
       // card could stop the music (see the 2026-11-06 14:06 resume attempt).
-      const voiceChannelId = interaction?.member?.voice?.channel_id ?? interaction?.member?.voice?.channelId ?? null;
-      const result = await music.control(guildId, action, { userId, voiceChannelId: voiceChannelId ? String(voiceChannelId) : null });
+      //
+      // The voice state is deliberately NOT read here: an interaction's `member` is
+      // a plain `APIGuildMember`, which has only `deaf`/`mute` and no
+      // `voice.channel_id` at all — reading it made every press look like
+      // "not in voice" (2026-11-07). The music worker owns a discord.js client
+      // with the GuildVoiceStates intent and answers the question from its cache,
+      // which is the same source the slash commands use.
+      const result = await music.control(guildId, action, { userId, requireVoice: true });
       if (result?.ok === false) {
         await reply({ type: 4, data: { flags: 64, content: String(result.message ?? '無法操作').slice(0, 1900) } });
         this.#logger.event?.('music.card.action', { action, guildId, userId, ok: false });
