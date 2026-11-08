@@ -107,7 +107,7 @@ export class MusicAudioPipeline {
   #root; #tools; #run; #select; #log; #jobs = new Map(); #audioJobs = new Map(); #resolved = new Map(); #pins = new Map();
   #busy = 0; #waiting = []; #limit; #maxSeconds; #maxBytes; #maxEntries;
   constructor({ cacheDir = join(pluginRoot, '.dsh-im', 'music'), tools = musicTools(), run = runMusicProcess,
-    selectCandidate = null, logger = null, concurrency = 2, maxDurationSec = 1800, maxCacheBytes = 512 * 1024 * 1024, maxCacheEntries = 64 } = {}) {
+    selectCandidate = null, logger = null, concurrency = 2, maxDurationSec = 3600, maxCacheBytes = 512 * 1024 * 1024, maxCacheEntries = 64 } = {}) {
     this.#root = resolve(cacheDir); this.#tools = tools; this.#run = run; this.#select = selectCandidate; this.#log = logger;
     this.#limit = concurrency; this.#maxSeconds = maxDurationSec; this.#maxBytes = maxCacheBytes; this.#maxEntries = maxCacheEntries;
   }
