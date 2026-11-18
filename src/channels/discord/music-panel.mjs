@@ -94,6 +94,7 @@ export function renderPanel(snapshot = {}, { guildId = '', controlUrl = null } =
   }
   const queue = Array.isArray(snapshot.queue) ? snapshot.queue : [];
   const meta = [STATE_TEXT[state], `循環：${snapshot.loop === 'one' ? '單曲' : snapshot.loop === 'all' ? '全部' : '關閉'}`];
+  if (snapshot.stream) meta.push('串流（未正規化）');
   if (queue.length) meta.push(`佇列：${queue.length} 首`);
   lines.push(meta.join(' · '));
 

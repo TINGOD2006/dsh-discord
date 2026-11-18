@@ -71,12 +71,13 @@
 
 - YouTube 單曲網址經主機名及影片 ID 驗證後直接使用。
 - Bilibili BV／av 影片及 au 音訊直接下載原站音軌；b23 分享連結解析為支援的原站連結後走相同流程，不經 YouTube 搜尋或 DSH 選歌。移除追蹤參數，保留 `p`，未指定時固定第一 P；不同分 P 使用不同快取。擷取沿用本機 yt-dlp 及 `tools/ytdlp-plugins` 相容擷取器。
+- 貼上的分享文案（例如「【歌名】https://www.bilibili.com/video/BV…?share_source=…」）會先取出文中第一條連結再解析，不會把整段文字丟去 YouTube 搜尋；連結以外的文字會去掉括號與前後標點後當作顯示標題，因此佇列、準備中訊息與失敗訊息都只顯示歌名，不會回貼整串網址。
 - 關鍵詞先取得最多五個真實 YouTube 候選，再交由 DSH 選擇最符合的版本。其他網頁會先嘗試取得曲名，再走同一個搜尋及 DSH 流程。
 - DSH 只接受候選清單中的影片 ID，不能回傳任意執行命令或自行捏造下載網址。選歌使用獨立 Session；停止音樂只取消音樂工作，不操作聊天的 AI 任務。
 - 音樂選歌 Session 的工作目錄固定在本專案 `.dsh-im/music/dsh-workspace`。生產環境的 bot-scoped `createSession()` 會強制套用聊天工作區，因此此功能使用既有公開 `session.create` RPC 的 `cwd` 模式建立獨立工作區。沒有更動共用的聊天工作區邏輯。
 - DSH 選歌逾時為十秒；無效結果或服務暫時不可用時，改用已驗證的搜尋首選，並在播放通知中說明。每個 Session 最多選歌八次，避免累積很長的提示歷史。
 - 先完整下載並量測音量，再以整首固定的線性增益調整至約 −20 LUFS，峰值保留 3 dB 餘量；不使用會壓縮原曲動態的自動增益回退。高動態曲目若須優先限制峰值，會比目標更安靜。正規化快取改為 48 kHz、16-bit 雙聲道 FLAC；實際播放由 FFmpeg 子程序套用預設 60% 音量並按所選聲道與碼率編碼。輸出是 ≤384 kbps 的 Opus，16-bit 的精度已遠超過所需；實測同一首 4.6 分鐘曲目由 24-bit 的 34.6 MB 降到 16.5 MB，編碼耗時 275 ms → 265 ms 幾乎不變，512 MB 上限下可存的曲目從約 14 首增加到 31 首。快取版本為 4，不沿用舊的 24-bit 或 128 kbps Opus 快取；首次重播會重新處理，無損快取較大，仍沿用原有容量及期限清理規則。
-- 網站僅回傳試聽或截短音訊時，會比較音訊時長並拒絕播放。直播與超過一小時的音訊會回報限制。
+- 網站僅回傳試聽或截短音訊時，會比較音訊時長並拒絕播放。直播會回報限制；超過一小時的音訊改用串流播放（不整首下載、不做音量正規化、不進快取），開播訊息會說明，seek 仍可用但較慢。
 - 支援既有本機音訊檔及公開音訊直連；同樣先處理音量。一般網頁不會直接當成音訊傳給播放器；受限、無法辨識或會重新導向的網頁可能需要改用歌曲關鍵詞。
 
 ## 效能與穩定性
@@ -87,6 +88,11 @@
 - 預處理下一首；相同歌曲共用處理工作與正規化音訊，快取不會重複下載或轉檔。
 - 正規化快取最多 64 首、512 MB、保留一天；正在使用的檔案不會被回收。檔案放在 `.dsh-im/music/`。
 - 同時最多兩個下載／正規化工作。網路操作、子程序、DSH 選歌及語音 Ready 等待都有期限。
+- 串流曲目邊下邊播，網路就是播放路徑的一部分：HTTP 斷線會自動重連並續傳，讀取逾時會失敗而不是卡住，損壞封包會跳過；封包緩衝加深到約 5 秒（本地檔案維持 1.44 秒），開播前先預備約 1 秒，讓網路抖動不至於變成斷音。串流不進快取，重播仍會重新讀取來源。
+- Bilibili 的 CDN 對不帶 `Range` 的完整 GET／HEAD 回 HTTP 567（反爬），因此 Bilibili 下載固定加 `--add-header "Range: bytes=0-"`；YouTube 及其他來源維持原本請求。串流路徑由 FFmpeg 自行送 `Range`，不需要額外標頭。
+- 串流媒體網址是簽名且會過期，長曲排隊可能等到失效。串流建立失敗時，YouTube／Bilibili 曲目會重新擷取一次網址再重試一次；本機檔案與其他來源不重試，直接回報原因。
+- 串流播到一半斷線（例如 145 分鐘的合輯在第 40 分鐘遇到網路抖動）時，YouTube／Bilibili 曲目會重新擷取網址，並從已播到的位置續播，最多三次；其他來源維持原本「跳下一首」的行為。續播位置以播放器實際讀出的封包數換算（每包 20 ms），因此不會從頭重播。
+- 編碼器失敗會回報 FFmpeg 的最後一行 stderr（去掉網址與本機路徑），不再只顯示「沒有可播放的 Opus 封包」。FFmpeg 會先結束 stdout 才回報離開碼，因此失敗原因透過獨立的 promise 傳遞，不依賴已結束的串流事件。
 - 跳歌、停止、離開會取消相應工作；若另一個伺服器也在使用同一處理工作，單一使用者的取消不會中斷其他使用者。
 - 語音斷線會嘗試恢復；失敗時清除佇列並通知。沒有待播歌曲三分鐘後自動離開。
 - 使用套件原有的 `@discordjs/voice`、DAVE 與 Opus 支援；沒有新增外部 AI 服務或複製 API 金鑰／Discord Token。
@@ -148,6 +154,24 @@ node scripts/smoke-music-audio.mjs 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
 修正 Bilibili 連結先取標題再搜 YouTube、導致「找不到可播放的 YouTube 歌曲」的路由。以回報影片 `BV1z44y1N7UH` 完成真實下載、完整性檢查、音量分析、正規化及 FFmpeg 播放編碼：269.916 秒、−20 LUFS、真峰值 −8.22 dB、32 kbps 單聲道，輸出 13,496 個 Opus 封包，約耗時 12.2 秒。此測試未登入 Discord，不能代替頻道試聽。
 
 新增回歸測試覆蓋追蹤參數清理、分 P 保留與快取隔離、b23 轉址、原站下載及失敗時不轉到 YouTube。此機器的 yt-dlp 2026.10.21 單獨擷取該片會失敗；既有 AudioUsbStudio Bilibili 相容外掛已在音樂管線的 `--plugin-dirs` 中啟用，真實驗證使用該外掛，未修改 AudioUsbStudio 檔案。
+
+### Bilibili 下載被 CDN 拒絕（HTTP 567）
+
+回報「目前無法播放 Bilibili 的音頻」後，以 `BV1z44y1N7UH` 重現：yt-dlp 下載階段得到 `HTTP Error 567: Unknown Status`，但 `--dump-single-json` 擷取正常。用 curl 對同一條 `upos-sz-mirrorcosov.bilivideo.com` 網址測試：帶 `Referer` 與瀏覽器 UA 且加 `Range: bytes=0-` 回 206 並取得完整 10,765,898 bytes；不帶 `Range` 的完整 GET 回 567（7,351 bytes 的錯誤 HTML）；`HEAD` 也回 567；沒有 `Referer` 的 range 回 403。結論是 CDN 對「無 Range 的 GET／HEAD」做反爬，ranged GET 正常。
+
+修正為 Bilibili 下載固定加 `--add-header "Range: bytes=0-"`（`--http-header` 不是有效選項）。修正後以全新快取目錄實測 `MusicAudioPipeline.prepare('https://www.bilibili.com/video/BV1z44y1N7UH')`：13,237 ms 完成下載、正規化與 FLAC 快取，269.909 秒，`cacheHit: false`。串流路徑另以 FFmpeg 實測：不帶 UA 回 403，帶 `Referer`／UA 後正常輸出 Opus；FFmpeg 自己會送 `Range`，串流不需額外標頭。
+
+同時修正失敗原因被吞掉的問題：FFmpeg 會先結束 stdout 才回報離開碼，對已結束的串流 `destroy(error)` 是 no-op，因此編碼器失敗只會顯示「音訊沒有可播放的 Opus 封包」。現在編碼器以獨立 promise 傳遞失敗，並附上 stderr 最後一行（網址換成 `<url>`、本機路徑換成 `<path>`）；transport 在空封包前保留 300 ms 寬限，讓真正原因先到。
+
+### 分享文案被當成搜尋關鍵詞
+
+回報「無法播放bilibili音樂」時，實際錯誤是 `找不到可播放的 YouTube 歌曲`：使用者貼的是「【《驯龙少年谣》| BLG 2026全球总决赛应援曲】https://www.bilibili.com/video/BV1mRW46XEdS/?share_source=…」，而 `#resolve` 只認「整段字串就是 URL」的輸入，於是整句被送進 `ytsearch5:`，自然沒有結果。
+
+修正為先以 `embeddedUrl()` 取出文中第一條 `http(s)` 連結（去掉結尾的句號、括號等標點），再走原本的 YouTube／Bilibili／音訊直連判斷。以同一段文案實測 `prepare()`：11,822 ms 完成下載、正規化與 FLAC 快取，361.387 秒，標題「《驯龙少年谣》｜BLG 2026全球总决赛应援曲」。
+
+同時補上 `#streamSource()` 遺漏的 `kind` 欄位：串流來源原本沒有 `kind`，導致開播重試與中斷續播的 `['youtube','bilibili'].includes(source.kind)` 永遠為 false，兩條復原路徑實際上都不會觸發。
+
+標題與連結再進一步分離：`splitShareText()` 回傳 `{ link, title }`，`#resolve()` 用 `link` 解析、用 `title` 當顯示名稱；`MusicManager.play()` 在入列時就把 `title` 寫進佇列項目，所以「正在準備歌曲並統一音量：…」「已加入音樂佇列：…」「無法播放「…」」都只顯示歌名。純網址輸入的 `title` 為空，會退回原本的網址或檔名；純關鍵詞輸入則原樣保留。
 
 ### 獨立播放 worker
 

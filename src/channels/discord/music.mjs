@@ -1,10 +1,10 @@
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isMainThread } from 'node:worker_threads';
-import { MusicAudioPipeline, musicTools, MUSIC_LOUDNESS } from './music-audio.mjs';
+import { MusicAudioPipeline, musicTools, MUSIC_LOUDNESS, splitShareText } from './music-audio.mjs';
 import { MUSIC_PLAYBACK_PROFILE } from './music-encoder.mjs';
 import { createDshMusicSelector } from './music-dsh.mjs';
-import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from './music-transport.mjs';
+import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate, MUSIC_STREAM_BUFFER } from './music-transport.mjs';
 import { startMusicHealth } from './music-health.mjs';
 import { MusicCommandLane, musicTask } from './music-command-lane.mjs';
 import { clampSeekTarget, formatClock, seekIsMeaningful } from './music-panel.mjs';
@@ -162,7 +162,7 @@ export class MusicManager {
   #room(id) {
     if (!this.#guilds.has(id)) this.#guilds.set(id, { id, tracks: [], current: null, player: null, connection: null, channelId: null,
       textChannelId: null, resource: null, transport: null, health: null, bitrate: voiceBitrate(), requestedBitrate: MUSIC_PLAYBACK_PROFILE.bitrate, channelBitrate: null, channels: MUSIC_PLAYBACK_PROFILE.channels, bitrateExplicit: false, recoveryController: null,
-      state: 'idle', volume: MUSIC_DEFAULT_VOLUME, leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false });
+      state: 'idle', volume: MUSIC_DEFAULT_VOLUME, leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false, streamRecoveries: 0 });
     return this.#guilds.get(id);
   }
   async #context(channelId, senderId, { voice = true, signal } = {}) {
@@ -282,22 +282,75 @@ export class MusicManager {
       signal.throwIfAborted();
       const volume = room.volume, bitrate = room.bitrate, channels = room.channels, source = track.source;
       if (!source || room.current !== track || room.leaving) throw new Error('歌曲準備已取消');
-      const operation = Promise.resolve(this.#bufferedFactory(libs, source.input, { volume, bitrate, channels, offsetSeconds,
+      // A remote stream is read while it plays: give it a deeper packet cushion
+      // and the HTTP reconnect flags, so a network stall does not become a gap.
+      const remote = source.stream === true && /^https?:\/\//iu.test(source.input);
+      const create = () => Promise.resolve(this.#bufferedFactory(libs, source.input, { volume, bitrate, channels, offsetSeconds,
+        headers: source.headers ?? null, stream: source.stream === true,
+        ...(remote ? MUSIC_STREAM_BUFFER : {}),
         metadata: { title: source.title, trackId: track.id, url: source.url, lufs: MUSIC_LOUDNESS.integrated }, signal })).then(value => {
         if (signal.aborted || room.leaving || room.current !== track) {
           value.destroy(); signal.throwIfAborted(); throw new Error('歌曲準備已取消');
         }
         return value;
       });
-      const transport = await musicTask(operation, signal);
+      let transport;
+      try { transport = await musicTask(create(), signal); }
+      catch (error) {
+        // A signed media URL expires, so a long track that waited in the queue can
+        // outlive it. One extractor call is cheaper than failing the track.
+        if (!remote || !['youtube', 'bilibili'].includes(source.kind) || signal.aborted || room.current !== track || room.leaving) throw error;
+        try { await musicTask(this.#pipeline.refreshStream(source, { signal }), signal); }
+        catch { throw error; }
+        transport = await musicTask(create(), signal);
+      }
       // A volume command during startup must not leave the old gain in the new encoder.
       if (room.volume !== volume || room.bitrate !== bitrate || room.channels !== channels) { transport.destroy(); continue; }
       return transport;
     }
   }
+  /**
+   * A streamed track reads a signed URL for its whole length, so one network drop
+   * would otherwise end a 145-minute mix at minute 40. Refresh the URL and resume
+   * from where the player stopped; anything else keeps the old skip behaviour.
+   */
+  async #recoverStream(room, id) {
+    const track = room.current;
+    if (!track || track.id !== id || !room.resource || room.leaving) return;
+    const source = track.source;
+    const remote = source?.stream === true && /^https?:\/\//iu.test(source.input ?? '');
+    const position = this.#positionMs(room) / 1000;
+    if (!remote || !['youtube', 'bilibili'].includes(source.kind) || room.streamRecoveries >= 3 || !(position > 0)) {
+      void this.#say(room.textChannelId, `播放失敗：${track?.title ?? '歌曲'}，將繼續下一首。`);
+      this.#finished(room, id);
+      return;
+    }
+    room.streamRecoveries++;
+    // Detach before destroy: late errors and Idle events belong to this resource.
+    // A new song can finish normally even while the old URL refresh is pending.
+    room.resource = null;
+    try {
+      this.#log('info', 'music.stream.recovering', { guildId: room.id, position, attempt: room.streamRecoveries });
+      room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
+      await musicTask(this.#pipeline.refreshStream(source, { signal: track.controller.signal }), track.controller.signal);
+      const transport = await this.#buildTransport(room, track, { offsetSeconds: position });
+      if (room.current !== track || room.leaving) { transport.destroy(); return; }
+      room.transport = transport; room.resource = transport.resource;
+      room.health = startMusicHealth(room, (...args) => this.#log(...args), { intervalMs: this.#healthIntervalMs });
+      room.connection.subscribe(room.player); room.player.play(transport.resource); this.#changed(room);
+      this.#log('info', 'music.stream.recovered', { guildId: room.id, position });
+      void this.#say(room.textChannelId, `串流中斷，已從 ${formatClock(position * 1000)} 續播。`);
+    } catch (error) {
+      if (room.current !== track || track.controller.signal.aborted) return;
+      this.#log('warn', 'music.stream.recovery.failed', error);
+      void this.#say(room.textChannelId, `播放失敗：${track.title ?? '歌曲'}，將繼續下一首。`);
+      this.#finished(room, id);
+    }
+  }
   async #start(room) {
     const libs = await this.#libs(); if (room.leaving || this.#destroyed) return;
     const track = room.tracks.shift(); if (!track) return;
+    room.streamRecoveries = 0;
     const version = room.version; room.current = track; room.state = 'preparing'; this.#prefetch(room);
     try {
       const source = await this.#prepare(room, track);
@@ -305,14 +358,14 @@ export class MusicManager {
       if (!room.player) {
         const player = libs.createAudioPlayer({ behaviors: { noSubscriber: libs.NoSubscriberBehavior?.Pause, maxMissedFrames: 10 } }); room.player = player;
         player.on('stateChange', (old, state) => {
-          if (state.status === libs.AudioPlayerStatus.Idle && old.resource === room.resource) this.#finished(room, old.resource?.metadata?.trackId);
+          if (state.status === libs.AudioPlayerStatus.Idle && room.resource && old.resource === room.resource) this.#finished(room, old.resource.metadata?.trackId);
           else if (state.status === libs.AudioPlayerStatus.Playing && state.resource === room.resource && ['paused', 'reconnecting'].includes(room.state)) player.pause();
         });
         player.on('error', error => {
           if (error.resource && error.resource !== room.resource) return;
           this.#log('warn', 'music.player.error', error);
           const id = error.resource?.metadata?.trackId ?? room.current?.id;
-          if (id === room.current?.id) { void this.#say(room.textChannelId, `播放失敗：${room.current?.title ?? '歌曲'}，將繼續下一首。`); this.#finished(room, id); }
+          if (id === room.current?.id) void this.#recoverStream(room, id);
         });
       }
       await musicTask(libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000), track.controller.signal);
@@ -324,8 +377,13 @@ export class MusicManager {
       room.health?.destroy();
       room.health = startMusicHealth(room, (...args) => this.#log(...args), { intervalMs: this.#healthIntervalMs });
       room.connection.subscribe(room.player); room.player.play(resource); this.#changed(room);
-      this.#log('info', 'music.playing', { guildId: room.id, title: source.title, selection: source.selection, cacheHit: source.cacheHit });
-      void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${source.selection === 'search-fallback' ? '\nDSH 選歌暫不可用，使用搜尋首選。' : ''}`);
+      this.#log('info', 'music.playing', { guildId: room.id, title: source.title, selection: source.selection, cacheHit: source.cacheHit, stream: Boolean(source.stream) });
+      // A streamed track skips normalization and the cache, so say so instead of
+      // letting the quieter/unbalanced source look like a bug.
+      const streamNote = source.stream
+        ? `\n這首 ${formatClock((Number(source.duration) || 0) * 1000)}，超過 ${Math.round((Number(source.limitSec) || 3600) / 60)} 分鐘上限，改用串流播放：不做音量正規化、不進快取，seek 可能較慢。`
+        : '';
+      void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${streamNote}${source.selection === 'search-fallback' ? '\nDSH 選歌暫不可用，使用搜尋首選。' : ''}`);
       this.#prefetch(room);
     } catch (error) {
       if (!track.controller.signal.aborted && !room.leaving) { this.#log('warn', 'music.track.failed', error); await this.#say(track.channelId, `無法播放「${track.title ?? track.query}」：${error.message}`); }
@@ -343,9 +401,13 @@ export class MusicManager {
     this.#cooldowns.set(key, now);
     if (this.#cooldowns.size > 1000) for (const [id, time] of this.#cooldowns) if (now - time > 60000) this.#cooldowns.delete(id);
     const occupied = Boolean(room.current || room.startTask || room.tracks.length); room.textChannelId = channelId;
-    room.tracks.push({ id: randomUUID(), query, title: null, senderId, senderName: typeof senderName === 'string' ? senderName : null, channelId, controller: new AbortController(), source: null });
+    // Keep the pasted share line as the query, but show only its title part so
+    // the queue and the notices do not echo the whole link.
+    const { title } = splitShareText(query);
+    const label = title || query;
+    room.tracks.push({ id: randomUUID(), query, title: title || null, senderId, senderName: typeof senderName === 'string' ? senderName : null, channelId, controller: new AbortController(), source: null });
     this.#pump(room); this.#prefetch(room);
-    return { message: occupied ? `已加入音樂佇列：${query}` : `正在準備歌曲並統一音量：${query}` };
+    return { message: occupied ? `已加入音樂佇列：${label}` : `正在準備歌曲並統一音量：${label}` };
   }
   async join({ channelId, senderId, signal }) { const context = await this.#context(channelId, senderId, { signal }); await this.#connect(context); signal?.throwIfAborted(); this.#idle(context.room); return { message: `已加入 <#${context.voiceChannelId}>` }; }
   async next({ channelId, senderId, signal }) {
@@ -452,10 +514,13 @@ export class MusicManager {
     return { message: `音樂目標碼率：${room.requestedBitrate / 1000} kbps\n碼率模式：${mode}\n${actual ? '目前輸出' : '預計輸出'}：${rate / 1000} kbps；頻道設定：${channel}\n聲道：${channels === 2 ? '2（雙聲道立體聲）' : '1（單聲道）'}${hint}\n設定沿用至離開語音或外掛重載；離開語音頻道後回到跟隨頻道設定。` };
   }
   async #replacePlayback(room, signal, rollback, { offsetSeconds: explicitOffset } = {}) {
-    const track = room.current, previous = room.transport, oldResource = room.resource, previousState = room.state;
+    const track = room.current, previous = room.transport, previousState = room.state;
     const active = signal ? AbortSignal.any([signal, track.controller.signal]) : track.controller.signal;
     // A seek overrides the "carry on from where the old encoder stopped" offset.
-    const offsetSeconds = explicitOffset ?? (previous?.offsetSeconds ?? 0) + (oldResource.playbackDuration ?? 0) / 1000;
+    // Older injected transports use the AudioResource clock for replacements.
+    const offsetSeconds = explicitOffset ?? (previous?.framesRead === undefined
+      ? positionMsFor(previous?.offsetSeconds, room.resource.playbackDuration)
+      : this.#positionMs(room)) / 1000;
     room.player?.pause(); if (room.state === 'playing') room.state = 'paused';
     let replacement;
     try {
@@ -494,6 +559,7 @@ export class MusicManager {
       url: track?.source?.url ?? null,
       positionMs: this.#positionMs(room),
       durationMs: Math.max(0, Math.round((Number(track?.source?.duration) || 0) * 1000)),
+      stream: Boolean(track?.source?.stream),
       loop: 'off',
       volume: Math.round((Number(room.volume) || MUSIC_DEFAULT_VOLUME) * 100),
       queue: room.tracks.map((item) => item.title ?? item.query),
@@ -510,7 +576,7 @@ export class MusicManager {
   #positionMs(room) {
     if (!room?.current || !room.resource) return 0;
     const offset = Number(room.transport?.offsetSeconds) || 0;
-    const frames = Number(room.transport?.snapshot?.()?.framesRead);
+    const frames = room.transport?.framesRead ?? room.transport?.snapshot?.()?.framesRead;
     if (Number.isFinite(frames) && frames >= 0) return positionFromFrames(offset, frames);
     return positionMsFor(offset, room.resource.playbackDuration);
   }

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { resolve, join, sep } from 'node:path';
-import { createMusicEncoder, playbackEncoderArgs, MUSIC_PLAYBACK_PROFILE } from '../../src/channels/discord/music-encoder.mjs';
+import { createMusicEncoder, playbackEncoderArgs, encoderFailureReason, MUSIC_PLAYBACK_PROFILE } from '../../src/channels/discord/music-encoder.mjs';
 import { musicTools, MusicAudioPipeline } from '../../src/channels/discord/music-audio.mjs';
 import { runMusicProcess } from '../../src/channels/discord/music-process.mjs';
 
@@ -17,6 +17,26 @@ test('playback defaults to 192 kbps stereo and accepts higher rates with fixed 2
   assert.equal(value('-ss'),'12.340');assert.equal(value('-af'),'volume=0.350000');assert.equal(args.at(-1),'pipe:1');
   assert.throws(()=>playbackEncoderArgs('fixture',{volume:NaN}),/無效/);
   assert.throws(()=>playbackEncoderArgs('fixture',{channels:6}),/聲道數/);
+});
+
+test('a streamed source carries the extractor headers into ffmpeg',()=>{
+  const args=playbackEncoderArgs('https://media.example/audio',{headers:'Referer: https://www.bilibili.com\r\n'});
+  assert.equal(args[args.indexOf('-headers')+1],'Referer: https://www.bilibili.com\r\n');
+  assert(args.indexOf('-headers')<args.indexOf('-i'),'headers must precede the input');
+  assert.equal(playbackEncoderArgs('fixture.ogg').includes('-headers'),false,'a local file needs none');
+});
+
+test('a remote stream gets reconnect and timeout flags, a local file does not',()=>{
+  const args=playbackEncoderArgs('https://media.example/audio',{stream:true});
+  const value=flag=>args[args.indexOf(flag)+1];
+  assert.equal(value('-reconnect'),'1');
+  assert.equal(value('-reconnect_streamed'),'1');
+  assert.equal(value('-reconnect_delay_max'),'5');
+  assert.equal(value('-rw_timeout'),'15000000');
+  assert(args.includes('+discardcorrupt'));
+  assert(args.indexOf('-reconnect')<args.indexOf('-i'),'protocol flags must precede the input');
+  assert.equal(playbackEncoderArgs('C:/music/long.flac',{stream:true}).includes('-reconnect'),false,'a local file needs no HTTP flags');
+  assert.equal(playbackEncoderArgs('https://media.example/audio').includes('-reconnect'),false,'a cached track is a local file');
 });
 
 test('lossless cache and real 320/384 kbps Opus preserve separate stereo channels',async t=>{
@@ -81,6 +101,25 @@ test('an unavailable encoder fails cleanly without exposing the executable path'
   try{await assert.rejects(async()=>{for await(const chunk of encoder.stream)void chunk;},error=>{
     assert.match(error.message,/無法啟動 FFmpeg/);assert(!error.message.includes('nonexistent-private'));return true;
   });}finally{encoder.destroy();}
+});
+
+test('a failed encode reports why without leaking the source URL or a local path',async()=>{
+  assert.equal(encoderFailureReason(''),'');
+  assert.equal(encoderFailureReason('https://media.example/private/audio.m4a: Server returned 403 Forbidden'),'<url>: Server returned 403 Forbidden');
+  assert.equal(encoderFailureReason('C:\\Users\\private\\song.flac: No such file or directory'),'<path>: No such file or directory');
+  assert.equal(encoderFailureReason('x'.repeat(400)).length,200);
+  const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;
+  const encoder=createMusicEncoder('fixture',{spawnProcess:()=>child});
+  encoder.stream.on('error',()=>{});
+  const failure=encoder.failure.then(()=>assert.fail('a failed encode must reject'),error=>error);
+  child.stderr.write('https://media.example/private/audio.m4a: Server returned 403 Forbidden\n');
+  // FFmpeg ends stdout first and only then reports the exit code, so the reason
+  // has to survive a stream that is already finished.
+  child.stdout.end();child.emit('close',1);
+  const error=await failure;
+  assert.match(error.message,/FFmpeg 播放編碼失敗 \(1\)：<url>: Server returned 403 Forbidden/);
+  assert(!error.message.includes('media.example'),'the signed source URL must not leak');
+  encoder.destroy();
 });
 
 test('real FFmpeg output is stereo CBR Opus at the default rate, honors seek position and applies the requested volume once',async()=>{

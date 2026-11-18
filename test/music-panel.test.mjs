@@ -79,6 +79,14 @@ test('renderPanel renders the playing card without a console link', () => {
   assert.equal(components[0].components[0].custom_id, 'music:pause:42');
 });
 
+test('renderPanel marks a streamed track as not normalized', () => {
+  const { embeds } = renderPanel({ state: 'playing', title: 'long mix', durationMs: 7_200_000, positionMs: 0, stream: true }, { guildId: '42' });
+  assert.match(embeds[0].description, /串流（未正規化）/);
+  assert.match(embeds[0].description, /0:00 \/ 2:00:00/);
+  const plain = renderPanel({ state: 'playing', title: 'x', durationMs: 1000, positionMs: 0 }, { guildId: '42' });
+  assert.doesNotMatch(plain.embeds[0].description, /串流/);
+});
+
 test('renderPanel offers resume while paused', () => {
   const { components } = renderPanel({ state: 'paused', title: 'x', durationMs: 1000, positionMs: 500 }, { guildId: '7' });
   assert.equal(components[0].components[0].label, '繼續');

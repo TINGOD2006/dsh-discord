@@ -7,7 +7,7 @@ import { handleApplicationCommand } from '../../src/channels/discord/discord-com
 import { createMusicRequestContext, createMusicTool, musicAccess } from '../../src/channels/shared/music-access.mjs';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,1));
 async function until(fn){for(let n=0;n<200;n++){if(fn())return;await tick();}throw new Error('state did not settle');}
-function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice,nativeTransport=false,customBufferedFactory,deferredPlaying=false}={}) {
+function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice,nativeTransport=false,customBufferedFactory,deferredPlaying=false,refreshStream}={}) {
   const played=[],connections=[],notices=[],released=[],transports=[];
   const guild={id:'guild',voiceStates:{cache:new Map([['user',{channelId:'voice'}],['other',{channelId:'elsewhere'}]])},voiceAdapterCreator:{},channels:{cache:new Map()}};
   class Client extends EventEmitter {channels={cache:new Map([['text',{guild}],['text-two',{guild}]])};guilds={cache:new Map([['guild',guild]])};user={id:'bot'};async login(){return login?.();}isReady(){return true;}destroy(){}}
@@ -17,7 +17,7 @@ function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverV
     joinVoiceChannel:()=>{const connection=new EventEmitter();Object.assign(connection,{state:{status:'ready'},subscribe(player){this.subscribed=player;},destroy(){this.state.status='destroyed';},rejoin(){return true;}});connections.push(connection);return connection;},
     createAudioPlayer:()=>new Player(),createAudioResource:(input,options)=>({input,...options,encoder:{setBitrate(value){this.bitrate=value;}},volume:{setVolume(value){this.value=value;}}}),
   };
-  const pipeline={prepare:prepare??(async(query)=>({input:'normalized-'+query+'.ogg',title:query,url:'https://www.youtube.com/watch?v=jNQXAC9IVRw',release:()=>released.push(query)})),destroy:async()=>{}};
+  const pipeline={prepare:prepare??(async(query)=>({input:'normalized-'+query+'.ogg',title:query,url:'https://www.youtube.com/watch?v=jNQXAC9IVRw',release:()=>released.push(query)})),...(refreshStream?{refreshStream}:{}),destroy:async()=>{}};
   const createTransport=(libs,input,options)=>{const resource=libs.createAudioResource(input,{metadata:options.metadata});resource.encoder.setBitrate(options.bitrate);resource.volume.setVolume(options.volume);if(nativeTransport){delete resource.encoder;delete resource.volume;}const transport={resource,options,offsetSeconds:options.offsetSeconds??0,destroyed:false,destroy(){this.destroyed=true;},resetTiming(){},snapshot:()=>({framesRead:1,sourceStarved:0,maxReadGapMs:20,bufferedMs:400,bitrate:options.bitrate})};transports.push(transport);return transport;};
   const bufferedFactory=customBufferedFactory?((libs,input,options)=>customBufferedFactory(libs,input,options,createTransport)):(async(libs,input,options)=>createTransport(libs,input,options));
   const manager=new MusicManager({bufferedFactory,...(recoverVoice?{recoverVoice}:{}),token:'fixture-only',runtime,pipeline,cooldownMs:0,idleMs,loginTimeoutMs,notify:async(...args)=>notices.push(args)});
@@ -48,6 +48,184 @@ test('normalization finishes and voice Ready is reached before any playback',asy
     assert.equal(f.played[0].metadata.lufs,-20);assert.equal(f.played[0].input,'normalized.ogg');assert.equal(f.connections[0].subscribed!=null,true);
     assert.equal(f.played[0].volume.value,MUSIC_DEFAULT_VOLUME);assert.equal(MUSIC_DEFAULT_VOLUME,0.6);
     assert.equal(f.played[0].encoder.bitrate,192000);
+  }finally{await f.manager.destroy();}
+});
+
+test('a track past the cache limit streams and says so in the channel',async()=>{
+  const f=fixture({prepare:async query=>({stream:true,input:'https://media.example/audio',duration:7200,limitSec:3600,
+    title:'long mix',url:'https://www.youtube.com/watch?v=jNQXAC9IVRw',release(){}})});
+  try{
+    await f.manager.play({...f.request,query:'long mix'});await until(()=>f.played.length===1);
+    assert.equal(f.played[0].input,'https://media.example/audio','the media URL is played directly');
+    const notice=f.notices.map(args=>args[1]).find(text=>text.includes('正在播放'));
+    assert.match(notice,/串流/);assert.match(notice,/2:00:00/);assert.match(notice,/60 分鐘上限/);
+    assert.equal(f.manager.snapshot('guild').stream,true);
+  }finally{await f.manager.destroy();}
+});
+
+test('a pasted share line shows its title instead of the whole link',async()=>{
+  const share='【《驯龙少年谣》| BLG 2026全球总决赛应援曲】https://www.bilibili.com/video/BV1mRW46XEdS/?share_source=copy_web&vd_source=995567b3154f75a7331c17710570cb92';
+  const f=fixture({prepare:async()=>{throw new Error('找不到可播放的 YouTube 歌曲');}});
+  try{
+    const {message}=await f.manager.play({...f.request,query:share});
+    assert.equal(message,'正在準備歌曲並統一音量：驯龙少年谣 | BLG 2026全球总决赛应援曲');
+    await until(()=>f.notices.some(args=>String(args[1]).includes('無法播放')));
+    const notice=f.notices.map(args=>args[1]).find(text=>text.includes('無法播放'));
+    assert.match(notice,/驯龙少年谣/);
+    assert.doesNotMatch(notice,/https:\/\//);
+  }finally{await f.manager.destroy();}
+});
+
+test('a streamed track gets the deeper network buffer',async()=>{
+  let options;
+  const f=fixture({customBufferedFactory:(libs,input,opts,createTransport)=>{options=opts;return createTransport(libs,input,opts);},
+    prepare:async()=>({stream:true,input:'https://media.example/audio',duration:7200,limitSec:3600,title:'long mix',release(){}})});
+  try{
+    await f.manager.play({...f.request,query:'long mix'});await until(()=>f.played.length===1);
+    assert.equal(options.stream,true);
+    assert.equal(options.bufferFrames,250);
+    assert.equal(options.prebufferFrames,50);
+    assert.equal(options.timeoutMs,15000);
+  }finally{await f.manager.destroy();}
+});
+
+test('a local file past the limit streams without the network buffer',async()=>{
+  let options;
+  const f=fixture({customBufferedFactory:(libs,input,opts,createTransport)=>{options=opts;return createTransport(libs,input,opts);},
+    prepare:async()=>({stream:true,input:'C:/music/long.flac',duration:7200,limitSec:3600,title:'long file',release(){}})});
+  try{
+    await f.manager.play({...f.request,query:'long file'});await until(()=>f.played.length===1);
+    assert.equal(options.stream,true);
+    assert.equal(options.bufferFrames,undefined,'a local file keeps the default cushion');
+  }finally{await f.manager.destroy();}
+});
+
+test('a streamed track whose first transport fails refreshes its URL and retries once',async()=>{
+  const attempts=[];let refreshed=0;
+  const f=fixture({
+    prepare:async()=>({kind:'bilibili',stream:true,input:'https://media.example/signed-0.m4a',duration:7200,limitSec:3600,
+      title:'long mix',url:'https://www.bilibili.com/video/BV1z44y1N7UH',release(){}}),
+    refreshStream:async source=>{refreshed++;source.input='https://media.example/signed-1.m4a';return source;},
+    customBufferedFactory:(libs,input,opts,createTransport)=>{
+      attempts.push(input);
+      if(attempts.length===1)throw new Error('FFmpeg 播放編碼失敗 (1)：Server returned 403 Forbidden');
+      return createTransport(libs,input,opts);
+    }});
+  try{
+    await f.manager.play({...f.request,query:'long mix'});await until(()=>f.played.length===1);
+    assert.deepEqual(attempts,['https://media.example/signed-0.m4a','https://media.example/signed-1.m4a'],'the expired URL is replaced once');
+    assert.equal(refreshed,1);
+    assert.equal(f.played[0].input,'https://media.example/signed-1.m4a');
+  }finally{await f.manager.destroy();}
+});
+
+test('a failed local track is not retried through the extractor',async()=>{
+  let refreshed=0;
+  const f=fixture({
+    prepare:async()=>({stream:true,input:'C:/music/long.flac',duration:7200,limitSec:3600,title:'long file',release(){}}),
+    refreshStream:async source=>{refreshed++;return source;},
+    customBufferedFactory:()=>{throw new Error('FFmpeg 播放編碼失敗 (1)：No such file or directory');}});
+  try{
+    await f.manager.play({...f.request,query:'long file'});
+    await until(()=>f.notices.some(args=>String(args[1]).includes('No such file or directory')));
+    assert.equal(refreshed,0,'a local file has no signed URL to refresh');
+  }finally{await f.manager.destroy();}
+});
+
+test('a streamed track that dies mid-song refreshes its URL and resumes from where it stopped',async()=>{
+  let refreshed=0;const offsets=[];
+  const f=fixture({
+    prepare:async()=>({kind:'youtube',stream:true,input:'https://media.example/signed-0.m4a',duration:8732,limitSec:3600,
+      title:'long mix',url:'https://www.youtube.com/watch?v=JPDnHkA1VVA',release(){}}),
+    refreshStream:async source=>{refreshed++;source.input=`https://media.example/signed-${refreshed}.m4a`;return source;},
+    customBufferedFactory:(libs,input,opts,createTransport)=>{offsets.push(opts.offsetSeconds);return createTransport(libs,input,opts);}});
+  try{
+    await f.manager.play({...f.request,query:'long mix'});await until(()=>f.played.length===1);
+    f.connections[0].subscribed.emit('error',{resource:f.played[0],message:'FFmpeg 播放編碼失敗 (1)：Server returned 403 Forbidden'});
+    await until(()=>f.played.length===2);
+    assert.equal(refreshed,1,'the signed URL is refreshed once');
+    assert.equal(f.played[1].input,'https://media.example/signed-1.m4a');
+    assert.equal(offsets[1],0.02,'playback resumes from the packets already played');
+    assert(f.notices.some(args=>String(args[1]).includes('續播')),'the channel is told playback resumed');
+  }finally{await f.manager.destroy();}
+});
+
+test('duplicate errors during URL refresh keep the song and respect a pause', async () => {
+  const refresh = Promise.withResolvers();
+  let refreshes = 0;
+  const f = fixture({
+    prepare: async () => ({ kind: 'youtube', stream: true, input: 'https://media.example/mix', title: 'mix', duration: 7200 }),
+    refreshStream: () => { refreshes++; return refresh.promise; },
+  });
+  try {
+    await f.manager.play({ ...f.request, query: 'mix' });
+    await until(() => f.played.length === 1);
+    const player = f.connections[0].subscribed;
+    const failure = { resource: f.played[0], message: 'stream closed' };
+    player.emit('error', failure);
+    player.emit('error', failure);
+    await f.manager.pause(f.request);
+    assert.equal(refreshes, 1);
+    assert.equal(f.manager.snapshot('guild').title, 'mix');
+    refresh.resolve();
+    await until(() => f.played.length === 2);
+    assert.equal(f.manager.snapshot('guild').state, 'paused');
+    assert.equal(player.paused, true);
+  } finally { refresh.resolve(); await f.manager.destroy(); }
+});
+
+test('skipping a recovering stream lets the following song finish while the old refresh is pending', async () => {
+  const refresh = Promise.withResolvers();
+  const f = fixture({
+    prepare: async query => query === 'mix'
+      ? { kind: 'youtube', stream: true, input: 'https://media.example/mix', title: query, duration: 7200 }
+      : { input: query + '.flac', title: query },
+    refreshStream: () => refresh.promise,
+  });
+  try {
+    for (const query of ['mix', 'second', 'third']) await f.manager.play({ ...f.request, query });
+    await until(() => f.played.length === 1);
+    const player = f.connections[0].subscribed;
+    player.emit('error', { resource: f.played[0], message: 'stream closed' });
+    await f.manager.next(f.request);
+    await until(() => f.played.length === 2);
+    player.stop();
+    await until(() => f.played.length === 3);
+    refresh.resolve();
+    await tick();
+    assert.deepEqual(f.played.map(resource => resource.metadata.title), ['mix', 'second', 'third']);
+    assert.equal(f.manager.snapshot('guild').title, 'third');
+  } finally { refresh.resolve(); await f.manager.destroy(); }
+});
+
+test('the panel and encoder changes use packet progress when the voice clock is frozen', async () => {
+  const f = fixture({ nativeTransport: true });
+  try {
+    await f.manager.play({ ...f.request, query: 'track' });
+    await until(() => f.played.length === 1);
+    f.transports[0].framesRead = 625;
+    f.transports[0].snapshot = () => assert.fail('progress must not sort the diagnostic timing window');
+    f.played[0].playbackDuration = 0;
+    assert.equal(f.manager.snapshot('guild').positionMs, 12500);
+    await f.manager.volume({ ...f.request, percent: 40 });
+    assert.equal(f.transports[1].offsetSeconds, 12.5);
+    f.transports[1].framesRead = 50;
+    await f.manager.bitrate({ ...f.request, kbps: 96 });
+    assert.equal(f.transports[2].offsetSeconds, 13.5);
+  } finally { await f.manager.destroy(); }
+});
+
+test('a local track that dies mid-song is not re-extracted',async()=>{
+  let refreshed=0;
+  const f=fixture({
+    prepare:async()=>({input:'C:/music/song.flac',title:'song',release(){}}),
+    refreshStream:async source=>{refreshed++;return source;}});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    f.connections[0].subscribed.emit('error',{resource:f.played[0],message:'boom'});
+    await until(()=>f.notices.some(args=>String(args[1]).includes('將繼續下一首')));
+    assert.equal(refreshed,0,'a local file has no signed URL to refresh');
+    assert.equal(f.played.length,1);
   }finally{await f.manager.destroy();}
 });
 

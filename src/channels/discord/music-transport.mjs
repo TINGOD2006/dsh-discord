@@ -24,13 +24,20 @@ export function voiceBitrate(channelBitrate, requestedBitrate = MUSIC_PLAYBACK_P
   return channel === null ? ceiling : Math.min(ceiling, playbackBitrate(channel, channels));
 }
 
+/**
+ * A remote stream is read while it plays, so it needs a deeper cushion than a
+ * local file: five seconds of encoded audio absorbs a network stall, and one
+ * second is buffered before the player starts. A local file keeps the defaults.
+ */
+export const MUSIC_STREAM_BUFFER = Object.freeze({ bufferFrames: 250, prebufferFrames: 50, timeoutMs: 15000 });
+
 /** A bounded packet queue decouples short encoder/I/O stalls from the 20ms player clock. */
 export async function createBufferedMusicResource(libs, input, { volume, bitrate, channels = MUSIC_PLAYBACK_PROFILE.channels, metadata, signal,
-  offsetSeconds = 0, encoderFactory = createMusicEncoder,
+  offsetSeconds = 0, headers = null, stream = false, encoderFactory = createMusicEncoder,
   bufferFrames = 72, prebufferFrames = 24, timeoutMs = 5000 } = {}) {
   if (signal?.aborted) throw abortError();
   const count = playbackChannels(channels);
-  const encoder = encoderFactory(input, { volume, bitrate: playbackBitrate(bitrate, count), channels: count, offsetSeconds, signal });
+  const encoder = encoderFactory(input, { volume, bitrate: playbackBitrate(bitrate, count), channels: count, offsetSeconds, headers, stream, signal });
   let producer;
   try { producer = libs.createAudioResource(encoder.stream, { inputType: libs.StreamType.OggOpus, inlineVolume: false, metadata }); }
   catch (error) { encoder.destroy(); throw error; }
@@ -54,6 +61,8 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
   const fail = error => { streamError = error; buffer.destroy(error); };
   producer.playStream.on('error', fail);
   encoder.stream.on('error', fail);
+  // A failed encoder ends its stdout before reporting why; the promise carries the reason.
+  encoder.failure?.then(() => {}, fail);
   // A player attaches its own listener later; prebuffering errors also need a listener.
   buffer.on('error', () => {});
   const destroy = () => {
@@ -69,11 +78,18 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
   try {
     await new Promise((resolve, reject) => {
       const started = performance.now();
+      let emptySince = null;
       const check = () => {
         if (signal?.aborted || destroyed) return done(abortError());
         if (streamError) return done(streamError);
         if (buffer.readableLength >= prebufferFrames || (buffer.writableFinished && buffer.readableLength > 0)) return done();
-        if (buffer.writableFinished && !buffer.readableLength) return done(new Error('音訊沒有可播放的 Opus 封包'));
+        if (buffer.writableFinished && !buffer.readableLength) {
+          // FFmpeg's exit status arrives just after its stdout ends, so a failed
+          // run would otherwise be reported as "no packets" and hide the reason.
+          emptySince ??= performance.now();
+          if (performance.now() - emptySince > 300) return done(new Error('音訊沒有可播放的 Opus 封包'));
+          return;
+        }
         if (performance.now() - started > timeoutMs) return done(new Error('音訊封包預緩衝逾時'));
       };
       const timer = setInterval(check, 10);
@@ -96,7 +112,7 @@ export async function createBufferedMusicResource(libs, input, { volume, bitrate
       return packet;
     };
     if (signal?.aborted) throw abortError();
-    return { resource, destroy, offsetSeconds, resetTiming: () => { lastRead = null; },
+    return { resource, destroy, offsetSeconds, get framesRead() { return stats.framesRead; }, resetTiming: () => { lastRead = null; },
       // `maxReadGapMs` is the windowed maximum, so the health check can recover;
       // `peakReadGapMs` keeps the whole-song spike for post-mortem diagnostics.
       snapshot: () => { const window = gapWindow(); return { ...stats, maxReadGapMs: window?.max ?? 0, readGapP95Ms: window?.p95 ?? 0,

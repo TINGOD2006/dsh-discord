@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate } from '../../src/channels/discord/music-transport.mjs';
+import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate, MUSIC_STREAM_BUFFER } from '../../src/channels/discord/music-transport.mjs';
 import { startMusicHealth } from '../../src/channels/discord/music-health.mjs';
 
 test('the default bitrate follows the channel setting and the codec ceiling', () => {
@@ -46,8 +46,27 @@ test('Opus prebuffer is bounded and directly forwards externally encoded packets
     assert.equal(encoderOptions.volume,0.6);assert.equal(encoderOptions.bitrate,64000);assert.equal(audio.snapshot().bitrate,64000);
     assert.equal(audio.resource.volume,undefined);assert.equal(audio.resource.encoder,undefined);
     assert.deepEqual(libs.calls.map(call => call.inlineVolume), [false, false]);
-    const read = []; for await (const packet of audio.resource.playStream) read.push(packet[0]);
+    assert.equal(audio.framesRead, 0);
+    const read = [audio.resource.read()[0]];
+    assert.equal(audio.framesRead, 1, 'the lightweight position counts packets consumed by the voice player');
+    for await (const packet of audio.resource.playStream) read.push(packet[0]);
     assert.deepEqual(read, Array.from({ length: 100 }, (_, n) => n));
+  } finally { audio.destroy(); }
+});
+
+test('a remote stream gets a deeper cushion and the encoder reconnect flag', async () => {
+  const packets = Array.from({ length: 100 }, (_, n) => Buffer.from([n]));
+  const producer = Readable.from(packets), libs = resourceLib(producer);
+  let encoderOptions;
+  const audio = await createBufferedMusicResource(libs, 'https://media.example/audio', { volume: 0.6, bitrate: 64000,
+    stream: true, ...MUSIC_STREAM_BUFFER,
+    encoderFactory: (input, options) => { encoderOptions = options; return { stream: producer, destroy() { producer.destroy(); } }; } });
+  try {
+    assert.equal(encoderOptions.stream, true);
+    assert.equal(MUSIC_STREAM_BUFFER.bufferFrames, 250, 'five seconds of encoded audio absorbs a network stall');
+    assert.equal(MUSIC_STREAM_BUFFER.prebufferFrames, 50, 'one second is buffered before the player starts');
+    assert.equal(MUSIC_STREAM_BUFFER.timeoutMs, 15000, 'a slow first byte must not fail the track');
+    assert(audio.snapshot().bufferedFrames >= 50);
   } finally { audio.destroy(); }
 });
 
@@ -57,6 +76,19 @@ test('stop cancels prebuffering and releases its producer', async () => {
   const pending = createBufferedMusicResource(resourceLib(producer), 'file.ogg', { signal: controller.signal,
     encoderFactory:()=>({stream:producer,destroy(){producer.destroy();}}) });
   controller.abort(); await assert.rejects(pending, { name: 'AbortError' }); assert.equal(producer.destroyed, true);
+});
+
+test('a failed encoder reports its reason instead of an empty packet stream', async () => {
+  // FFmpeg ends stdout before it reports the exit code, so destroying the stream
+  // with the error is a no-op; the failure promise is what carries the reason.
+  const producer = new Readable({ objectMode: true, read() {} });
+  const failure = Promise.reject(new Error('FFmpeg 播放編碼失敗 (1)：Server returned 403 Forbidden'));
+  failure.catch(() => {});
+  const pending = createBufferedMusicResource(resourceLib(producer), 'https://media.example/audio', { stream: true,
+    encoderFactory: () => ({ stream: producer, destroy() { producer.destroy(); }, failure }) });
+  setTimeout(() => producer.push(null), 20);
+  await assert.rejects(pending, /403 Forbidden/);
+  assert.equal(producer.destroyed, true);
 });
 
 const statuses = { Ready: 'ready', Destroyed: 'destroyed', Signalling: 'signalling', Connecting: 'connecting' };

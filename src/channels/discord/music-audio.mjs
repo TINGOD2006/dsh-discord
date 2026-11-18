@@ -1,12 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, extname, join, resolve } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { runMusicProcess, abortError } from './music-process.mjs';
 
 const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/package.json'));
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav', '.webm', '.mp4']);
+const MAX_REMOTE_AUDIO_BYTES = 64 * 1024 * 1024;
 const hash = value => createHash('sha256').update(value).digest('hex');
 export const MUSIC_LOUDNESS = Object.freeze({ integrated: -20, truePeak: -3, lra: 11, sampleRate: 48000 });
 export const MUSIC_CACHE_VERSION = 4;
@@ -64,6 +67,37 @@ export function bilibiliUrl(raw) {
   return audio ? `https://www.bilibili.com/audio/${audio}` : null;
 }
 
+// A link ends at whitespace, at a quote/bracket, or at CJK text glued to it
+// ("https://b23.tv/abc好聽"): no supported media URL contains raw CJK.
+const LINK_IN_TEXT = /https?:\/\/[^\s<>"'`\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+/iu;
+
+/**
+ * Pull the first link out of pasted share text ("【title】https://…"). Discord
+ * users paste the whole share line, and the surrounding text must not turn the
+ * link into a YouTube search query.
+ */
+export function embeddedUrl(text) {
+  const match = LINK_IN_TEXT.exec(text);
+  return match ? match[0].replace(/[)\]}>，。、；：！？"'」』】）]+$/u, '') : null;
+}
+
+/**
+ * Split pasted share text into the link it carries and the title around it, so
+ * the queue, the "preparing" notice and the failure message show the song name
+ * instead of the whole pasted line.
+ */
+export function splitShareText(text) {
+  const raw = String(text ?? '').trim();
+  const link = /^https?:/i.test(raw) ? raw : embeddedUrl(raw);
+  if (!link) return { link: null, title: raw };
+  const title = raw
+    .replace(link, ' ')
+    .replace(/[【】\[\]（）()<>《》「」『』]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .replace(/^[\s|｜·・,，、;；:：。！？…\-–—~～]+|[\s|｜·・,，、;；:：。！？…\-–—~～]+$/gu, '');
+  return { link, title };
+}
+
 function publicWebUrl(raw) {
   const url = new URL(raw);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port ||
@@ -103,15 +137,33 @@ export function completeDuration(expected, actual) {
   return Number.isFinite(actual) && actual > 0 && (!(expected > 0) || actual >= expected - Math.max(2, expected * 0.03));
 }
 
+/**
+ * Only the headers a media CDN actually checks. ffmpeg wants them as one
+ * CRLF-separated string, and a value carrying a line break would let the
+ * extractor's metadata inject extra headers.
+ */
+export function streamHeaders(headers) {
+  if (!headers || typeof headers !== 'object') return null;
+  const lines = ['Referer', 'User-Agent', 'Origin']
+    .map(name => [name, headers[name] ?? headers[name.toLowerCase()]])
+    .filter(([, value]) => typeof value === 'string' && value && !/[\r\n]/.test(value))
+    .map(([name, value]) => `${name}: ${value}\r\n`);
+  return lines.length ? lines.join('') : null;
+}
+
 export class MusicAudioPipeline {
   #root; #tools; #run; #select; #log; #jobs = new Map(); #audioJobs = new Map(); #resolved = new Map(); #pins = new Map();
   #busy = 0; #waiting = []; #limit; #maxSeconds; #maxBytes; #maxEntries;
+  // `maxDurationSec` is the cache/normalize threshold, not a hard cap: a longer
+  // track is streamed from the source instead of being downloaded and cached.
   constructor({ cacheDir = join(pluginRoot, '.dsh-im', 'music'), tools = musicTools(), run = runMusicProcess,
     selectCandidate = null, logger = null, concurrency = 2, maxDurationSec = 3600, maxCacheBytes = 512 * 1024 * 1024, maxCacheEntries = 64 } = {}) {
     this.#root = resolve(cacheDir); this.#tools = tools; this.#run = run; this.#select = selectCandidate; this.#log = logger;
     this.#limit = concurrency; this.#maxSeconds = maxDurationSec; this.#maxBytes = maxCacheBytes; this.#maxEntries = maxCacheEntries;
   }
   get cacheDir() { return this.#root; }
+  /** Tracks longer than this are streamed instead of normalized and cached. */
+  get maxDurationSec() { return this.#maxSeconds; }
 
   async #shared(map, key, signal, operation) {
     if (signal?.aborted) throw abortError();
@@ -178,11 +230,16 @@ export class MusicAudioPipeline {
       if (!file.isFile() || file.size > 256 * 1024 * 1024) throw new Error('音訊檔案過大或無法讀取');
       return { input: resolve(query), id: hash(`${resolve(query)}:${file.size}:${file.mtimeMs}`), title: query.split(/[\\/]/).at(-1), kind: 'file', duration: 0, selection: 'file' };
     }
-    const direct = youtubeUrl(query);
-    if (direct) return { id: new URL(direct).searchParams.get('v'), url: direct, title: query, kind: 'youtube', duration: 0, selection: 'direct' };
+    // A pasted share line ("【title】https://…") is common: resolve the link
+    // inside it instead of searching YouTube for the whole sentence, and keep
+    // the surrounding text as the display title.
+    const share = splitShareText(query);
+    const link = share.link;
+    const direct = youtubeUrl(link ?? query);
+    if (direct) return { id: new URL(direct).searchParams.get('v'), url: direct, title: share.title || query, kind: 'youtube', duration: 0, selection: 'direct' };
     let search = query;
-    if (/^https?:/i.test(query)) {
-      const url = publicWebUrl(query);
+    if (link) {
+      const url = publicWebUrl(link);
       if (/(^|\.)(bilibili\.com|b23\.tv)$/.test(url.hostname)) {
         let direct = bilibiliUrl(url.href);
         if (!direct) throw new Error('請提供 Bilibili BV／av 影片、au 音訊或 b23 分享連結');
@@ -193,9 +250,9 @@ export class MusicAudioPipeline {
           direct = bilibiliUrl(info.webpage_url);
           if (!direct || new URL(direct).hostname === 'b23.tv') throw new Error('Bilibili 分享連結未指向支援的影片或音訊');
         }
-        return { id: hash(direct), url: direct, title: direct, kind: 'bilibili', duration: 0, selection: 'direct' };
+        return { id: hash(direct), url: direct, title: share.title || direct, kind: 'bilibili', duration: 0, selection: 'direct' };
       }
-      if (AUDIO_EXTENSIONS.has(extname(url.pathname).toLowerCase())) return { input: url.href, id: hash(url.href), title: url.pathname.split('/').at(-1), kind: 'audio-url', duration: 0, selection: 'direct' };
+      if (AUDIO_EXTENSIONS.has(extname(url.pathname).toLowerCase())) return { input: url.href, id: hash(url.href), title: share.title || url.pathname.split('/').at(-1), kind: 'audio-url', duration: 0, selection: 'direct' };
       let title = '';
       if (/(^|\.)(spotify\.com|soundcloud\.com|vimeo\.com)$/.test(url.hostname)) {
         try { const info = await this.#metadata(url.href, dir, signal); title = info.track ?? info.title ?? ''; } catch (error) { if (signal.aborted) throw error; }
@@ -217,8 +274,11 @@ export class MusicAudioPipeline {
       if (!title) throw new Error('網頁沒有可辨識的歌曲名稱，請改用關鍵詞');
       search = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').slice(0, 300);
     }
-    const candidates = candidatesFrom(await this.#metadata(`ytsearch5:${search}`, dir, signal))
-      .filter(item => item.duration <= this.#maxSeconds);
+    const found = candidatesFrom(await this.#metadata(`ytsearch5:${search}`, dir, signal));
+    // Prefer a normal-length version, but keep long mixes when they are the only
+    // matches: the streaming path can play those, so length is no longer a filter.
+    const short = found.filter(item => item.duration <= this.#maxSeconds);
+    const candidates = short.length ? short : found;
     if (!candidates.length) throw new Error('找不到可播放的 YouTube 歌曲');
     const selected = this.#select ? await this.#select({ query, candidates, guildId, signal }) : { candidate: candidates[0], selection: 'search-fallback' };
     const candidate = candidates.find(item => item.id === selected?.candidate?.id);
@@ -231,6 +291,73 @@ export class MusicAudioPipeline {
     const info = JSON.parse(result.stdout);
     if (!info.streams?.some(stream => stream.codec_type === 'audio')) throw new Error('來源沒有可解碼的音軌');
     return Number(info.format?.duration ?? info.streams.find(stream => stream.codec_type === 'audio')?.duration) || 0;
+  }
+
+  /**
+   * One extractor call for a direct link: duration decides the path, and the
+   * media URL plus its headers are what the streaming path needs. `-j` keeps the
+   * selected format's URL, so no second call is required.
+   */
+  async #streamInfo(target, dir, signal) {
+    const { stdout } = await this.#run(this.#tools.ytDlp, [...this.#ytArgs(), '--no-playlist', '--skip-download',
+      '-f', 'bestaudio/best', '--dump-single-json', '--', target],
+    { cwd: dir, env: this.#env(dir), signal, timeoutMs: 45_000 });
+    return JSON.parse(stdout);
+  }
+
+  /**
+   * Duration is resolved before any download, because it is what chooses between
+   * the normalized cache and the streaming path. Search candidates already carry
+   * it; a direct link needs one extractor call; a local file or audio URL is
+   * probed. A cached render never reaches this, so replays pay nothing extra.
+   */
+  async #durationOf(source, { dir, signal }) {
+    if (source.duration > 0 && source.duration <= this.#maxSeconds) return source.duration;
+    if (source.kind === 'file' || source.kind === 'audio-url') {
+      if (!(source.duration > 0)) source.duration = await this.#probe(source.input, dir, signal);
+      return source.duration;
+    }
+    const info = await this.#streamInfo(source.url, dir, signal);
+    if (info.is_live) throw new Error('目前不支援直播音訊');
+    source.duration = Number(info.duration) || 0;
+    source.title = String(info.title ?? source.title).slice(0, 300);
+    source.streamUrl = info.url ?? info.requested_downloads?.[0]?.url
+      ?? info.formats?.find(format => format.acodec && format.acodec !== 'none')?.url ?? null;
+    source.headers = streamHeaders(info.http_headers);
+    return source.duration;
+  }
+
+  /**
+   * A track past the cache limit is played straight from the source: no download,
+   * no loudness pass and no cache entry, so its length stops being a hard cap.
+   * The trade-off is reported to the channel by the manager.
+   */
+  #streamSource(source, duration) {
+    // A page URL is not playable: the extractor's media URL is the only input.
+    const input = source.kind === 'youtube' || source.kind === 'bilibili'
+      ? source.streamUrl
+      : source.input ?? source.url;
+    if (!input) throw new Error('無法取得串流位址');
+    return { stream: true, kind: source.kind, input, headers: source.headers ?? null, duration, limitSec: this.#maxSeconds,
+      title: source.title, url: source.url, selection: source.selection, cacheHit: false };
+  }
+
+  /**
+   * A streamed media URL is signed and expires, so a long track that waited in
+   * the queue can outlive it. Re-running the extractor is cheap next to failing
+   * the track, and it also recovers from a CDN that refused the first URL.
+   */
+  async refreshStream(source, { signal } = {}) {
+    const info = await this.#streamInfo(source.url, this.#root, signal);
+    if (info.is_live) throw new Error('目前不支援直播音訊');
+    const url = info.url ?? info.requested_downloads?.[0]?.url
+      ?? info.formats?.find(format => format.acodec && format.acodec !== 'none')?.url ?? null;
+    if (!url) throw new Error('無法取得串流位址');
+    source.streamUrl = url;
+    source.input = url;
+    source.headers = streamHeaders(info.http_headers);
+    source.duration = Number(info.duration) || source.duration;
+    return source;
   }
 
   async #cached(key) {
@@ -250,7 +377,10 @@ export class MusicAudioPipeline {
     let title = source.title;
     if (source.kind === 'youtube' || source.kind === 'bilibili') {
       const infoPath = join(dir, 'download.json');
-      try { await this.#run(this.#tools.ytDlp, [...this.#ytArgs(), '--no-playlist', '--no-simulate', '--no-progress', '--max-filesize', '256M', '--match-filter', '!is_live',
+      // Bilibili's media CDN answers a plain GET with HTTP 567 (anti-bot) but
+      // serves an open-ended range request, so ask for the whole file that way.
+      const range = source.kind === 'bilibili' ? ['--add-header', 'Range: bytes=0-'] : [];
+      try { await this.#run(this.#tools.ytDlp, [...this.#ytArgs(), ...range, '--no-playlist', '--no-simulate', '--no-progress', '--max-filesize', '256M', '--match-filter', '!is_live',
         '-f', 'bestaudio/best', '-o', join(dir.replaceAll('%', '%%'), 'raw.%(ext)s'), '--print-to-file', 'after_move:%()j', infoPath, '--', source.url],
       { cwd: dir, env: this.#env(dir), signal, timeoutMs: 180_000 }); }
       catch (error) {
@@ -265,17 +395,28 @@ export class MusicAudioPipeline {
       if (!input) throw new Error('下載未產生音訊檔案');
     }
     if (source.kind === 'audio-url') {
-      const remote = await fetch(source.input, { signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]), redirect: 'error' });
-      if (!remote.ok || !remote.body) throw new Error('音訊下載失敗');
-      const chunks = []; let bytes = 0; const reader = remote.body.getReader();
-      try { while (true) { const { value, done } = await reader.read(); if (done) break; bytes += value.length; if (bytes > 64 * 1024 * 1024) throw new Error('遠端音訊超過 64 MB 上限'); chunks.push(value); } }
-      finally { await reader.cancel().catch(() => {}); }
+      const downloadSignal = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+      const remote = await fetch(source.input, { signal: downloadSignal, redirect: 'error' });
+      if (!remote.ok || !remote.body) {
+        await remote.body?.cancel();
+        throw new Error('音訊下載失敗');
+      }
       input = join(dir, 'remote-audio' + extname(new URL(source.input).pathname));
-      await writeFile(input, Buffer.concat(chunks));
+      await pipeline(Readable.fromWeb(remote.body), async function* limitSize(chunks) {
+        let bytes = 0;
+        for await (const chunk of chunks) {
+          bytes += chunk.byteLength;
+          if (bytes > MAX_REMOTE_AUDIO_BYTES) throw new Error('遠端音訊超過 64 MB 上限');
+          yield chunk;
+        }
+      }, createWriteStream(input), { signal: downloadSignal });
     }
     const duration = await this.#probe(input, dir, signal);
     if (!completeDuration(expected, duration)) throw new Error(`音訊不完整：預期 ${expected.toFixed(1)} 秒，實際 ${duration.toFixed(1)} 秒`);
-    if (duration > this.#maxSeconds || !(duration > 0)) throw new Error(`歌曲長度須在 ${this.#maxSeconds / 60} 分鐘以內`);
+    if (!(duration > 0)) throw new Error('無法讀取音訊長度');
+    // The pre-download duration decides the path; a mismatch means the source
+    // served something different from what it reported.
+    if (duration > this.#maxSeconds) throw new Error(`音訊實際長度 ${Math.round(duration / 60)} 分鐘，超過 ${this.#maxSeconds / 60} 分鐘上限`);
     const { stderr } = await this.#run(this.#tools.ffmpeg, ['-nostdin', '-hide_banner', '-threads', '1', '-filter_threads', '1', '-i', input, '-map', '0:a:0', '-vn', '-sn', '-dn',
       '-af', loudnessAnalysisFilter(), '-f', 'null', '-'], { cwd: dir, signal, timeoutMs: 180_000 });
     const loudness = loudnessStats(stderr);
@@ -329,6 +470,8 @@ export class MusicAudioPipeline {
         const key = hash(JSON.stringify([MUSIC_CACHE_VERSION, source.kind, source.id, MUSIC_LOUDNESS]));
         const cached = await this.#cached(key);
         if (cached) return { ...cached, selection: source.selection };
+        const duration = await this.#durationOf(source, { dir, signal: jobSignal });
+        if (duration > this.#maxSeconds) return this.#streamSource(source, duration);
         const rendered = await this.#shared(this.#audioJobs, key, jobSignal, async renderSignal => {
           await this.#slot(renderSignal);
           // The render owns its directory independently of a cancelled resolver's waiter.
@@ -343,6 +486,8 @@ export class MusicAudioPipeline {
       } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
     });
     if (signal?.aborted) throw abortError();
+    // A stream owns no cache file, so there is nothing to pin or release.
+    if (item.stream) return { ...item, release: () => {} };
     this.#pins.set(item.input, (this.#pins.get(item.input) ?? 0) + 1);
     let released = false;
     return { ...item, release: () => {
