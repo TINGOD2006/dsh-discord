@@ -244,7 +244,14 @@ export async function createTokenProductionController(ctx, config, internals, de
   return {
     controller,
     ...(supportsDeliveryChannel(channel) ? {
-      deliveryAdapter: createDeliveryAdapter({ dsBot: config.deliveryService?.dsBot, channel, workspaces, coreController, stateFor }),
+      deliveryAdapter: createDeliveryAdapter({
+        dsBot: config.deliveryService?.dsBot,
+        channel,
+        workspaces,
+        coreController,
+        stateFor,
+        appendSessionMessage: config.deliveryService?.appendSessionMessage,
+      }),
     } : {}),
     ready: supervisor.ready,
     async close() {

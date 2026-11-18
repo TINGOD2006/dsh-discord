@@ -1,6 +1,7 @@
 import { createDeliveryRpcHandler, DELIVERY_ENDPOINTS } from './delivery-rpc.mjs';
 
 export const DELIVERY_HTTP_PATH = '/api/dsh-im/delivery/messages';
+export const SESSION_RECORD_HTTP_PATH = '/api/dsh-im/session-record';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -13,6 +14,7 @@ const DELIVERY_ERROR_STATUS = Object.freeze({
   'bot-not-connected': 503,
   'target-rejected': 422,
   'delivery-failed': 502,
+  'session-not-live': 409,
   cancelled: 408,
 });
 
@@ -66,6 +68,14 @@ async function readJsonBody(request) {
 }
 
 export function createDeliveryHttpHandler(service) {
+  return createEndpointHandler(service, DELIVERY_ENDPOINTS.send);
+}
+
+export function createSessionRecordHttpHandler(service) {
+  return createEndpointHandler(service, DELIVERY_ENDPOINTS.recordSession);
+}
+
+function createEndpointHandler(service, endpoint) {
   const dispatch = createDeliveryRpcHandler(service);
   return async (request, response) => {
     if (request.method !== 'POST') {
@@ -90,7 +100,7 @@ export function createDeliveryHttpHandler(service) {
     response.once('close', cancelClosedResponse);
     try {
       const payload = await readJsonBody(request);
-      const result = await dispatch(DELIVERY_ENDPOINTS.send, payload, abort.signal);
+      const result = await dispatch(endpoint, payload, abort.signal);
       if (result.ok) {
         json(response, 200, result.value);
         return;
@@ -120,13 +130,27 @@ export function installDeliveryHttp(ctx, service) {
     || typeof ctx.effect !== 'function') {
     throw new TypeError('DSH Host WebServer is required');
   }
-  const route = {
-    kind: 'exact',
-    path: DELIVERY_HTTP_PATH,
-    handler: createDeliveryHttpHandler(service),
-  };
+  const routes = [
+    {
+      kind: 'exact',
+      path: DELIVERY_HTTP_PATH,
+      handler: createDeliveryHttpHandler(service),
+    },
+    {
+      kind: 'exact',
+      path: SESSION_RECORD_HTTP_PATH,
+      handler: createSessionRecordHttpHandler(service),
+    },
+  ];
   return ctx.effect(
-    () => ctx.webServer.register(route),
-    `dsh-im: ${DELIVERY_HTTP_PATH}`,
+    () => {
+      const disposers = routes.map((route) => ctx.webServer.register(route));
+      return () => {
+        for (const dispose of disposers) {
+          try { dispose?.(); } catch { /* route already gone */ }
+        }
+      };
+    },
+    `dsh-im: ${DELIVERY_HTTP_PATH}, ${SESSION_RECORD_HTTP_PATH}`,
   );
 }

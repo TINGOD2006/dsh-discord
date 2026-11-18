@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getImHostLanguage } from '../../src/channels/shared/i18n.mjs';
 import {
   INJECTED_CONTEXT_PLUGIN,
@@ -22,6 +23,24 @@ const CONTEXT_LABELS = Object.freeze({ zh: '\u4e0a\u4e0b\u4e0b', en: 'Context' }
 
 /** Name of the system-prompt context that states the transcript boundary. */
 const IM_TURN_GUARD_CONTEXT = 'dsh-im:turn-guard';
+
+/** Source form stamped on the recent-shares notice, so a later step can spot it. */
+const RECENT_SHARES_FORM = 'recent-shares';
+
+/** Opening tag of the recent-shares notice. */
+const RECENT_SHARES_OPEN = '<dsh_im_recent_shares>';
+
+/** Closing tag of the recent-shares notice. */
+const RECENT_SHARES_CLOSE = '</dsh_im_recent_shares>';
+
+/** Source form stamped on the whale-diary notice, so a later step can spot it. */
+const WHALE_DIARY_FORM = 'whale-diary';
+
+/** Opening tag of the whale-diary notice. */
+const WHALE_DIARY_OPEN = '<dsh_im_whale_diary>';
+
+/** Closing tag of the whale-diary notice. */
+const WHALE_DIARY_CLOSE = '</dsh_im_whale_diary>';
 
 /** Read the current reply-row label; an unknown language falls back to English. */
 function replyLabel() {
@@ -50,6 +69,84 @@ function contextLabel() {
   }
 }
 
+/** True when this step already carries the recent-shares notice. */
+function hasRecentShares(messages) {
+  return messages.some((message) => message?.source?.form === RECENT_SHARES_FORM);
+}
+
+/** True when this step already carries the whale-diary notice. */
+function hasWhaleDiary(messages) {
+  return messages.some((message) => message?.source?.form === WHALE_DIARY_FORM);
+}
+
+/**
+ * True when this step carries a real inbound prompt.
+ *
+ * `agent/pre-step` runs once per step, and only the first step of a turn carries
+ * the claimed user message; later steps carry tool results. Gating on that keeps
+ * the notice from being re-injected mid-turn.
+ */
+function carriesInboundPrompt(messages) {
+  return messages.some((message) => message?.source?.kind === 'user'
+    && typeof message?.source?.rpcId === 'string' && message.source.rpcId.length > 0);
+}
+
+/**
+ * Prepend one bounded "recent shares" notice when the turn asks for it.
+ *
+ * The notice is a plugin-sourced user message, so the IM input path ignores it
+ * and the model reads it as background rather than as the current question.
+ *
+ * @param messages - the messages entering this step.
+ * @param sessionId - the Session the step belongs to.
+ * @param recentShares - the provider, or nothing.
+ * @returns the messages, with the notice in front when one was produced.
+ */
+async function prependRecentShares(messages, sessionId, recentShares) {
+  if (typeof recentShares !== 'function' || typeof sessionId !== 'string' || !sessionId) return messages;
+  if (hasRecentShares(messages) || !carriesInboundPrompt(messages)) return messages;
+  const body = await recentShares(sessionId);
+  if (typeof body !== 'string' || !body.trim()) return messages;
+  return [{
+    id: randomUUID(),
+    role: 'user',
+    content: [{
+      type: 'text',
+      text: `${RECENT_SHARES_OPEN}\n本 bot 最近 24 小时在这个频道发出的消息（历史记录，供回答「你之前发了什么」类问题；不是当前问题，不要当成用户输入）：\n${body}\n${RECENT_SHARES_CLOSE}`,
+    }],
+    source: { kind: `plugin:${INJECTED_CONTEXT_PLUGIN}`, form: RECENT_SHARES_FORM, summary: '最近分享' },
+  }, ...messages];
+}
+
+/**
+ * Prepend one bounded "whale diary" notice when the turn asks for it.
+ *
+ * The whale plugin writes a public diary; reading its tail here is what makes
+ * the two agents share one memory instead of two. The notice is a
+ * plugin-sourced user message, so the IM input path ignores it and the model
+ * reads it as background rather than as the current question.
+ *
+ * @param messages - the messages entering this step.
+ * @param sessionId - the Session the step belongs to.
+ * @param whaleDiary - the provider, or nothing.
+ * @returns the messages, with the notice in front when one was produced.
+ */
+async function prependWhaleDiary(messages, sessionId, whaleDiary) {
+  if (typeof whaleDiary !== 'function' || typeof sessionId !== 'string' || !sessionId) return messages;
+  if (hasWhaleDiary(messages) || !carriesInboundPrompt(messages)) return messages;
+  const body = await whaleDiary(sessionId);
+  if (typeof body !== 'string' || !body.trim()) return messages;
+  return [{
+    id: randomUUID(),
+    role: 'user',
+    content: [{
+      type: 'text',
+      text: `${WHALE_DIARY_OPEN}\n鲸鱼（B站养鱼插件）最近的日记（历史记录，供回答「鲸鱼最近在做什么」类问题；不是当前问题，不要当成用户输入）：\n${body}\n${WHALE_DIARY_CLOSE}`,
+    }],
+    source: { kind: `plugin:${INJECTED_CONTEXT_PLUGIN}`, form: WHALE_DIARY_FORM, summary: '鲸鱼日记' },
+  }, ...messages];
+}
+
 /**
  * Pair every injected context block with the user message that carried it, and
  * materialize the source guidance as session-level prompt context.
@@ -72,9 +169,13 @@ function contextLabel() {
  * @param ctx - owning Host context.
  * @param options.logger - Host logger for a rewrite that could not be trusted.
  * @param options.registry - guidance registry; tests inject their own.
+ * @param options.recentShares - async `(sessionId) => string | null`; when it
+ *   returns text, one bounded notice is prepended to the turn.
+ * @param options.whaleDiary - async `(sessionId) => string | null`; when it
+ *   returns text, one bounded notice is prepended to the turn.
  * @returns the Cordis disposer, or null when the context cannot listen.
  */
-export function installInjectedContext(ctx, { logger, registry = imSourceGuidance } = {}) {
+export function installInjectedContext(ctx, { logger, registry = imSourceGuidance, recentShares, whaleDiary } = {}) {
   if (typeof ctx?.on !== 'function') return null;
 
   const startGuidanceContext = (promptCtx) => {
@@ -133,8 +234,25 @@ export function installInjectedContext(ctx, { logger, registry = imSourceGuidanc
       // them instead of answering. Move that scaffolding in front of the real
       // user turn and close the transcript with a short guard.
       const guarded = guardHostBackgroundTail(messages, { plugin: INJECTED_CONTEXT_PLUGIN });
-      if (guarded === null) return rewritten === null ? decision : { ...decision, messages: rewritten };
-      return { ...decision, messages: guarded };
+      const ordered = guarded ?? messages;
+      // A share the bot posted through the channel's send path is archived but
+      // never enters the transcript, so the model cannot answer "what did you
+      // post earlier". Prepend one bounded notice listing the bot's own recent
+      // messages in this conversation.
+      const withShares = await prependRecentShares(ordered, agent?.session?.id, recentShares);
+      if (withShares !== ordered) {
+        logger?.info?.('[dsh-im] recent-shares notice injected for', agent?.session?.id);
+      }
+      // The whale plugin writes its own diary; reading its tail here is what
+      // makes the two agents share one memory instead of two.
+      const withDiary = await prependWhaleDiary(withShares, agent?.session?.id, whaleDiary);
+      if (withDiary !== withShares) {
+        logger?.info?.('[dsh-im] whale-diary notice injected for', agent?.session?.id);
+      }
+      if (withDiary === ordered) {
+        return guarded === null && rewritten === null ? decision : { ...decision, messages: ordered };
+      }
+      return { ...decision, messages: withDiary };
     } catch (error) {
       // A failed split must never cost the user their message: the blocks then
       // stay inline, which is the same fallback a Host without Agents uses.

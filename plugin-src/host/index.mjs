@@ -15,7 +15,11 @@ import { createDsBotClient } from './ds-bot-client.mjs';
 import { installInboundTtlRpc } from './inbound-ttl-rpc.mjs';
 import { installSidebarSettingsRpc } from './sidebar-settings.mjs';
 import { installInjectedContext } from './injected-context.mjs';
+import { getGroupHistoryStore, groupHistoryRoot } from './group-history-runtime.mjs';
+import { createRecentSharesProvider } from './recent-shares.mjs';
+import { createWhaleDiaryProvider } from './whale-diary.mjs';
 import { installSessionSyncCoordinator } from './session-sync-coordinator.mjs';
+import { createSessionAppender } from './session-record.mjs';
 import { installSessionTitlePrefix } from './session-title-prefix.mjs';
 import { installUpdateRpc } from './update-rpc.mjs';
 
@@ -61,6 +65,7 @@ export function createImHostPlugin(internals = {}) {
       const deliveryService = makeDeliveryService({
         unavailableSessionSyncChannels: unavailableSessionSyncChannels.map((channel) => channel === 'wecomApp' ? 'wecom-app' : channel),
         dsBot: createDsBotClient(ctx),
+        appendSessionMessage: createSessionAppender(ctx),
       });
       if (typeof ctx?.provide === 'function') {
         ctx.provide('dshIm', Object.freeze({
@@ -77,6 +82,9 @@ export function createImHostPlugin(internals = {}) {
           ),
           listTargets: async (botId) => (await deliveryService.listTargets(botId)).targets,
           listBots: () => deliveryService.listBots(),
+          recordSession: (botId, conversationKey, text) => (
+            deliveryService.recordSession(botId, conversationKey, text)
+          ),
         }));
       }
       const activate = async (readyCtx) => {
@@ -145,7 +153,18 @@ export function createImHostPlugin(internals = {}) {
       ? ctx.logger(name)
       : (ctx?.logger ?? console);
     try {
-      startInjectedContext(ctx, { logger });
+      // A share the bot posted through the channel's send path is archived but
+      // never enters the transcript; the provider reads that archive so the
+      // model can answer "what did you post earlier".
+      const recentShares = createRecentSharesProvider({
+        store: getGroupHistoryStore(ctx, config),
+        root: groupHistoryRoot(config),
+        logger,
+      });
+      // The whale plugin writes its own diary; sharing its tail is what makes
+      // the two agents share one memory instead of two.
+      const whaleDiary = createWhaleDiaryProvider({ dshHome: config?.dshHome, logger });
+      startInjectedContext(ctx, { logger, recentShares, whaleDiary });
     } catch (error) {
       logger.error?.('[dsh-im] failed to activate injected-context pairing; prompts keep the inline prefix', error);
     }

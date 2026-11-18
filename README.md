@@ -45,6 +45,22 @@ node bin/dsh-im.mjs install --profile desktop --source .
 
 安裝後重新載入 DSH 外掛或重啟對應宿主，再開啟「設定 → IM機器人」，新增 Discord Bot 並在本機填入 Bot Token。設定音訊工具後，再開始點歌。
 
+### 主動投遞 CLI（給外部外掛用）
+
+外部外掛（例如 dsh-bili-whale）可以把一段文字交給 Discord：
+
+```powershell
+# 直發頻道（不需要先建投遞目標）
+node bin/dsh-im.mjs send --bot <botId> --channel <channelId> "正文"
+
+# 走已保存的投遞目標（設定頁「新建目標」後拿到 botId + targetId）
+node bin/dsh-im.mjs send --bot <botId> --target <targetId> "正文"
+```
+
+- `--channel` 直接走 Discord REST，適合「把一段文字丟進某個頻道」
+- `--target` 走本機 `/api/dsh-im/delivery/messages`，沿用投遞目標的格式化與重試
+- 端口可用 `DSH_WEB_PORT` 或 `--url` 覆蓋（預設 `http://127.0.0.1:2136`）
+
 ### 音訊工具
 
 可唯讀引用既有 AudioUsbStudio 的工具，啟動 DSH 前設定：

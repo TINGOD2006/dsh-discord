@@ -432,7 +432,12 @@ export class GroupHistoryStore {
     await this.ready();
     const id = String(platformGroupId ?? '').trim();
     if (!id || !GROUP_HISTORY_CHANNELS.includes(channel)) return null;
-    const row = this.#db.prepare('SELECT id FROM groups WHERE channel = ? AND platform_group_id = ?')
+    // One platform chat can be archived under more than one scope (an early
+    // event without a guild id, then the real one). The active archive is the
+    // row that most recently received a message, so prefer it over an arbitrary
+    // match that may hold only a handful of stale rows.
+    const row = this.#db.prepare(`SELECT id FROM groups WHERE channel = ? AND platform_group_id = ?
+      ORDER BY coalesce(last_received_at, 0) DESC, id LIMIT 1`)
       .get(channel, id);
     return row ? row.id : null;
   }

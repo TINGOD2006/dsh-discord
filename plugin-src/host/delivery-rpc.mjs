@@ -16,6 +16,7 @@ export const DELIVERY_ENDPOINTS = Object.freeze({
   deleteTarget: 'target.delete',
   setSessionSync: 'target.session-sync.set',
   testTarget: 'target.test',
+  recordSession: 'session.record',
 });
 
 const ENDPOINTS = new Set(Object.values(DELIVERY_ENDPOINTS));
@@ -34,6 +35,7 @@ const PUBLIC_ERRORS = new Set([
   'target-rejected',
   'delivery-failed',
   'session-sync-unavailable',
+  'session-not-live',
   'cancelled',
 ]);
 
@@ -119,6 +121,11 @@ function validPayload(endpoint, payload) {
       && validBotId(payload.botId) && validTargetId(payload.targetId)
       && typeof payload.enabled === 'boolean';
   }
+  if (endpoint === DELIVERY_ENDPOINTS.recordSession) {
+    return exactKeys(payload, ['botId', 'conversationKey', 'text'])
+      && validBotId(payload.botId) && validConversationKey(payload.conversationKey)
+      && typeof payload.text === 'string' && Boolean(payload.text.trim());
+  }
   return exactKeys(payload, ['botId', 'targetId'])
     && validBotId(payload.botId) && validTargetId(payload.targetId);
 }
@@ -181,6 +188,11 @@ export function createDeliveryRpcHandler(service) {
           throw new TypeError('Session sync is unavailable');
         }
         value = await service.setSessionSync(payload.botId, payload.targetId, payload.enabled);
+      } else if (endpoint === DELIVERY_ENDPOINTS.recordSession) {
+        if (typeof service.recordSession !== 'function') {
+          throw new TypeError('Session recording is unavailable');
+        }
+        value = await service.recordSession(payload.botId, payload.conversationKey, payload.text);
       } else {
         value = await service.send(
           payload.botId,

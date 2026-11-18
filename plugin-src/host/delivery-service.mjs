@@ -39,6 +39,7 @@ const DELIVERY_ERROR_CODES = new Set([
   'delivery-failed',
   'send-result-unknown',
   'session-sync-unavailable',
+  'session-not-live',
   'cancelled',
   'provider-unavailable',
   'consumer-unavailable',
@@ -146,16 +147,21 @@ export class DeliveryService {
   #adapters = new Map();
   #unavailableSessionSyncChannels;
   dsBot;
+  appendSessionMessage;
 
-  constructor({ unavailableSessionSyncChannels = [], dsBot } = {}) {
+  constructor({ unavailableSessionSyncChannels = [], dsBot, appendSessionMessage } = {}) {
     if (!Array.isArray(unavailableSessionSyncChannels)
       || unavailableSessionSyncChannels.some((channel) => (
         typeof channel !== 'string' || !CHANNEL_PATTERN.test(channel)
       ))) {
       throw new TypeError('unavailableSessionSyncChannels must contain valid channel ids');
     }
+    if (appendSessionMessage !== undefined && typeof appendSessionMessage !== 'function') {
+      throw new TypeError('appendSessionMessage must be a function');
+    }
     this.#unavailableSessionSyncChannels = new Set(unavailableSessionSyncChannels);
     this.dsBot = dsBot;
+    this.appendSessionMessage = appendSessionMessage;
   }
 
   async listDsBotSessions() {
@@ -430,6 +436,30 @@ export class DeliveryService {
       if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
         throw deliveryError('cancelled', 'Request cancelled', { cause: error });
       }
+      throw publicOperationError(error);
+    }
+  }
+
+  /**
+   * Append a plugin-authored notice to the Session bound to a conversation.
+   *
+   * The record half of a proactive delivery: the text already reached the
+   * platform, and this makes the same text part of the conversation the model
+   * reads on its next turn. It never sends anything.
+   */
+  async recordSession(botId, conversationKey, text) {
+    const id = botIdOf(botId);
+    const key = conversationKeyOf(conversationKey);
+    if (typeof text !== 'string' || !text.trim()) {
+      throw deliveryError('bad-request', 'Message text is required');
+    }
+    const adapter = await this.#adapterFor(id);
+    if (typeof adapter.recordSessionMessage !== 'function') {
+      throw deliveryError('capability-unavailable', 'Session recording is unavailable');
+    }
+    try {
+      return await adapter.recordSessionMessage(id, key, text);
+    } catch (error) {
       throw publicOperationError(error);
     }
   }

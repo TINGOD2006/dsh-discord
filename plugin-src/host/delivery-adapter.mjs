@@ -246,7 +246,9 @@ function sessionSyncView(channel, target, sessions, configured) {
 }
 
 /** Bind one channel's existing workspace store and unwrapped controller to DeliveryService. */
-export function createDeliveryAdapter({ channel, workspaces, coreController, stateFor, dsBot }) {
+export function createDeliveryAdapter({
+  channel, workspaces, coreController, stateFor, dsBot, appendSessionMessage,
+}) {
   if (!supportsDeliveryChannel(channel)) throw new TypeError(`Unsupported delivery channel: ${channel}`);
   if (!workspaces || typeof workspaces !== 'object') {
     throw new TypeError('delivery adapter requires a workspace store');
@@ -494,6 +496,38 @@ export function createDeliveryAdapter({ channel, workspaces, coreController, sta
         throw error;
       }
       return { sent: true };
+    },
+    /**
+     * Append a plugin-authored notice to the Session bound to a conversation.
+     *
+     * This is the record half of a proactive delivery: the text already reached
+     * the platform, and this makes the same text part of the conversation the
+     * model reads on its next turn. It never sends anything.
+     */
+    async recordSessionMessage(botId, conversationKey, text, options = {}) {
+      if (typeof text !== 'string' || !text.trim()) throw new TypeError('text is required');
+      if (typeof appendSessionMessage !== 'function') {
+        const error = new Error('Session recording is unavailable');
+        error.code = 'capability-unavailable';
+        throw error;
+      }
+      const state = await stateFor(botId);
+      const sessionId = state?.sessionFor?.(conversationKey) ?? null;
+      if (!sessionId) {
+        const error = new Error('No Session is bound to this conversation');
+        error.code = 'unknown-target';
+        throw error;
+      }
+      const event = await appendSessionMessage(sessionId, {
+        text,
+        source: { conversationKey, ...(options.source ?? {}) },
+      });
+      if (!event) {
+        const error = new Error('The bound Session is not live');
+        error.code = 'session-not-live';
+        throw error;
+      }
+      return { recorded: true, sessionId, seq: event.seq };
     },
   });
 }
