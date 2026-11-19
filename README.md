@@ -4,7 +4,7 @@
 
 這是以 [xmanrui/dsh-im](https://github.com/xmanrui/dsh-im) 為基礎的獨立分支，主要維護 Discord 的聊天回覆、上下文與音樂功能。保留上游其他渠道程式，但本分支的音樂功能與驗證集中於 Discord。
 
-[English](README.en.md) · [音樂功能與診斷](docs/discord-music.md) · [客戶端面板接入](docs/client-integration.md)
+[English](README.en.md) · [音樂功能與診斷](docs/discord-music.md) · [客戶端面板接入](docs/client-integration.md) · [在另一台電腦執行](docs/run-on-another-machine.md)
 
 ## 功能
 
@@ -42,6 +42,8 @@ node bin/dsh-im.mjs install --profile desktop --source .
 ```
 
 使用 DSH Web 時，將 `--profile desktop` 改為 `--profile web`。安裝器會修改指定 profile 的外掛清單；請選擇實際使用的 profile。`--source .` 必須保留，因為安裝器未指定來源時仍預設指向上游專案。
+
+換到另一台電腦時，Token、`.dsh-im/` 狀態與環境變數都不會跟著過去；完整步驟與常見問題見[在另一台電腦執行](docs/run-on-another-machine.md)。
 
 安裝後重新載入 DSH 外掛或重啟對應宿主，再開啟「設定 → IM機器人」，新增 Discord Bot 並在本機填入 Bot Token。設定音訊工具後，再開始點歌。
 
@@ -112,7 +114,7 @@ $env:DSK_DISCORD_NODE = 'D:\MediaTools\node.exe'
 | `/music pause`、`/music resume` | 暫停、繼續 |
 | `/music queue`、`/music nowplaying` | 查看佇列、目前歌曲 |
 | `/music volume percent:0–100` | 調整音量，預設 60% |
-| `/music status` | 查看 WebSocket ping、碼率、緩衝、掉幀及主程序延遲 |
+| `/music status` | 查看 WebSocket ping、碼率、緩衝、掉幀、送出間隔及主程序延遲 |
 | `/music join`、`/music leave` | 加入、離開語音頻道 |
 
 **`/stop` 與 `/skip` 保留為 AI 任務控制；控制音樂請使用 `/music stop` 與 `/music skip`。**
@@ -127,8 +129,8 @@ $env:DSK_DISCORD_NODE = 'D:\MediaTools\node.exe'
 
 碼率預設跟隨語音頻道設定（一般伺服器 64 kbps），`/music bitrate kbps:320` 是明確覆寫，會忽略頻道設定。碼率選項為 16、32、48、64、96、128、192、256、320、384 kbps；單聲道最多 256，雙聲道最多 384。`/music channels`、`/music bitrate` 可查詢設定；`/music channels count:2` 加 `/music bitrate kbps:192` 恢復預設目標。設定沿用至離開語音或外掛重載，切換會短暫重建串流並保留播放位置、音量及暫停狀態。
 
-1. YouTube 單曲網址驗證後直接處理；關鍵詞先取得最多五個真實候選。
-2. DSH 在獨立音樂 Session 中選擇候選；超過十秒或結果無效時，改用已驗證的搜尋首選並提示。
+1. YouTube 單曲網址驗證後直接處理；關鍵詞先取得最多十個真實候選。
+2. DSH 在獨立音樂 Session 中選擇候選；超過三十秒或結果無效時，改用已驗證的搜尋首選並提示。
 3. 完整下載、檢查時長並建立 48 kHz、16-bit 雙聲道無損 FLAC 正規化快取；播放時由 FFmpeg 子程序按所選聲道與碼率輸出 Opus，再直接提交播放器。輸出是 ≤384 kbps 的 Opus，16-bit 精度已遠超過所需，同曲快取由 34.6 MB 降到 16.5 MB。320 kbps 是實際編碼輸出，仍會經過音量處理與轉碼，不代表原檔免轉碼直通或提升原音源品質。
 
 Bilibili BV／av 影片、au 音訊及 b23 分享連結直接使用原站音源；移除追蹤參數，保留 `p` 分 P 選擇，未指定時播放第一 P。Bilibili 解析或下載失敗會直接回報來源錯誤。其他網頁先嘗試取得標題，再到 YouTube 搜尋。另外支援主機可讀的音訊檔及可辨識的公開音訊直連。
