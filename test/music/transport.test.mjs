@@ -144,3 +144,27 @@ test('health telemetry flags degraded playback from local frame delivery and ded
     assert.equal(health.snapshot().missedFrames, missed);
   } finally { health.destroy(); }
 });
+
+test('health telemetry reports the send cadence and flags a skipped dispatch cycle', () => {
+  const logs = [];
+  const dispatch = { count: 0, lastAt: 0, maxGapMs: 0, gapsOver40: 0, gapsOver100: 0 };
+  const room = { state: 'playing', current: {}, dispatch, connection: { state: { status: 'ready' }, ping: { ws: 30 } },
+    player: { state: { missedFrames: 0 } },
+    transport: { snapshot: () => ({ framesRead: 100, sourceStarved: 0, maxReadGapMs: 20, readGapP95Ms: 20, peakReadGapMs: 20, bufferedMs: 1440, bitrate: 64000 }) } };
+  const health = startMusicHealth(room, (...args) => logs.push(args), { intervalMs: 100000 });
+  try {
+    // A normal 20 ms cadence is reported and then cleared, so each sample covers
+    // its own window instead of latching the worst gap of the whole connection.
+    dispatch.maxGapMs = 21; dispatch.gapsOver40 = 0; dispatch.gapsOver100 = 0;
+    health.sample();
+    assert.equal(health.snapshot().dispatchGapMaxMs, 21);
+    assert.equal(dispatch.maxGapMs, 0);
+    assert.equal(health.snapshot().dispatchGapsOver40, 0);
+    // A skipped cycle is a local send gap: the packet prepared for it never left.
+    dispatch.maxGapMs = 120; dispatch.gapsOver40 = 1; dispatch.gapsOver100 = 1;
+    health.sample();
+    assert.equal(health.snapshot().dispatchGapMaxMs, 120);
+    assert.equal(health.snapshot().dispatchGapsOver100, 1);
+    assert.equal(logs.filter(([, event]) => event === 'music.transport.degraded').length, 1);
+  } finally { health.destroy(); }
+});

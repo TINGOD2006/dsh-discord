@@ -30,6 +30,7 @@ import { cleanHistoryText, filterHistoryRows, historyContextNeeded, historyRecal
 import { ensureHistoryReadState } from '../shared/history-read-state.mjs';
 import { decideSmartReply } from './reply-policy.mjs';
 import { isSharedLocalCommand } from '../shared/command-permission.mjs';
+import { sessionRotationFromEnv } from '../shared/session-rotation.mjs';
 export { historyRecallRequested } from '../shared/history-context.mjs';
 import { createDiscordBridgeStatus, DiscordHarnessBridge } from './discord-bridge.mjs';
 
@@ -1032,6 +1033,8 @@ export class DiscordRuntime {
   #createApi;
   #createWebSocket;
   #createMusicManager;
+  #searchNativeMusic;
+  #webSearch;
   #random;
   #status = createDiscordRuntimeStatus();
   #api = null;
@@ -1100,6 +1103,8 @@ export class DiscordRuntime {
     createApi = (options) => new DiscordApi(options),
     createWebSocket = (url) => new WebSocket(url),
     createMusicManager = (options) => new MusicWorkerManager(options),
+    searchNativeMusic = null,
+    webSearch = null,
     random = Math.random,
     // A burst of same-author messages is read as one turn in every mode: the
     // window closes after `quietMs` of silence, or `maxWaitMs` after the first
@@ -1128,6 +1133,8 @@ export class DiscordRuntime {
     this.#createApi = createApi;
     this.#createWebSocket = createWebSocket;
     this.#createMusicManager = createMusicManager;
+    this.#searchNativeMusic = searchNativeMusic;
+    this.#webSearch = webSearch;
     this.#random = random;
   }
 
@@ -1474,6 +1481,8 @@ export class DiscordRuntime {
         this.#music = this.#createMusicManager({
           token: this.#token,
           harness: this.#harness,
+          searchNativeMusic: this.#searchNativeMusic,
+          webSearch: this.#webSearch,
           // Read at worker start, so a whitelist change applies to the next track
           // without rebuilding the manager.
           privilegedIds: () => [this.#config.ownerUserId, ...this.#trustedIds()].filter(Boolean),
@@ -1560,6 +1569,12 @@ export class DiscordRuntime {
         // surface the Harness's own refusal instead of quietly moving to a brand
         // new Session, which is how a lost conversation went unnoticed.
         trustBoundSession: true,
+        // A chat conversation otherwise keeps one Session forever, and a Session
+        // that has grown past the model window cannot be compacted: the summary
+        // request replays the history it is summarizing and overflows the same
+        // limit. Rotating the binding on a turn or idle budget keeps the durable
+        // log bounded. The old Session stays on disk and stays reachable.
+        sessionRotation: sessionRotationFromEnv(),
         signal: controller.signal,
       });
       // The settings card writes the allowlist file directly, so pick it up on a
@@ -1849,7 +1864,22 @@ export class DiscordRuntime {
         return true;
       }
       if (action === 'remove') {
+        // The card is the only control surface for a paused track, so removing it
+        // must clear the music as well: a paused track keeps the room alive and
+        // every later /play queues behind it forever (2026-11-19). Clearing
+        // playback is a playback change, so it carries the same voice rule as
+        // pause/resume/next — otherwise any reader of the card could stop the music.
+        const snapshot = await music.snapshot(guildId).catch(() => null);
+        if (snapshot?.title || snapshot?.queue?.length) {
+          const result = await music.control(guildId, 'stop', { userId, requireVoice: true });
+          if (result?.ok === false) {
+            await reply({ type: 4, data: { flags: 64, content: String(result.message ?? '無法操作').slice(0, 1900) } });
+            this.#logger.event?.('music.card.action', { action, guildId, userId, ok: false });
+            return true;
+          }
+        }
         await reply({ type: 6 });
+        this.#logger.event?.('music.card.action', { action, guildId, userId, ok: true });
         await panel?.stop(guildId, { remove: true });
         return true;
       }

@@ -49,7 +49,7 @@ const FAILURE_MESSAGES = Object.freeze({
   MODEL_RATE_LIMIT:
     '模型服务正在限流，本次任务未完成。请稍后重试。',
   MODEL_CONTEXT_LIMIT:
-    '当前会话内容超过模型上下文上限。请发送 /compact 或 /new 后重试。',
+    '当前会话内容超过模型上下文上限，已经无法再压缩（摘要请求本身也会超限）。请发送 /new 开启新会话后重试。',
   MODEL_UNAVAILABLE:
     '当前模型不存在或不支持所选配置。请发送 /models，再用 /model <序号> 为当前聊天重新选择。若要修改后续新会话的默认模型，请到 DSH 设置 → IM机器人 → 对应机器人卡片修改。',
   MODEL_CONFIG:

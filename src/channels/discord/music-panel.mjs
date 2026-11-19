@@ -105,7 +105,7 @@ export function renderPanel(snapshot = {}, { guildId = '', controlUrl = null } =
     button({ action: 'next', guildId: guild, label: '下一首', emoji: '⏭️', disabled: idle }),
     button({ action: 'queue', guildId: guild, label: '佇列', emoji: '📋', disabled: idle && !queue.length }),
     button({ action: 'refresh', guildId: guild, label: '刷新', emoji: '🔄' }),
-    button({ action: 'remove', guildId: guild, label: '移除', emoji: '🗑️' }),
+    button({ action: 'remove', guildId: guild, label: '清空', emoji: '🗑️' }),
   ];
   const components = [buttonRow(primary)];
 

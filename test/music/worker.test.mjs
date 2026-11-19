@@ -45,6 +45,40 @@ test('production worker starts without logging in and shuts down cleanly; creati
   await assert.rejects(manager.execute('status'), /已關閉/);
 });
 
+test('a worker play request can use and cancel the host native web lookup', async () => {
+  let searchSignal;
+  const f = await fixture({ searchNativeMusic: async ({ query, signal }) => {
+    if (query === 'first clue') return ['Native result'];
+    assert.equal(query, 'blocked clue');
+    searchSignal = signal;
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  } });
+  try {
+    await f.command('play', { query: 'first clue', selectionMethod: 'dsh-web' });
+    await until(() => f.notices.some(([, message]) => message.includes('Native result') && message.includes('DSH（原生網搜）')));
+    await f.command('play', { query: 'blocked clue', selectionMethod: 'dsh-web' });
+    await until(() => searchSignal);
+    await f.command('stop');
+    await until(() => searchSignal.aborted);
+    assert.match((await f.command('queue')).message, /空/);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a worker play request can use the host query resolver', async () => {
+  const f = await fixture({ resolveQuery: async ({ query }) => {
+    assert.equal(query, 'kaf 第一首歌');
+    return '花譜 糸';
+  } });
+  try {
+    await f.command('play', { query: 'kaf 第一首歌', selectionMethod: 'dsh-resolve' });
+    await until(() => f.notices.some(([, message]) => message.includes('花譜 糸') && message.includes('DSH（查詢解析）')));
+  } finally {
+    await f.close();
+  }
+});
+
 test('real worker keeps FFmpeg/player/UDP running while parent event loop blocks for 500 ms', async t => {
   const f = await fixture();
   try {

@@ -323,6 +323,11 @@ export class TextHarnessBridge {
   // silently starting a new one.
   #trustBoundSession = false;
 
+  // Optional automatic Session rotation: `{ maxTurns, maxIdleMs }`. Null keeps
+  // one Session for the life of the binding, which is what every channel did
+  // before this existed.
+  #sessionRotation = null;
+
   constructor({
     descriptor,
     bot,
@@ -351,6 +356,7 @@ export class TextHarnessBridge {
     personaLinks = null,
     personaHandoff = null,
     trustBoundSession = false,
+    sessionRotation = null,
   }) {
     if (!descriptor?.key || !descriptor?.label) throw new TypeError('A channel descriptor is required');
     if (!bot || typeof bot.sendText !== 'function') throw new TypeError('A bot client is required');
@@ -372,6 +378,7 @@ export class TextHarnessBridge {
     this.#personaLinks = personaLinks ?? null;
     this.#personaHandoff = typeof personaHandoff === 'function' ? personaHandoff : null;
     this.#trustBoundSession = trustBoundSession === true;
+    this.#sessionRotation = sessionRotation ?? null;
     this.#interactionCard = interactionCard ?? null;
     // Opt-in follow-up lanes for channels whose groups run on rapid consecutive
     // posts: fold a same sender's burst into one dispatch, and steer that
@@ -1830,7 +1837,7 @@ export class TextHarnessBridge {
         }
       }
       await this.#markPendingSubmitted(conversationKey, messageId);
-      const { sessionId, answer, artifacts = [] } = await askInWorkspaceSession({
+      const { sessionId, answer, artifacts = [], rotated = false } = await askInWorkspaceSession({
         deferredDelivery: () => ({ coordinator: this.#deferred, target: this.#descriptor.key === 'whatsapp' ? { jid: target.jid, selfChat: target.selfChat } : target }),
         harness: this.#harness,
         state: this.#state,
@@ -1844,6 +1851,7 @@ export class TextHarnessBridge {
         createOptions: this.#signal ? { signal: this.#signal } : undefined,
         existsOptions: this.#signal ? { signal: this.#signal } : undefined,
         trustBoundSession: this.#trustBoundSession,
+        rotation: this.#sessionRotation,
         askOptions: {
           groupHistory: message.groupHistory,
           music: this.#descriptor.key === 'discord' ? createMusicRequestContext(message, this.#musicTools, { signal: this.#signal }) : null,
@@ -1896,6 +1904,11 @@ export class TextHarnessBridge {
           images: message.images,
         },
       });
+      if (rotated) {
+        this.#logger.info?.(
+          `[dsh-im:${this.#descriptor.key}] Session rotation replaced the binding for ${conversationKey} with ${sessionId}`,
+        );
+      }
       this.#rememberPersonaBinding(conversationKey, sessionId);
       stopKeepalive();
       if (batchSubmission) {

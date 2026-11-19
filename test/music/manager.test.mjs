@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { MusicManager, MUSIC_DEFAULT_VOLUME, describeError } from '../../src/channels/discord/music.mjs';
+import { YOUTUBE_CLIENT_FALLBACK } from '../../src/channels/discord/music-audio.mjs';
 import { DiscordHarnessBridge } from '../../src/channels/discord/discord-bridge.mjs';
 import { handleApplicationCommand } from '../../src/channels/discord/discord-commands.mjs';
 import { createMusicRequestContext, createMusicTool, musicAccess } from '../../src/channels/shared/music-access.mjs';
@@ -24,6 +25,22 @@ function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverV
   const request={channelId:'text',senderId:'user'};
   return {manager,request,played,connections,notices,released,guild,transports};
 }
+
+test('play keeps the chosen method through the queue and reports the effective selector', async () => {
+  const selections = [];
+  const f = fixture({ prepare: async (query, { selectionMethod }) => {
+    selections.push({ query, selectionMethod });
+    return { input: 'song.flac', title: 'Chosen song', selection: 'tfidf' };
+  } });
+  try {
+    await f.manager.execute('play', { ...f.request, guildId: 'guild', query: 'song', selectionMethod: 'tfidf' });
+    await until(() => f.notices.some(([, message]) => message.includes('選歌方法：TF-IDF＋餘弦相似度')));
+    assert.deepEqual(selections, [{ query: 'song', selectionMethod: 'tfidf' }]);
+    assert.equal(f.played.length, 1);
+  } finally {
+    await f.manager.destroy();
+  }
+});
 
 test('chat music tool reaches the real manager with voice checks and accepted playback outlives the chat grant',async()=>{
   const f=fixture();f.guild.channels.cache.set('voice',{bitrate:128000});
@@ -115,6 +132,24 @@ test('a streamed track whose first transport fails refreshes its URL and retries
     await f.manager.play({...f.request,query:'long mix'});await until(()=>f.played.length===1);
     assert.deepEqual(attempts,['https://media.example/signed-0.m4a','https://media.example/signed-1.m4a'],'the expired URL is replaced once');
     assert.equal(refreshed,1);
+    assert.equal(f.played[0].input,'https://media.example/signed-1.m4a');
+  }finally{await f.manager.destroy();}
+});
+
+test('a YouTube stream refused with 403 re-resolves with the fallback client',async()=>{
+  const clients=[];let attempts=0;
+  const f=fixture({
+    prepare:async()=>({kind:'youtube',stream:true,input:'https://media.example/signed-0.m4a',duration:7200,limitSec:3600,
+      title:'long mix',url:'https://www.youtube.com/watch?v=JPDnHkA1VVA',release(){}}),
+    refreshStream:async(source,options)=>{clients.push(options?.client);source.input='https://media.example/signed-1.m4a';return source;},
+    customBufferedFactory:(libs,input,opts,createTransport)=>{
+      attempts++;
+      if(attempts===1)throw new Error('FFmpeg 播放編碼失敗 (1)：Server returned 403 Forbidden');
+      return createTransport(libs,input,opts);
+    }});
+  try{
+    await f.manager.play({...f.request,query:'long mix'});await until(()=>f.played.length===1);
+    assert.deepEqual(clients,[YOUTUBE_CLIENT_FALLBACK],'the challenged client would only hand out another refused URL');
     assert.equal(f.played[0].input,'https://media.example/signed-1.m4a');
   }finally{await f.manager.destroy();}
 });
@@ -628,6 +663,24 @@ test('card controls require the clicker to be in the bot voice channel, while th
     // per-boot token, so it must keep working.
     assert.equal((await f.manager.control('guild','resume')).ok,true);
     assert.equal((await f.manager.snapshot('guild')).state,'playing');
+  }finally{await f.manager.destroy();}
+});
+
+test('the card remove action clears the paused track so the queue can move again',async()=>{
+  // 2026-11-19: 🗑️ only removed the card. The paused track kept the room alive,
+  // so every later /play queued behind it and never started.
+  const f=fixture();try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    assert.equal((await f.manager.control('guild','pause',{userId:'user',requireVoice:true})).ok,true);
+    assert.equal(f.manager.snapshot('guild').state,'paused');
+    assert.equal((await f.manager.control('guild','stop',{userId:'user',requireVoice:true})).ok,true);
+    const cleared=f.manager.snapshot('guild');
+    assert.equal(cleared.state,'idle');
+    assert.equal(cleared.title,null);
+    assert.deepEqual(cleared.queue,[]);
+    // The next song starts instead of waiting behind the cleared one.
+    await f.manager.play({...f.request,query:'next song'});await until(()=>f.played.length===2);
+    assert.equal(f.manager.snapshot('guild').state,'playing');
   }finally{await f.manager.destroy();}
 });
 

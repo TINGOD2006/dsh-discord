@@ -1,13 +1,15 @@
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { isMainThread } from 'node:worker_threads';
-import { MusicAudioPipeline, musicTools, MUSIC_LOUDNESS, splitShareText } from './music-audio.mjs';
+import { MusicAudioPipeline, musicTools, MUSIC_LOUDNESS, splitShareText, YOUTUBE_CLIENT_FALLBACK } from './music-audio.mjs';
 import { MUSIC_PLAYBACK_PROFILE } from './music-encoder.mjs';
 import { createDshMusicSelector } from './music-dsh.mjs';
 import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate, MUSIC_STREAM_BUFFER } from './music-transport.mjs';
 import { startMusicHealth } from './music-health.mjs';
 import { MusicCommandLane, musicTask } from './music-command-lane.mjs';
 import { clampSeekTarget, formatClock, seekIsMeaningful } from './music-panel.mjs';
+import { MUSIC_SELECTION_METHODS } from '../shared/music-selection.mjs';
 
 export const MUSIC_AUDIO_URL = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|webm)(\?|#|$)/i;
 export const MUSIC_MAX_QUEUE = 25;
@@ -77,7 +79,7 @@ export class MusicManager {
   #commands = new MusicCommandLane();
   #lifetime = new AbortController();
   constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000,
-    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate, allowLocalFileFor = null,
+    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate, searchNativeMusic, resolveQuery, allowLocalFileFor = null,
     privilegedIds = [], onPlaybackChange = null } = {}) {
     this.#token = token; this.#logger = logger; this.#runtime = runtime; this.#notify = notify;
     this.#idleMs = idleMs; this.#cooldownMs = cooldownMs;
@@ -92,7 +94,9 @@ export class MusicManager {
       ? allowLocalFileFor
       : (senderId) => privileged.has(String(senderId ?? ''));
     const tools = musicTools(); if (ytDlpPath) tools.ytDlp = ytDlpPath;
-    this.#pipeline = pipeline ?? new MusicAudioPipeline({ tools, logger, selectCandidate: selectCandidate ?? createDshMusicSelector(harness, { logger }) });
+    this.#pipeline = pipeline ?? new MusicAudioPipeline({
+      tools, logger, searchNativeMusic, resolveQuery, selectCandidate: selectCandidate ?? createDshMusicSelector(harness, { logger }),
+    });
   }
   get available() { return !this.#destroyed && typeof this.#token === 'string' && this.#token.length > 0; }
   async execute(command, args = {}) {
@@ -195,9 +199,45 @@ export class MusicManager {
       adapterCreator: guild.voiceAdapterCreator, selfDeaf: true, selfMute: false });
     room.connection = connection; room.channelId = voiceChannelId;
     connection.on('error', error => this.#log('warn', 'music.connection.error', error));
+    // A brief Ready -> Signalling -> Ready flicker is invisible in the 10 s health
+    // sample, but the player autopauses while the connection is not Ready, which a
+    // listener hears as the audio cutting out and coming back. Log every edge so a
+    // reported cutout can be matched against the connection, not guessed at.
+    connection.on('stateChange', (previous, next) => {
+      if (previous?.status === next?.status) return;
+      this.#log('info', 'music.connection.state', { from: previous?.status ?? null, to: next?.status ?? null, playback: room.state });
+    });
     connection.on(libs.VoiceConnectionStatus.Disconnected, () => { void this.#recover(room, connection); });
+    this.#trackDispatch(room, connection);
     try { await musicTask(libs.entersState(connection, libs.VoiceConnectionStatus.Ready, 15000), signal); }
     catch (error) { if (room.connection === connection) { room.connection = null; room.channelId = null; } connection.destroy(); if (signal?.aborted) throw error; throw new Error('無法建立語音連線，請確認頻道權限與 UDP 網路'); }
+  }
+  /**
+   * The player's 20 ms clock is the last local stage before the UDP socket, and
+   * `@discordjs/voice` exposes nothing about it. `dispatchAudio` runs once per
+   * cycle, so the interval between calls is the real send cadence: a cycle that is
+   * skipped (the connection briefly leaves Ready, or the event loop stalls) drops
+   * the packet that was prepared for it, and the listener hears a gap. Measuring
+   * this separates "the bot stopped sending" from "the network lost packets" —
+   * the read-gap metric cannot, because the player keeps reading either way.
+   */
+  #trackDispatch(room, connection) {
+    if (connection.__dshDispatch || typeof connection.dispatchAudio !== 'function') return;
+    const dispatch = connection.dispatchAudio.bind(connection);
+    const stats = { count: 0, lastAt: 0, maxGapMs: 0, gapsOver40: 0, gapsOver100: 0 };
+    connection.__dshDispatch = stats;
+    connection.dispatchAudio = () => {
+      const now = performance.now();
+      if (stats.lastAt) {
+        const gap = now - stats.lastAt;
+        if (gap > stats.maxGapMs) stats.maxGapMs = gap;
+        if (gap > 40) stats.gapsOver40++;
+        if (gap > 100) stats.gapsOver100++;
+      }
+      stats.lastAt = now; stats.count++;
+      return dispatch();
+    };
+    room.dispatch = stats;
   }
   async #recover(room, connection) {
     if (room.leaving || room.recovering || room.connection !== connection) return;
@@ -247,6 +287,7 @@ export class MusicManager {
       const preparation = this.#pipeline.prepare(track.query, {
         signal: track.controller.signal,
         guildId: room.id,
+        selectionMethod: track.selectionMethod,
         allowLocalFile: this.#allowLocalFileFor(track.senderId) === true,
       }).then(source => {
         if (track.controller.signal.aborted || room.leaving) { source.release?.(); throw new Error('歌曲準備已取消'); }
@@ -300,7 +341,11 @@ export class MusicManager {
         // A signed media URL expires, so a long track that waited in the queue can
         // outlive it. One extractor call is cheaper than failing the track.
         if (!remote || !['youtube', 'bilibili'].includes(source.kind) || signal.aborted || room.current !== track || room.leaving) throw error;
-        try { await musicTask(this.#pipeline.refreshStream(source, { signal }), signal); }
+        // A client YouTube has challenged still hands out a media URL that the CDN
+        // refuses with 403, so re-resolving with the same client would repeat the
+        // refusal. Force the fallback client for that case.
+        const client = source.kind === 'youtube' && /403|forbidden/i.test(error?.message ?? '') ? YOUTUBE_CLIENT_FALLBACK : undefined;
+        try { await musicTask(this.#pipeline.refreshStream(source, { signal, client }), signal); }
         catch { throw error; }
         transport = await musicTask(create(), signal);
       }
@@ -383,14 +428,19 @@ export class MusicManager {
       const streamNote = source.stream
         ? `\n這首 ${formatClock((Number(source.duration) || 0) * 1000)}，超過 ${Math.round((Number(source.limitSec) || 3600) / 60)} 分鐘上限，改用串流播放：不做音量正規化、不進快取，seek 可能較慢。`
         : '';
-      void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${streamNote}${source.selection === 'search-fallback' ? '\nDSH 選歌暫不可用，使用搜尋首選。' : ''}`);
+      const methodNote = source.selection === 'search-fallback'
+        ? '\nDSH 選歌暫不可用，使用搜尋首選。'
+        : Object.hasOwn(MUSIC_SELECTION_METHODS, source.selection)
+          ? `\n選歌方法：${MUSIC_SELECTION_METHODS[source.selection]}`
+          : '';
+      void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${streamNote}${methodNote}`);
       this.#prefetch(room);
     } catch (error) {
       if (!track.controller.signal.aborted && !room.leaving) { this.#log('warn', 'music.track.failed', error); await this.#say(track.channelId, `無法播放「${track.title ?? track.query}」：${error.message}`); }
       if (room.current === track) this.#finished(room, track.id);
     }
   }
-  async play({ channelId, senderId, query, senderName = null, signal }) {
+  async play({ channelId, senderId, query, selectionMethod, senderName = null, signal }) {
     query = String(query ?? '').trim(); if (!query || query.length > 500) return { message: '請提供歌曲關鍵詞或網址（最多 500 字）' };
     const key = `${channelId}:${senderId}`, now = Date.now();
     if (now - (this.#cooldowns.get(key) ?? 0) < this.#cooldownMs) return { message: '點歌太快，請稍等 3 秒' };
@@ -405,7 +455,7 @@ export class MusicManager {
     // the queue and the notices do not echo the whole link.
     const { title } = splitShareText(query);
     const label = title || query;
-    room.tracks.push({ id: randomUUID(), query, title: title || null, senderId, senderName: typeof senderName === 'string' ? senderName : null, channelId, controller: new AbortController(), source: null });
+    room.tracks.push({ id: randomUUID(), query, selectionMethod, title: title || null, senderId, senderName: typeof senderName === 'string' ? senderName : null, channelId, controller: new AbortController(), source: null });
     this.#pump(room); this.#prefetch(room);
     return { message: occupied ? `已加入音樂佇列：${label}` : `正在準備歌曲並統一音量：${label}` };
   }
@@ -446,7 +496,13 @@ export class MusicManager {
       ? `\n網路提醒：語音 WebSocket 往返 ${Math.round(wsPing)} ms 偏高，UDP 音訊可能斷續；可先 /music bitrate 降低碼率，或在 Discord 頻道設定換一個語音區域。`
       : '';
     const missed = Number.isFinite(health?.missedFrames) ? `${health.missedFrames} 幀` : '尚無資料';
-    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nWebSocket 往返：${number(ping?.ws)} ms（0.19.2 起不提供 UDP 往返）\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps（${mode}）\n頻道設定：${channel}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；掉幀：${missed}（上限 10）；讀取間隔 P95：${number(frames?.readGapP95Ms)} ms（近 10 秒峰值 ${number(frames?.maxReadGapMs)} ms，整首峰值 ${number(frames?.peakReadGapMs)} ms）；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\n以上皆為本機指標；尚無接收端 RTP 丟包統計。${network}` };
+    // The send cadence is the last local stage before the UDP socket: a gap here
+    // means the bot itself stopped sending, which is a different fault from the
+    // receiver losing packets on the wire.
+    const dispatch = Number.isFinite(health?.dispatchGapMaxMs)
+      ? `送出間隔：近 10 秒峰值 ${number(health.dispatchGapMaxMs)} ms（>40 ms ${number(health.dispatchGapsOver40)} 次、>100 ms ${number(health.dispatchGapsOver100)} 次）\n`
+      : '';
+    return { message: `語音狀態：${room.connection?.state?.status ?? '未連線'}\nWebSocket 往返：${number(ping?.ws)} ms（0.19.2 起不提供 UDP 往返）\n音訊碼率：${(frames?.bitrate ?? room.bitrate) / 1000} kbps；目標：${room.requestedBitrate / 1000} kbps（${mode}）\n頻道設定：${channel}\n音訊預讀：${frames?.bufferedMs ?? 0} ms（非端到端延遲）\n播放編碼：${encoder}\n播放執行：${execution}\n來源缺包：${frames?.sourceStarved ?? 0}；掉幀：${missed}（上限 10）；讀取間隔 P95：${number(frames?.readGapP95Ms)} ms（近 10 秒峰值 ${number(frames?.maxReadGapMs)} ms，整首峰值 ${number(frames?.peakReadGapMs)} ms）；${execution}最大延遲：${number(health?.eventLoopMaxMs)} ms\n${dispatch}預讀：最多 ${MUSIC_PREFETCH_DEPTH} 首（先搜尋並解碼，輪到時直接播放）；待預讀 ${room.tracks.filter(track => !track.preparation).length} 首\n以上皆為本機指標；尚無接收端 RTP 丟包統計。${network}` };
   }
   async volume({ channelId, senderId, percent, deltaPercent, signal }) {
     const { room } = await this.#context(channelId, senderId, { signal });
@@ -644,6 +700,12 @@ export class MusicManager {
         this.#log('info', 'music.card.refused', { guildId: String(guildId), action, userId, rule: voiceChannelId ? 'other-channel' : 'not-in-voice' });
         return { ok: false, message: '請先加入機器人目前所在的語音頻道再操作音樂' };
       }
+    }
+    // The card's 🗑️ removes the card, so it must clear the music too: a paused
+    // track keeps the room alive and every later /play queues behind it forever.
+    if (action === 'stop') {
+      this.#clear(room); this.#idle(room); this.#changed(room);
+      return { ok: true, message: '已停止音樂並清空佇列' };
     }
     if (action === 'pause') {
       if (room.state !== 'playing') return { ok: false, message: '目前沒有可暫停的歌曲' };

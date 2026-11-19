@@ -25,10 +25,13 @@ const runtime = { ...voice, Client, GatewayIntentBits: { Guilds: 1, GuildVoiceSt
 };
 const server = serveMusicWorker(parentPort, workerData, options => {
   const pipeline = {
-    prepare: async (query, { signal, guildId }) => {
+    prepare: async (query, { signal, guildId, selectionMethod }) => {
       if (query.startsWith('select:')) await options.selectCandidate({ query, signal, guildId, candidates: [{ id: 'fixture' }] });
+      const hints = selectionMethod === 'dsh-web' ? await options.searchNativeMusic({ query, signal }) : null;
+      const resolved = selectionMethod === 'dsh-resolve' ? await options.resolveQuery({ query, guildId, signal }) : null;
       signal.throwIfAborted();
-      return { input: workerData.input, title: query, release() { parentPort.postMessage({ fixture: 'released', query }); } };
+      return { input: workerData.input, title: hints?.[0] ?? resolved ?? query, selection: selectionMethod,
+        release() { parentPort.postMessage({ fixture: 'released', query }); } };
     }, destroy() {},
   };
   const bufferedFactory = async (...args) => {

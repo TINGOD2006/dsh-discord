@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { applicationCommandPayloads, commandTextFromInteraction, handleApplicationCommand } from '../../src/channels/discord/discord-commands.mjs';
 import { isMusicCommand, isRetiredMusicShortcut, parseMusicCommand, runMusicCommand, runRetiredMusicShortcut } from '../../src/channels/shared/music-commands.mjs';
 import { isControlCommand } from '../../src/channels/shared/control-command.mjs';
-import { createDshMusicSelector, selectedCandidate } from '../../src/channels/discord/music-dsh.mjs';
+import { createDshMusicSelector, createDshWebMusicSearch, selectedCandidate } from '../../src/channels/discord/music-dsh.mjs';
 import { DiscordHarnessBridge } from '../../src/channels/discord/discord-bridge.mjs';
 
 test('existing AI stop and skip are never parsed as music', () => {
@@ -95,9 +95,111 @@ test('registered command names are unique and AI/music parsers never claim the s
   assert.equal(commands.find(command=>command.name==='play').options[0].required,true);
 });
 
+test('native and text play requests pass one optional selection method without changing the query', async () => {
+  const play = applicationCommandPayloads().find(command => command.name === 'play');
+  const method = play.options.find(option => option.name === 'method');
+  assert.equal(method.required, false);
+  assert.deepEqual(method.choices.map(choice => choice.value), ['youtube', 'tfidf', 'dsh', 'dsh-resolve', 'dsh-web']);
+
+  const native = commandTextFromInteraction({ data: { name: 'play', options: [
+    { type: 3, name: 'method', value: 'tfidf' },
+    { type: 3, name: 'query', value: 'LOL s15主題曲' },
+  ] } });
+  assert.equal(native, '/play --method=tfidf LOL s15主題曲');
+  const requests = [];
+  const context = { conversationId: 'text', senderId: 'user', music: {
+    execute: async (name, args) => { requests.push({ name, ...args }); return { message: 'ok' }; },
+  } };
+  for (const command of [native, '/play --method youtube LOL s15主題曲', '/play --method=dsh LOL s15主題曲',
+    '/play --method=dsh-web LOL s15主題曲', '/play LOL s15主題曲']) {
+    await runMusicCommand(command, null, null, null, context);
+  }
+  assert.deepEqual(requests.map(({ selectionMethod }) => selectionMethod), ['tfidf', 'youtube', 'dsh', 'dsh-web', undefined]);
+  assert(requests.every(({ name, query }) => name === 'play' && query === 'LOL s15主題曲'));
+  for (const command of ['/play --method=other song', '/play --method']) {
+    assert.match((await runMusicCommand(command, null, null, null, context)).message, /有效選歌方法/);
+  }
+  assert.equal(requests.length, 5);
+});
+
+test('playmethod stores one global default that /play then uses', async () => {
+  const payload = applicationCommandPayloads().find(command => command.name === 'playmethod');
+  assert(payload, '/playmethod must be registered');
+  assert.equal(payload.options[0].required, false);
+  assert.deepEqual(payload.options[0].choices.map(choice => choice.value), ['youtube', 'tfidf', 'dsh', 'dsh-resolve', 'dsh-web']);
+  assert.equal(commandTextFromInteraction({ data: { name: 'playmethod', options: [{ type: 3, name: 'method', value: 'tfidf' }] } }), '/playmethod tfidf');
+  assert.equal(commandTextFromInteraction({ data: { name: 'playmethod', options: [] } }), '/playmethod');
+  assert.equal(isMusicCommand('/playmethod'), true);
+  assert.equal(isMusicCommand('/playmethodx'), false);
+  assert.deepEqual(parseMusicCommand('/playmethod dsh-web'), { name: 'playmethod', argument: 'dsh-web' });
+
+  let saved = null;
+  const state = { musicDefaultMethod: () => saved, setMusicDefaultMethod: async method => { saved = method; } };
+  const requests = [];
+  const context = { conversationId: 'text', senderId: 'user', music: {
+    execute: async (name, args) => { requests.push({ name, ...args }); return { message: 'ok' }; },
+  } };
+
+  assert.match((await runMusicCommand('/playmethod dsh-web', null, state, null, context)).message, /dsh-web/);
+  assert.equal(saved, 'dsh-web');
+  assert.match((await runMusicCommand('/playmethod Youtubefirst', null, state, null, context)).message, /youtube/);
+  assert.equal(saved, 'youtube', 'spoken spellings map to the canonical method');
+  assert.match((await runMusicCommand('/playmethod', null, state, null, context)).message, /目前預設選歌方法：youtube/);
+  assert.match((await runMusicCommand('/playmethod nope', null, state, null, context)).message, /沒有這個選歌方法/);
+  assert.equal(saved, 'youtube', 'an invalid method must not overwrite the saved one');
+
+  await runMusicCommand('/play 晴天', null, state, null, context);
+  assert.equal(requests.at(-1).selectionMethod, 'youtube');
+  await runMusicCommand('/play --method=tfidf 晴天', null, state, null, context);
+  assert.equal(requests.at(-1).selectionMethod, 'tfidf', 'an explicit --method still wins');
+  assert.equal(requests.at(-1).query, '晴天');
+});
+
+test('DSH native mode uses the host web service and returns only structured source URLs', async () => {
+  const query = '播周杰倫《范特西》第三首';
+  const url = 'https://www.youtube.com/watch?v=pzt6SmvGpXk';
+  const lookup = createDshWebMusicSearch({ get(name) {
+    assert.equal(name, 'web');
+    return { search: async (request, signal) => {
+      assert.equal(request.llmProvider, 'deepseek-official');
+      assert.equal(request.maxResults, 8);
+      assert(request.query.includes(JSON.stringify(query)));
+      assert.equal(signal.aborted, false);
+      return { content: 'https://fabricated.example', sources: [{ url }, { title: 'No link' }] };
+    } };
+  } });
+  assert.deepEqual(await lookup({ query }), [url]);
+});
+
+test('DSH native mode reports unavailable, timed out and cancelled searches', async () => {
+  const missing = createDshWebMusicSearch({});
+  await assert.rejects(missing({ query: 'song' }), /未啟用/);
+  const denied = createDshWebMusicSearch({ web: { search: async () => {
+    throw Object.assign(new Error('internal credential details'), { code: 'WEB_PROVIDER_CREDENTIAL_MISSING' });
+  } } });
+  await assert.rejects(denied({ query: 'song' }), /請在 Harness 設定可用的搜尋後端/);
+  const slow = createDshWebMusicSearch({ web: { search: (_request, signal) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }) } }, { timeoutMs: 10 });
+  const keepEventLoopAlive = setTimeout(() => {}, 100);
+  try {
+    await assert.rejects(slow({ query: 'song' }), /原生網搜逾時/);
+    const controller = new AbortController();
+    const pending = slow({ query: 'song', signal: controller.signal });
+    controller.abort();
+    await assert.rejects(pending, { name: 'AbortError' });
+  } finally {
+    clearTimeout(keepEventLoopAlive);
+  }
+});
+
 for (const command of [
   { data: { name: 'music', options: [{ type: 1, name: 'stop' }] }, text: '/music stop' },
   { data: { name: 'play', options: [{ type: 3, name: 'query', value: 'song' }] }, text: '/play song' },
+  { data: { name: 'play', options: [{ type: 3, name: 'query', value: 'song' }, { type: 3, name: 'method', value: 'youtube' }] },
+    text: '/play --method=youtube song' },
+  { data: { name: 'play', options: [{ type: 3, name: 'query', value: 'song' }, { type: 3, name: 'method', value: 'dsh-web' }] },
+    text: '/play --method=dsh-web song' },
   { data: { name: 'stop' }, text: '/stop' },
 ]) test(`native ${command.text} acknowledgement and answer are public before and after execution`, async () => {
   const order=[];

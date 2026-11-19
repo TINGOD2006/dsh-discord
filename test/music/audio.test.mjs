@@ -2,11 +2,441 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { MusicAudioPipeline, musicTools, loudnessStats, youtubeUrl, embeddedUrl, splitShareText, completeDuration, normalizationFilter, loudnessAnalysisFilter, streamHeaders, MUSIC_LOUDNESS, MUSIC_CACHE_VERSION } from '../../src/channels/discord/music-audio.mjs';
+import { MusicAudioPipeline, musicTools, loudnessStats, youtubeUrl, embeddedUrl, splitShareText, completeDuration, normalizationFilter, loudnessAnalysisFilter, streamHeaders, MUSIC_LOUDNESS, MUSIC_CACHE_VERSION, YOUTUBE_CLIENT_FALLBACK } from '../../src/channels/discord/music-audio.mjs';
 import { runMusicProcess } from '../../src/channels/discord/music-process.mjs';
+import { selectTfidfCandidate, resolutionMatches } from '../../src/channels/shared/music-selection.mjs';
+import { resolvedQuery } from '../../src/channels/discord/music-dsh.mjs';
 
 const work=resolve('work/test-music');
 async function scratch(fn){await mkdir(work,{recursive:true});const dir=await mkdtemp(join(work,'case-'));try{await fn(dir);}finally{assert(resolve(dir).startsWith(work+'\\')||resolve(dir).startsWith(work+'/'));await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:50});}}
+
+test('TF-IDF handles mixed-script text and preserves search order at zero overlap', () => {
+  const first = { title: 'First result', artist: '' };
+  const second = { title: 'Ｓ１５ 主題曲', artist: 'Music' };
+  assert.equal(selectTfidfCandidate('s15主題曲', [first, second]), second);
+  assert.equal(selectTfidfCandidate('♫', [first, second]), first);
+});
+
+test('DSH native keyword playback verifies web-source links and never searches another way on a miss', async () => {
+  await scratch(async dir => {
+    const official = 'https://www.youtube.com/watch?v=pzt6SmvGpXk';
+    const liveId = 'liveonly123', live = 'https://www.youtube.com/watch?v=' + liveId;
+    const checked = [], downloaded = [];
+    let lookups = 0;
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        const target = args.at(-1);
+        if (args.includes('--dump-single-json')) {
+          checked.push(target);
+          if (target === live) return { stdout: JSON.stringify({ id: liveId, is_live: true }) };
+          assert.equal(target, official);
+          return { stdout: JSON.stringify({ id: 'pzt6SmvGpXk', title: 'Verified anthem', duration: 5, url: 'https://media.example/audio' }) };
+        }
+        downloaded.push(target);
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify({ title: 'Verified anthem', duration: 5 }));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 5 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      selectCandidate: async () => assert.fail('native mode must not call the five-candidate selector'),
+      searchNativeMusic: async ({ query }) => {
+        lookups++;
+        if (query === 'missing') return ['https://example.invalid/album'];
+        assert.equal(query, 'LOL s15主題曲');
+        return ['https://youtube.com.example.invalid/watch?v=pzt6SmvGpXk', live, 'https://youtu.be/' + liveId, official];
+      },
+    });
+    try {
+      const options = { guildId: 'guild', selectionMethod: 'dsh-web' };
+      const source = await pipeline.prepare('LOL s15主題曲', options);
+      assert.equal(source.url, official);
+      assert.equal(source.selection, 'dsh-web');
+      assert.equal(source.title, 'Verified anthem');
+      source.release();
+      const cached = await pipeline.prepare('LOL s15主題曲', options);
+      assert.equal(cached.cacheHit, true);
+      cached.release();
+      assert.equal(lookups, 1);
+      await assert.rejects(pipeline.prepare('missing', options), /沒有找到可播放的 YouTube 單曲/);
+      assert.deepEqual(checked, [live, official]);
+      assert.deepEqual(downloaded, [official]);
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('DSH native mode hands the verified videos to the model instead of taking the first', async () => {
+  await scratch(async dir => {
+    const first = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
+    const second = 'https://www.youtube.com/watch?v=bbbbbbbbbbb';
+    const checked = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        const target = args.at(-1);
+        if (args.includes('--dump-single-json')) {
+          checked.push(target);
+          const id = target === first ? 'aaaaaaaaaaa' : 'bbbbbbbbbbb';
+          const title = target === first ? 'Commentary about the song' : 'Official music video';
+          return { stdout: JSON.stringify({ id, title, duration: 200, url: 'https://media.example/audio' }) };
+        }
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify({ title: 'Official music video', duration: 200 }));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 200 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    let seen = null;
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      searchNativeMusic: async () => [first, second],
+      selectCandidate: async ({ query, candidates }) => {
+        seen = { query, ids: candidates.map(candidate => candidate.id) };
+        return { candidate: candidates.find(candidate => candidate.id === 'bbbbbbbbbbb'), selection: 'dsh' };
+      },
+    });
+    try {
+      const source = await pipeline.prepare('some song', { guildId: 'guild', selectionMethod: 'dsh-web' });
+      assert.equal(source.id, 'bbbbbbbbbbb', 'the model choice wins over source order');
+      assert.equal(source.selection, 'dsh-web');
+      assert.deepEqual(checked, [first, second]);
+      assert.equal(seen.query, 'some song');
+      assert.deepEqual(seen.ids, ['aaaaaaaaaaa', 'bbbbbbbbbbb']);
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('DSH native mode keeps the first verified video when the selector fails', async () => {
+  await scratch(async dir => {
+    const first = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
+    const second = 'https://www.youtube.com/watch?v=bbbbbbbbbbb';
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        const target = args.at(-1);
+        if (args.includes('--dump-single-json')) {
+          const id = target === first ? 'aaaaaaaaaaa' : 'bbbbbbbbbbb';
+          return { stdout: JSON.stringify({ id, title: 'Song', duration: 200, url: 'https://media.example/audio' }) };
+        }
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify({ title: 'Song', duration: 200 }));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 200 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      searchNativeMusic: async () => [first, second],
+      selectCandidate: async () => { throw new Error('selector unavailable'); },
+    });
+    try {
+      const source = await pipeline.prepare('some song', { guildId: 'guild', selectionMethod: 'dsh-web' });
+      assert.equal(source.id, 'aaaaaaaaaaa', 'a selector failure must not lose a verified video');
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('keyword playback keeps method-specific winners from one filtered YouTube snapshot', async () => {
+  await scratch(async dir => {
+    const anthem = { id: 'pzt6SmvGpXk', title: 'Sacrifice ft. G.E.M. Worlds 2025 Anthem', duration: 252 };
+    const commentary = { id: '1vRpKlZSkOI', title: 'S15 主題曲評論', duration: 1235 };
+    const entries = [
+      { id: 'liveonly123', title: 'S15 主題曲直播', is_live: true },
+      anthem,
+      { id: 'longonly123', title: 'LOL s15主題曲', duration: 7200 },
+      commentary,
+    ];
+    let searches = 0;
+    let modelCalls = 0;
+    const run = async (file, args, { cwd }) => {
+      if (file === 'extractor') {
+        if (args.at(-1) === 'ytsearch10:LOL s15主題曲') {
+          searches++;
+          // An ambiguous Latin query resolves differently per YouTube UI language.
+          assert(args.some(arg => arg.includes('lang=zh-TW')), 'search must pin the YouTube UI language');
+          return { stdout: JSON.stringify({ entries }) };
+        }
+        const item = entries.find(entry => args.at(-1).endsWith(entry.id));
+        assert(item, 'only a known video can be downloaded');
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(item));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') {
+        const { duration } = JSON.parse(await readFile(join(cwd, 'download.json'), 'utf8'));
+        return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration } }) };
+      }
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run, selectCandidate: async ({ candidates }) => {
+        modelCalls++;
+        assert.deepEqual(candidates.map(candidate => candidate.id), [anthem.id, commentary.id]);
+        return { candidate: candidates[0], selection: 'dsh' };
+      },
+    });
+    try {
+      const prepare = selectionMethod => pipeline.prepare('LOL s15主題曲', { guildId: 'guild', selectionMethod });
+      const sources = await Promise.all([prepare('youtube'), prepare('tfidf'), prepare()]);
+      assert.deepEqual(sources.map(({ id, selection }) => [id, selection]), [
+        [anthem.id, 'youtube'], [commentary.id, 'tfidf'], [anthem.id, 'dsh'],
+      ]);
+      const repeated = await prepare('tfidf');
+      assert.equal(repeated.id, commentary.id);
+      assert.equal(searches, 1);
+      assert.equal(modelCalls, 1);
+      for (const source of [...sources, repeated]) source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('resolvedQuery reads only a usable search string', () => {
+  assert.equal(resolvedQuery('{"query":"花譜 糸"}'), '花譜 糸');
+  assert.equal(resolvedQuery('{"query":"花譜 糸","confident":true}'), '花譜 糸');
+  assert.equal(resolvedQuery('```json\n{"query":"  花譜   糸  "}\n```'), '花譜 糸');
+  assert.equal(resolvedQuery('{"query":"花譜 糸","confident":false}'), '花譜 糸', 'confidence is advisory, not a gate');
+  assert.equal(resolvedQuery('{"query":""}'), null);
+  assert.equal(resolvedQuery('{"query":123}'), null);
+  assert.equal(resolvedQuery('no json here'), null);
+  assert.equal(resolvedQuery('{"query":"' + 'x'.repeat(201) + '"}'), null);
+});
+
+test('dsh-resolve rewrites a relational request before retrieval and still selects with the model', async () => {
+  await scratch(async dir => {
+    const ito = { id: '3Wtx6k2vInU', title: '花譜 #06「糸」【原創MV】', duration: 227 };
+    const popular = { id: 'aaaaaaaaaaa', title: '花譜 #154「ありふれてたい」', duration: 280 };
+    const searches = [];
+    const selections = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        if (args.at(-1).startsWith('ytsearch')) {
+          searches.push(args.at(-1));
+          return { stdout: JSON.stringify({ entries: [popular, ito] }) };
+        }
+        const item = [popular, ito].find(entry => args.at(-1).endsWith(entry.id));
+        assert(item, 'only a known video can be downloaded');
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(item));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 227 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      resolveQuery: async ({ query }) => { assert.equal(query, 'kaf 第一首歌'); return '花譜 糸'; },
+      selectCandidate: async ({ query, candidates }) => {
+        selections.push({ query, ids: candidates.map(candidate => candidate.id) });
+        return { candidate: candidates.find(candidate => candidate.id === ito.id), selection: 'dsh' };
+      },
+    });
+    try {
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      assert.equal(source.id, ito.id);
+      assert.equal(source.selection, 'dsh-resolve');
+      assert.equal(source.resolvedQuery, '花譜 糸');
+      assert.deepEqual(searches, ['ytsearch10:花譜 糸']);
+      assert.equal(selections.length, 1);
+      assert.equal(selections[0].query, 'kaf 第一首歌', 'the selector still sees the original request');
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('a rewrite is used only when the search results corroborate it', () => {
+  const titles = [{ title: '花譜 #06「糸」【原創MV】' }, { title: '花譜 #154「ありふれてたい」' }];
+  assert.equal(resolutionMatches('花譜 糸', titles), true);
+  assert.equal(resolutionMatches('花譜 不存在的歌', titles), false);
+  assert.equal(resolutionMatches('', titles), false);
+});
+
+test('dsh-resolve keeps the original query when the results do not corroborate the rewrite', async () => {
+  await scratch(async dir => {
+    const song = { id: '3Wtx6k2vInU', title: '花譜 #06「糸」【原創MV】', duration: 227 };
+    const searches = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        if (args.at(-1).startsWith('ytsearch')) {
+          searches.push(args.at(-1));
+          return { stdout: JSON.stringify({ entries: [song] }) };
+        }
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(song));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 227 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      resolveQuery: async () => '花譜 不存在的歌',
+      selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
+    });
+    try {
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      assert.equal(source.resolvedQuery, undefined, 'an uncorroborated rewrite must not be used');
+      assert.deepEqual(searches, ['ytsearch10:花譜 不存在的歌', 'ytsearch10:kaf 第一首歌']);
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('dsh-resolve resolves every request, including an ordinary artist and song one', async () => {
+  await scratch(async dir => {
+    const song = { id: '3Wtx6k2vInU', title: 'Adele - Hello', duration: 295 };
+    let resolved = 0;
+    const searches = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        if (args.at(-1).startsWith('ytsearch')) {
+          searches.push(args.at(-1));
+          return { stdout: JSON.stringify({ entries: [song] }) };
+        }
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(song));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 295 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      resolveQuery: async () => { resolved++; return 'Adele Hello'; },
+      selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
+    });
+    try {
+      await pipeline.prepare('Adele Hello', { guildId: 'guild', selectionMethod: 'dsh-resolve' }).then(source => source.release());
+      assert.equal(resolved, 1, 'every request is resolved');
+      assert.deepEqual(searches, ['ytsearch10:Adele Hello']);
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('an unplayable selected video falls back to the next eligible candidate', async () => {
+  await scratch(async dir => {
+    const blocked = { id: 'aaaaaaaaaaa', title: 'Age gated', duration: 200 };
+    const playable = { id: 'bbbbbbbbbbb', title: 'Playable', duration: 200 };
+    const downloads = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        if (args.includes('--dump-single-json')) return { stdout: JSON.stringify({ entries: [blocked, playable] }) };
+        const target = args.at(-1);
+        downloads.push(target);
+        if (target.endsWith(blocked.id)) throw new Error('ERROR: [youtube] aaaaaaaaaaa: Sign in to confirm your age');
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(playable));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 200 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
+    });
+    try {
+      const source = await pipeline.prepare('some song', { guildId: 'guild' });
+      assert.equal(source.id, playable.id, 'the next eligible candidate is used');
+      assert.deepEqual(downloads, [blocked, playable].map(item => 'https://www.youtube.com/watch?v=' + item.id));
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('dsh-resolve prefers verified audio for the requested song after its selected MV is blocked', async () => {
+  await scratch(async dir => {
+    const query = 'yoasobi的第一首曲';
+    const rewritten = 'YOASOBI 夜に駆ける';
+    const mv = { id: 'x8VYWazR5mE', title: 'YOASOBI「夜に駆ける」 Official Music Video', duration: 276 };
+    const otherSong = { id: 'evtoG-4dLM4', title: 'Watch me!', duration: 186, uploader: 'YOASOBI', channel_is_verified: true };
+    const unverified = { id: 'mTdfEMAa72s', title: '夜に駆ける', duration: 281, uploader: 'YOASOBI' };
+    const audio = { id: 'by4SYYWlhEs', title: '夜に駆ける', duration: 262, uploader: 'YOASOBI', channel_is_verified: true };
+    const downloads = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        const target = args.at(-1);
+        if (args.includes('--dump-single-json')) {
+          assert.equal(target, 'ytsearch10:' + rewritten);
+          return { stdout: JSON.stringify({ entries: [mv, otherSong, unverified, audio] }) };
+        }
+        downloads.push(new URL(target).searchParams.get('v'));
+        if (target.endsWith(mv.id)) throw new Error('請登入帳戶以確認你已滿限制年齡');
+        assert.equal(target, 'https://www.youtube.com/watch?v=' + audio.id);
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(audio));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: audio.duration } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      resolveQuery: async () => rewritten,
+      selectCandidate: async ({ query: received, candidates }) => {
+        assert.equal(received, query);
+        return { candidate: candidates[0], selection: 'dsh' };
+      },
+    });
+    try {
+      const source = await pipeline.prepare(query, { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      assert.equal(source.id, audio.id);
+      assert.equal(source.selection, 'dsh-resolve');
+      assert.equal(source.resolvedQuery, rewritten);
+      assert.deepEqual(downloads, [mv.id, audio.id]);
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
 
 test('only real YouTube host and video shapes reach the direct route',()=>{
   assert.equal(youtubeUrl('https://youtu.be/jNQXAC9IVRw'),'https://www.youtube.com/watch?v=jNQXAC9IVRw');
@@ -194,6 +624,55 @@ test('a stale stream URL is refreshed from the extractor before a retry',async()
       assert.equal(source.streamUrl,'https://media.example/signed-1.m4a');
       assert.equal(source.duration,7200);
       assert.match(source.headers,/Referer: https:\/\/www\.bilibili\.com/);
+    }finally{await pipeline.destroy();}
+  });
+});
+
+test('the extractor falls back to a client YouTube has not challenged, and a refused stream can force it',async()=>{
+  await scratch(async dir=>{
+    const calls=[];
+    const run=async(file,args)=>{
+      calls.push({file,args});
+      if(file==='extractor'&&args.includes('--dump-single-json')){
+        return{stdout:JSON.stringify({title:'Long mix',duration:7200,url:'https://media.example/signed.m4a',http_headers:{}})};
+      }
+      throw new Error(`unexpected ${file} ${args.join(' ')}`);
+    };
+    const pipeline=new MusicAudioPipeline({cacheDir:join(dir,'cache'),tools:{ytDlp:'extractor',ffmpeg:'ffmpeg',ffprobe:'probe',node:process.execPath},run});
+    const client=()=>{const args=calls.at(-1).args;return args[args.indexOf('--extractor-args')+1];};
+    try{
+      const source={kind:'youtube',url:'https://www.youtube.com/watch?v=jNQXAC9IVRw',input:'https://media.example/signed.m4a',stream:true,duration:7200};
+      await pipeline.refreshStream(source);
+      assert.equal(client(),'youtube:player_client=default,android;lang=zh-TW','a challenged default client falls back instead of failing the track');
+      await pipeline.refreshStream(source,{client:YOUTUBE_CLIENT_FALLBACK});
+      assert.equal(client(),'youtube:player_client=android;lang=zh-TW','a refused stream re-resolves with the fallback client alone');
+    }finally{await pipeline.destroy();}
+  });
+});
+
+test('a flagged Bilibili IP gets the homepage cookie so the API fallback can run',async t=>{
+  await scratch(async dir=>{
+    const plugins=join(dir,'plugins');await mkdir(plugins,{recursive:true});
+    const calls=[];
+    const run=async(file,args)=>{
+      calls.push({file,args});
+      if(file==='extractor'&&args.includes('--dump-single-json')){
+        return{stdout:JSON.stringify({title:'Bili track',duration:200,url:'https://media.example/a.m4a',http_headers:{}})};
+      }
+      throw new Error(`unexpected ${file} ${args.join(' ')}`);
+    };
+    const pipeline=new MusicAudioPipeline({cacheDir:join(dir,'cache'),tools:{ytDlp:'extractor',ffmpeg:'ffmpeg',ffprobe:'probe',node:process.execPath,plugins},run});
+    const homepage=t.mock.method(globalThis,'fetch',()=>new Response('',{status:200,headers:{'set-cookie':'buvid3=abc123infoc; Path=/; Domain=.bilibili.com'}}));
+    try{
+      const source={kind:'bilibili',url:'https://www.bilibili.com/video/BV1z3Y76eEsg?p=1',input:'https://media.example/a.m4a',stream:true,duration:200};
+      await pipeline.refreshStream(source);
+      const args=calls.at(-1).args;
+      const cookieFile=args[args.indexOf('--cookies')+1];
+      assert(cookieFile,'the extractor is given a cookie file');
+      assert.match(await readFile(cookieFile,'utf8'),/buvid3\tabc123infoc/,'the homepage cookie is written in Netscape form');
+      assert.equal(homepage.mock.callCount(),1,'the homepage is fetched once');
+      await pipeline.refreshStream(source);
+      assert.equal(homepage.mock.callCount(),1,'the cookie file is reused instead of refetched');
     }finally{await pipeline.destroy();}
   });
 });

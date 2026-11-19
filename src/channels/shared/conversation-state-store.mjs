@@ -10,6 +10,7 @@ const EXTENSION_KEYS = Object.freeze([
   'emailBindings', 'mailCursor', 'pendingAuth', 'threadIds', 'rootAnchors',
   'whatsappBotMessageIds',
   'discordThreadAutoReplies',
+  'musicDefaultMethod',
 ]);
 
 const PENDING_MESSAGE_LIMIT = 200;
@@ -91,9 +92,26 @@ function normalizeState(value) {
       }
     }
   }
+  // Per-conversation usage of the bound Session, for automatic rotation. Only
+  // written once a turn has run, so an untouched state file keeps the shape
+  // earlier versions wrote.
+  const sessionRotation = {};
+  if (value.sessionRotation && typeof value.sessionRotation === 'object' && !Array.isArray(value.sessionRotation)) {
+    for (const [key, entry] of Object.entries(value.sessionRotation)) {
+      if (typeof key !== 'string' || !key || !entry || typeof entry !== 'object') continue;
+      const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : '';
+      if (!sessionId) continue;
+      sessionRotation[key] = {
+        sessionId,
+        turns: Number.isSafeInteger(entry.turns) && entry.turns > 0 ? entry.turns : 0,
+        lastAt: Number.isSafeInteger(entry.lastAt) && entry.lastAt > 0 ? entry.lastAt : 0,
+      };
+    }
+  }
   const normalized = {
     version: 1,
     sessions,
+    ...(Object.keys(sessionRotation).length ? { sessionRotation } : {}),
     ...(pendingMessages.length ? { pendingMessages } : {}),
     ...(value.deferred ? { deferred: normalizeDeferredState(value.deferred) } : {}),
     seenMessageIds: Array.isArray(value.seenMessageIds)
@@ -209,11 +227,49 @@ export class ConversationStateStore {
 
   async clearSession(key) {
     delete this.#state.sessions[key];
+    if (this.#state.sessionRotation) delete this.#state.sessionRotation[key];
     await this.#persist();
   }
 
   async clearSessions() {
     this.#state.sessions = {};
+    delete this.#state.sessionRotation;
+    await this.#persist();
+  }
+
+  /**
+   * Usage of the Session currently bound to a conversation, for automatic
+   * rotation. Null when the conversation has never run a turn.
+   */
+  sessionRotationFor(key) {
+    const entry = this.#state.sessionRotation?.[key];
+    if (!entry || typeof entry !== 'object') return null;
+    const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : '';
+    if (!sessionId) return null;
+    return {
+      sessionId,
+      turns: Number.isSafeInteger(entry.turns) && entry.turns > 0 ? entry.turns : 0,
+      lastAt: Number.isSafeInteger(entry.lastAt) && entry.lastAt > 0 ? entry.lastAt : 0,
+    };
+  }
+
+  /**
+   * Count one turn against the bound Session. A different Session id resets the
+   * counter, which is what makes a rotation (or a manual `/clear`) start the
+   * next Session from zero instead of inheriting the old count.
+   */
+  async recordSessionTurn(key, sessionId, now = Date.now()) {
+    if (typeof key !== 'string' || !key) return;
+    if (typeof sessionId !== 'string' || !sessionId) return;
+    const current = this.#state.sessionRotation ?? {};
+    const previous = current[key];
+    const turns = previous?.sessionId === sessionId && Number.isSafeInteger(previous.turns)
+      ? previous.turns + 1
+      : 1;
+    this.#state.sessionRotation = {
+      ...current,
+      [key]: { sessionId, turns, lastAt: Number.isSafeInteger(now) && now > 0 ? now : Date.now() },
+    };
     await this.#persist();
   }
 
@@ -323,6 +379,31 @@ export class ConversationStateStore {
   /** Flush the current state to disk after an extension write. */
   persist() {
     return this.#persist();
+  }
+
+  /**
+   * Bot-wide default song selection method, or null when the operator never set
+   * one. The caller validates the value against the methods this build runs; a
+   * hand-edited unknown string is reported as null instead of breaking /play.
+   */
+  musicDefaultMethod() {
+    const value = this.#state.musicDefaultMethod;
+    return typeof value === 'string' && value ? value : null;
+  }
+
+  async setMusicDefaultMethod(method) {
+    if (typeof method !== 'string' || !method) throw new TypeError('Invalid music selection method');
+    const previous = this.#state.musicDefaultMethod;
+    this.#state.musicDefaultMethod = method;
+    try {
+      await this.#persist();
+    } catch (error) {
+      if (this.#state.musicDefaultMethod === method) {
+        if (previous === undefined) delete this.#state.musicDefaultMethod;
+        else this.#state.musicDefaultMethod = previous;
+      }
+      throw error;
+    }
   }
 
   async remove() {

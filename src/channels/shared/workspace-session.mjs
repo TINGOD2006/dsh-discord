@@ -2,6 +2,7 @@ import { withSessionBindingLock } from './session-binding-lock.mjs';
 import { rememberSessionConversation } from './session-channel-registry.mjs';
 import { initialSessionTitle } from './session-title.mjs';
 import { messageDiagnosticError } from './connection-error.mjs';
+import { rotationDue, isContextOverflowFailure } from './session-rotation.mjs';
 
 export const WORKSPACE_SESSION_STALE = 'workspace-session-stale';
 
@@ -110,6 +111,11 @@ export async function askInWorkspaceSession({
   trustBoundSession = false,
   askOptions,
   deferredDelivery,
+  // Automatic Session rotation. When the bound Session has answered
+  // `rotation.maxTurns` turns, or has been idle for `rotation.maxIdleMs`, the
+  // binding is replaced with a fresh Session before this prompt is sent. The
+  // old Session is left on disk; only the binding moves.
+  rotation = null,
 }) {
   const initialTitle = contextEnhanced
     ? initialSessionTitle({
@@ -121,6 +127,12 @@ export async function askInWorkspaceSession({
   const renameSignal = createOptions?.signal
     ?? (typeof askOptions === 'object' ? askOptions?.signal : undefined);
   const renameOptions = renameSignal ? { signal: renameSignal } : undefined;
+  // One turn is counted per call, not per binding attempt: a stale-workspace
+  // retry re-enters the lock and must not inflate the counter.
+  let recorded = false;
+  // A Session that has already outgrown the window is replaced once, not on
+  // every retry: a prompt that overflows a brand-new Session is a real failure.
+  let overflowRetried = false;
   while (true) {
     const diagnostic = { stage: 'session.prepare', submissionState: 'not-submitted' };
     try {
@@ -133,11 +145,23 @@ export async function askInWorkspaceSession({
         // the persona context can find it later (it never sees the conversation key).
         if (sessionId) rememberSessionConversation(sessionId, key);
         let session = sessionId ? workspaceSession(harness, sessionId, key) : null;
+        // Rotation is decided before the binding is trusted: a Session that has
+        // outlived its policy is replaced even when the caller would otherwise
+        // accept a bound id. A record written for a different Session id never
+        // fires, because the binding already moved on without it. A Session the
+        // DS Bot platform resolved is never rotated here: that side owns the id
+        // and replacing it would only produce `ds-bot-unavailable`.
+        const rotationRecord = rotation && !dsBotSessionId && typeof state.sessionRotationFor === 'function'
+          ? state.sessionRotationFor(key)
+          : null;
+        const rotate = rotationRecord !== null
+          && rotationRecord.sessionId === sessionId
+          && rotationDue(rotationRecord, rotation);
         // An id recovered from state (rather than resolved by DS Bot) is a binding
         // this side owns; when the caller trusts it, an unindexed id is attempted
         // instead of being replaced with a new Session.
-        const trusted = session !== null && await sessionExists(session, existsOptions);
-        const bound = trustBoundSession && !dsBotSessionId && sessionId !== undefined
+        const trusted = !rotate && session !== null && await sessionExists(session, existsOptions);
+        const bound = !rotate && trustBoundSession && !dsBotSessionId && sessionId !== undefined
           && sessionId === state.sessionFor(key);
         if (!session || (!trusted && !bound)) {
           if (dsBotSessionId) {
@@ -169,9 +193,12 @@ export async function askInWorkspaceSession({
           if (conversationGenerationMoved(harness, key, conversationGeneration)) {
             throw workspaceSessionStaleError();
           }
-          return { sessionId, session };
         }
-        return { sessionId, session };
+        if (!recorded && typeof state.recordSessionTurn === 'function') {
+          recorded = true;
+          await state.recordSessionTurn(key, sessionId);
+        }
+        return { sessionId, session, rotated: rotate };
       });
       if (!binding) continue;
       diagnostic.sessionId = binding.sessionId;
@@ -211,11 +238,22 @@ export async function askInWorkspaceSession({
             console.warn('[dsh-im] unable to persist deferred delivery:', registrationError.message);
           }
         }
+        // A Session whose history no longer fits the model window can never be
+        // compacted: the summary request replays the history it is trying to
+        // shadow and overflows the same limit, so every retry fails the same
+        // way. Replace the binding and retry once on a fresh Session instead of
+        // failing the turn the user just sent.
+        if (rotation && !overflowRetried && isContextOverflowFailure(error)) {
+          overflowRetried = true;
+          await state.clearSession?.(key);
+          continue;
+        }
         throw error;
       }
       return {
         sessionId: binding.sessionId,
         answer,
+        ...(binding.rotated ? { rotated: true } : {}),
         ...(artifacts.length > 0 ? { artifacts } : {}),
       };
     } catch (error) {

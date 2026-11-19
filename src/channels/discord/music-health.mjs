@@ -19,9 +19,16 @@ export function startMusicHealth(room, log, { intervalMs = 10000 } = {}) {
     // The player counts a frame it could not fill and stops at maxMissedFrames (10).
     // That is the closest local proxy for what a listener hears as a gap.
     const missedFrames = metric(room.player?.state?.missedFrames);
+    // The send cadence, measured at the last local stage before the UDP socket.
+    // `maxGapMs` is reset here so each sample covers its own ~10 s window; the
+    // cumulative counters keep every skipped cycle for the whole connection.
+    const dispatch = room.dispatch ?? null;
+    const dispatchGapMaxMs = dispatch ? metric(dispatch.maxGapMs) : null;
+    if (dispatch) dispatch.maxGapMs = 0;
     latest = { wsPingMs, execution: isMainThread ? 'main' : 'worker', eventLoopMaxMs: metric(delay.max / 1e6),
       framesRead: audio.framesRead, sourceStarved, missedFrames, maxReadGapMs: audio.maxReadGapMs, readGapP95Ms: metric(audio.readGapP95Ms),
       peakReadGapMs: metric(audio.peakReadGapMs), bufferedMs: audio.bufferedMs,
+      dispatchGapMaxMs, dispatchGapsOver40: dispatch?.gapsOver40 ?? null, dispatchGapsOver100: dispatch?.gapsOver100 ?? null,
       bitrate: audio.bitrate, channels: [1, 2].includes(audio.channels) ? audio.channels : null, encoder: audio.encoder === 'ffmpeg' ? 'ffmpeg' : null,
       inlineEncoding: audio.inlineEncoding === false ? false : null,
       connectionState: room.connection?.state?.status ?? 'unknown', rtpPacketLoss: null };
@@ -30,7 +37,9 @@ export function startMusicHealth(room, log, { intervalMs = 10000 } = {}) {
     // A read gap above ~45 ms means the 20 ms clock missed a whole frame, which
     // is a local stall rather than the normal 15.6 ms Windows timer quantisation.
     // maxReadGapMs is windowed (~10 s), so a single spike no longer latches this.
-    const problem = sourceStarved > 0 || latest.eventLoopMaxMs > 100 || latest.maxReadGapMs > 45;
+    // A dispatch gap above 45 ms is the same event seen at the socket: the player
+    // skipped a cycle, so the packet prepared for it was never sent.
+    const problem = sourceStarved > 0 || latest.eventLoopMaxMs > 100 || latest.maxReadGapMs > 45 || (dispatchGapMaxMs ?? 0) > 45;
     if (problem) {
       healthy = 0;
       if (!degraded) { degraded = true; log('warn', 'music.transport.degraded', latest); }
