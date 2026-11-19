@@ -63,15 +63,30 @@ function firstFile(candidates, fallback) {
   return candidates.find(value => value && existsSync(value)) ?? fallback;
 }
 
-/** Only references executables; never imports or modifies the other project's code. */
-export function musicTools({ audioUsbRoot = process.env.DSK_DISCORD_AUDIOUSB_ROOT ?? 'C:/Users/TINGOD/Desktop/CodeHome/AudioUsbStudio' } = {}) {
+/**
+ * Only references executables; never imports or modifies the other project's code.
+ *
+ * `localToolsDir` is the plugin's own tools folder. It exists so a machine that
+ * cannot install the tools (offline, no package manager) can be served by
+ * copying the three executables next to the plugin — no environment variable and
+ * no AudioUsbStudio checkout required. `.dsh-im/` is gitignored, so a binary
+ * dropped there never enters the repository.
+ */
+export function musicTools({
+  audioUsbRoot = process.env.DSK_DISCORD_AUDIOUSB_ROOT ?? 'C:/Users/TINGOD/Desktop/CodeHome/AudioUsbStudio',
+  localToolsDir = join(pluginRoot, '.dsh-im', 'tools'),
+} = {}) {
   const bins = [join(audioUsbRoot, 'release', 'bin'), join(audioUsbRoot, 'tools', 'bin')];
+  // An explicit environment variable still wins: it is the operator saying
+  // "use this one", which a leftover copy in the plugin folder must not override.
+  const candidates = name => [join(localToolsDir, name), ...bins.map(dir => join(dir, name))];
+  const plugins = [join(localToolsDir, 'ytdlp-plugins'), join(audioUsbRoot, 'tools', 'ytdlp-plugins')];
   return {
-    ytDlp: firstFile([process.env.DSK_DISCORD_YTDLP, ...bins.map(dir => join(dir, 'yt-dlp.exe'))], 'yt-dlp'),
-    ffmpeg: firstFile([process.env.DSK_DISCORD_FFMPEG, ...bins.map(dir => join(dir, 'ffmpeg.exe'))], 'ffmpeg'),
-    ffprobe: firstFile([process.env.DSK_DISCORD_FFPROBE, ...bins.map(dir => join(dir, 'ffprobe.exe'))], 'ffprobe'),
-    node: firstFile([process.env.DSK_DISCORD_NODE, ...bins.map(dir => join(dir, 'node.exe'))], process.execPath),
-    plugins: join(audioUsbRoot, 'tools', 'ytdlp-plugins'),
+    ytDlp: firstFile([process.env.DSK_DISCORD_YTDLP, ...candidates('yt-dlp.exe')], 'yt-dlp'),
+    ffmpeg: firstFile([process.env.DSK_DISCORD_FFMPEG, ...candidates('ffmpeg.exe')], 'ffmpeg'),
+    ffprobe: firstFile([process.env.DSK_DISCORD_FFPROBE, ...candidates('ffprobe.exe')], 'ffprobe'),
+    node: firstFile([process.env.DSK_DISCORD_NODE, ...candidates('node.exe')], process.execPath),
+    plugins: firstFile(plugins, plugins.at(-1)),
   };
 }
 

@@ -68,6 +68,21 @@ $env:DSK_DISCORD_NODE = 'D:\MediaTools\node.exe'
 
 未找到指定或預設位置時，yt-dlp、FFmpeg、ffprobe 會嘗試由 `PATH` 尋找，Node.js 使用當前程序的執行檔。`$env:` 只影響當前程序及其子程序，所以要從設定後的環境啟動 DSH。
 
+### 用 USB 帶工具過去
+
+另一台機器不能上網、或不想裝套件時，把三個執行檔複製到外掛目錄下的 `.dsh-im/tools/`：
+
+```
+dsh-discord\
+  .dsh-im\
+    tools\
+      ffmpeg.exe
+      ffprobe.exe
+      yt-dlp.exe
+```
+
+外掛會優先使用這個目錄，不需要設 `DSK_DISCORD_FFMPEG` 等環境變數。`.dsh-im/` 在 `.gitignore` 裡，所以這些二進位不會被提交；環境變數仍然優先於這個目錄。複製後重啟 DSH 即可。
+
 ### 6. 驗證
 
 在伺服器頻道依序確認：

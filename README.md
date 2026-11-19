@@ -84,6 +84,8 @@ $env:DSK_DISCORD_NODE = 'D:\MediaTools\node.exe'
 
 未找到指定或預設位置的工具時，yt-dlp、FFmpeg、ffprobe 會嘗試由 `PATH` 尋找，Node.js 使用當前程序的執行檔。PowerShell 的 `$env:` 設定僅影響當前程序及其子程序；請從設定後的環境啟動 DSH，或在宿主的啟動環境中設定。
 
+也可以把三個執行檔直接放進外掛目錄下的 `.dsh-im/tools/`（`ffmpeg.exe`、`ffprobe.exe`、`yt-dlp.exe`），不需要任何環境變數。這個目錄在 `.gitignore` 裡，適合用 USB 帶到不能安裝工具的機器；環境變數仍然優先於這個目錄。
+
 ## Discord 設定
 
 在 [Discord Developer Portal](https://discord.com/developers/applications) 建立應用程式與 Bot，依下列用途授權：
