@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { applicationCommandPayloads, commandTextFromInteraction, handleApplicationCommand } from '../../src/channels/discord/discord-commands.mjs';
 import { isMusicCommand, isRetiredMusicShortcut, parseMusicCommand, runMusicCommand, runRetiredMusicShortcut } from '../../src/channels/shared/music-commands.mjs';
 import { isControlCommand } from '../../src/channels/shared/control-command.mjs';
-import { createDshMusicSelector, createDshWebMusicSearch, selectedCandidate } from '../../src/channels/discord/music-dsh.mjs';
+import { createDshMusicSelector, createDshWebMusicSearch, createDshWebSourceSearch, selectedCandidate } from '../../src/channels/discord/music-dsh.mjs';
 import { DiscordHarnessBridge } from '../../src/channels/discord/discord-bridge.mjs';
 
 test('existing AI stop and skip are never parsed as music', () => {
@@ -153,6 +153,30 @@ test('playmethod stores one global default that /play then uses', async () => {
   await runMusicCommand('/play --method=tfidf 晴天', null, state, null, context);
   assert.equal(requests.at(-1).selectionMethod, 'tfidf', 'an explicit --method still wins');
   assert.equal(requests.at(-1).query, '晴天');
+});
+
+test('the grounded resolver searches the request verbatim and keeps snippets', async () => {
+  const query = 'kaf的第一首歌';
+  const lookup = createDshWebSourceSearch({ get(name) {
+    assert.equal(name, 'web');
+    return { search: async request => {
+      // Wrapping the request in an English instruction made the backend return
+      // unrelated pages (another artist's forum thread), which poisoned the
+      // rewrite. The request itself is the query.
+      assert.equal(request.query, query);
+      assert.equal(request.maxResults, 8);
+      assert.equal(request.llmProvider, 'deepseek-official');
+      return { sources: [
+        { url: 'https://en.wikipedia.org/wiki/Kaf_(singer)', title: 'Kaf (singer)', snippet: 'her first original song "Ito" (糸)' },
+        { title: 'no url' },
+      ] };
+    } };
+  } });
+  assert.deepEqual(await lookup({ query }), [{
+    title: 'Kaf (singer)',
+    snippet: 'her first original song "Ito" (糸)',
+    url: 'https://en.wikipedia.org/wiki/Kaf_(singer)',
+  }]);
 });
 
 test('DSH native mode uses the host web service and returns only structured source URLs', async () => {

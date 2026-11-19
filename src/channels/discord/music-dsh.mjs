@@ -71,8 +71,11 @@ export function createDshWebSourceSearch(ctx, { timeoutMs = 30_000 } = {}) {
     const deadline = AbortSignal.timeout(timeoutMs);
     const lookupSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {
+      // Search the request verbatim. Wrapping it in an English instruction made
+      // the backend return unrelated pages (another artist's forum thread, a
+      // sheet-music download), which then poisoned the rewrite.
       const result = await web.search({
-        query: `Find the exact song title for this music request: ${JSON.stringify(query)}`,
+        query: String(query).slice(0, 200),
         maxResults: 8,
         llmProvider: 'deepseek-official',
       }, lookupSignal);
@@ -147,21 +150,27 @@ export function createDshQueryResolver(harness, { timeoutMs = 30_000, logger, we
           }
           // Ground the rewrite in live search results when a backend is
           // configured: the model then reads result titles instead of recalling
-          // the work from its training data. Without a backend it falls back to
-          // the memory prompt.
+          // the work from its training data. A grounded read that changes
+          // nothing (the backend returned unrelated pages) falls back to the
+          // memory prompt, so a bad search never costs the rewrite entirely.
           let sources = [];
           if (typeof webSearch === 'function') {
             try { sources = await webSearch({ query, signal: controller.signal }); } catch {}
             if (controller.signal.aborted) throw abortError();
           }
           const request = query.slice(0, 500);
-          const prompt = (sources.length ? RESOLVE_WITH_SOURCES_PROMPT : RESOLVE_PROMPT) + '\n'
-            + JSON.stringify(sources.length ? { request, sources } : { request });
-          if (controller.signal.aborted) throw abortError();
-          const answer = await harness.ask(sessionId, prompt, { signal: controller.signal, timeoutMs, finalAnswerOnly: true });
-          if (controller.signal.aborted) throw abortError();
+          const ask = async (prompt, payload) => {
+            if (controller.signal.aborted) throw abortError();
+            const answer = await harness.ask(sessionId, prompt + '\n' + JSON.stringify(payload),
+              { signal: controller.signal, timeoutMs, finalAnswerOnly: true });
+            if (controller.signal.aborted) throw abortError();
+            return resolvedQuery(answer);
+          };
+          let resolved = null;
+          if (sources.length) resolved = await ask(RESOLVE_WITH_SOURCES_PROMPT, { request, sources });
+          if (!resolved || resolved === query) resolved = await ask(RESOLVE_PROMPT, { request });
           uses.set(key, (uses.get(key) ?? 0) + 1);
-          return resolvedQuery(answer);
+          return resolved;
         })();
         return await Promise.race([operation, deadline]);
       } catch (error) {
