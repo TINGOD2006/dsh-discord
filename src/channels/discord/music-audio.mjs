@@ -343,6 +343,21 @@ export class MusicAudioPipeline {
     return JSON.parse(stdout);
   }
 
+  /**
+   * One timed-out candidate search is retried once. yt-dlp's own retries cover
+   * transient HTTP errors, but a stalled socket still lands on the 45 s cap and
+   * would fail the whole request; a second attempt usually gets a different edge.
+   * Every other failure (no results, aborted, extractor error) propagates at once.
+   */
+  async #searchWithRetry(target, dir, signal) {
+    try { return await this.#metadata(target, dir, signal); }
+    catch (error) {
+      if (signal?.aborted || error?.code !== 'MUSIC_TIMEOUT') throw error;
+      this.#log?.('warn', 'music.search.retry', { target, reason: error?.message ?? String(error) });
+      return this.#metadata(target, dir, signal);
+    }
+  }
+
   async #youtubeCandidates(search, guildId, signal) {
     const key = JSON.stringify([guildId, search]);
     const cached = this.#candidateLists.get(key);
@@ -352,7 +367,7 @@ export class MusicAudioPipeline {
       // caller cancels while another selector is still waiting on the list.
       const dir = await mkdtemp(join(this.#root, 'work', 'candidates-'));
       try {
-        const found = candidatesFrom(await this.#metadata(`ytsearch${MUSIC_CANDIDATE_LIMIT}:${search}`, dir, searchSignal));
+        const found = candidatesFrom(await this.#searchWithRetry(`ytsearch${MUSIC_CANDIDATE_LIMIT}:${search}`, dir, searchSignal));
         const shorter = found.filter(item => item.duration <= this.#maxSeconds);
         // Long mixes are eligible when there is no normal-length result.
         const candidates = shorter.length ? shorter : found;
@@ -496,12 +511,29 @@ export class MusicAudioPipeline {
     let searchTerm = search;
     let snapshot = null;
     if (selectionMethod === 'dsh-resolve' && typeof this.#resolveQuery === 'function') {
-      const resolved = await this.#resolveQuery({ query: search, guildId, signal });
-      signal.throwIfAborted();
-      if (resolved && resolved !== search) {
-        const probe = await this.#youtubeCandidates(resolved, guildId, signal);
+      // Memory first: a rewrite the model already knows costs no search, but it
+      // is only trusted when YouTube corroborates it. An uncorroborated guess
+      // falls through to the grounded web read instead of costing the request.
+      const probes = new Map();
+      const attempt = async (mode) => {
+        const resolved = await this.#resolveQuery({ query: search, guildId, signal, mode });
+        signal.throwIfAborted();
+        if (!resolved || resolved === search) return;
+        let probe = probes.get(resolved);
+        if (!probe) {
+          try { probe = await this.#youtubeCandidates(resolved, guildId, signal); }
+          catch (error) {
+            if (signal.aborted) throw error;
+            // A probe that cannot finish must not fail the request: fall through
+            // to the next resolution path and let the final search decide.
+            return;
+          }
+          probes.set(resolved, probe);
+        }
         if (resolutionMatches(resolved, probe.candidates)) { searchTerm = resolved; snapshot = probe; }
-      }
+      };
+      await attempt('memory');
+      if (!snapshot) await attempt('web');
     }
     snapshot ??= await this.#youtubeCandidates(searchTerm, guildId, signal);
     const { candidates } = snapshot;

@@ -8,13 +8,13 @@ import { handleApplicationCommand } from '../../src/channels/discord/discord-com
 import { createMusicRequestContext, createMusicTool, musicAccess } from '../../src/channels/shared/music-access.mjs';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,1));
 async function until(fn){for(let n=0;n<200;n++){if(fn())return;await tick();}throw new Error('state did not settle');}
-function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice,nativeTransport=false,customBufferedFactory,deferredPlaying=false,refreshStream}={}) {
+function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverVoice,nativeTransport=false,customBufferedFactory,deferredPlaying=false,refreshStream,dropAfterReady=false}={}) {
   const played=[],connections=[],notices=[],released=[],transports=[];
   const guild={id:'guild',voiceStates:{cache:new Map([['user',{channelId:'voice'}],['other',{channelId:'elsewhere'}]])},voiceAdapterCreator:{},channels:{cache:new Map()}};
   class Client extends EventEmitter {channels={cache:new Map([['text',{guild}],['text-two',{guild}]])};guilds={cache:new Map([['guild',guild]])};user={id:'bot'};async login(){return login?.();}isReady(){return true;}destroy(){}}
   class Player extends EventEmitter {state={status:'idle'};play(resource){const old=this.state;this.paused=false;this.state={status:deferredPlaying?'buffering':'playing',resource};played.push(resource);this.emit('stateChange',old,this.state);if(deferredPlaying)setTimeout(()=>{if(this.state.resource===resource){const old=this.state;this.state={status:'playing',resource};this.emit('stateChange',old,this.state);}},1);}stop(){const old=this.state;this.state={status:'idle'};this.emit('stateChange',old,this.state);}pause(){if(this.state.status==='buffering')return false;this.paused=true;return true;}unpause(){this.paused=false;return true;}}
   const runtime={Client,GatewayIntentBits:{Guilds:1,GuildVoiceStates:128},StreamType:{OggOpus:'ogg'},AudioPlayerStatus:{Idle:'idle',Playing:'playing'},VoiceConnectionStatus:{Ready:'ready',Destroyed:'destroyed',Disconnected:'disconnected',Signalling:'signalling',Connecting:'connecting'},NoSubscriberBehavior:{Pause:'pause'},
-    entersState:async(connection)=>{if(ready)await ready();return connection;},
+    entersState:async(connection)=>{if(ready)await ready();if(dropAfterReady&&connection.state.status==='ready')connection.state.status='signalling';return connection;},
     joinVoiceChannel:()=>{const connection=new EventEmitter();Object.assign(connection,{state:{status:'ready'},subscribe(player){this.subscribed=player;},destroy(){this.state.status='destroyed';},rejoin(){return true;}});connections.push(connection);return connection;},
     createAudioPlayer:()=>new Player(),createAudioResource:(input,options)=>({input,...options,encoder:{setBitrate(value){this.bitrate=value;}},volume:{setVolume(value){this.value=value;}}}),
   };
@@ -317,6 +317,27 @@ test('voice Ready failure destroys the connection before downloading any audio',
   let prepared=0;const f=fixture({ready:async()=>{throw new Error('not ready');},prepare:async()=>{prepared++;}});
   try{await assert.rejects(f.manager.play({...f.request,query:'song'}),/語音連線/);assert.equal(prepared,0);assert.equal(f.connections[0].state.status,'destroyed');}
   finally{await f.manager.destroy();}
+});
+
+test('a connection stuck in signalling is rejoined instead of failing the prepared track',async()=>{
+  let calls=0;const f=fixture({dropAfterReady:true,recoverVoice:async()=>({attempts:1}),
+    ready:async()=>{if(++calls>1)throw Object.assign(new Error('The operation was aborted'),{name:'AbortError',code:'ABORT_ERR'});}});
+  try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    assert.equal(calls,2,'the stuck connection was waited on before the rejoin');
+    assert.equal(f.played.length,1,'the prepared track still plays after the rejoin');
+  }finally{await f.manager.destroy();}
+});
+
+test('a voice connection that cannot be rejoined reports the connection, not the abort',async()=>{
+  let calls=0;const f=fixture({dropAfterReady:true,recoverVoice:async()=>{throw new Error('語音重連次數已用完');},
+    ready:async()=>{if(++calls>1)throw Object.assign(new Error('The operation was aborted'),{name:'AbortError',code:'ABORT_ERR'});}});
+  try{
+    await f.manager.play({...f.request,query:'song'});
+    await until(()=>f.notices.some(([,message])=>message.includes('語音連線中斷')));
+    assert(!f.notices.some(([,message])=>message.includes('The operation was aborted')),'the raw abort never reaches the listener');
+    assert.equal(f.played.length,0);
+  }finally{await f.manager.destroy();}
 });
 
 test('Idle advances once and a late error from the old track cannot stop the next track',async()=>{

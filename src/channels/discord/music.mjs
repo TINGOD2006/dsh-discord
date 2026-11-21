@@ -185,7 +185,7 @@ export class MusicManager {
     const libs = await this.#libs(); clearTimeout(room.idleTimer);
     signal?.throwIfAborted(); if (this.#destroyed || room.leaving) throw new Error('音樂服務已關閉');
     if (room.connection && room.channelId === voiceChannelId && room.connection.state.status !== libs.VoiceConnectionStatus.Destroyed) {
-      await musicTask(libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000), signal); return;
+      await this.#ensureVoiceReady(room, libs, signal); return;
     }
     room.recoveryController?.abort();
     if (room.connection) { try { room.connection.destroy(); } catch {} }
@@ -211,6 +211,32 @@ export class MusicManager {
     this.#trackDispatch(room, connection);
     try { await musicTask(libs.entersState(connection, libs.VoiceConnectionStatus.Ready, 15000), signal); }
     catch (error) { if (room.connection === connection) { room.connection = null; room.channelId = null; } connection.destroy(); if (signal?.aborted) throw error; throw new Error('無法建立語音連線，請確認頻道權限與 UDP 網路'); }
+  }
+  /**
+   * A connection that drops to Signalling right after the handshake does not
+   * reach Ready on its own, and `entersState` reports that as the raw
+   * "The operation was aborted" — which tells the listener nothing and loses
+   * the track even though the audio was already prepared. Rejoin once before
+   * failing, and report the connection instead of the abort.
+   */
+  async #ensureVoiceReady(room, libs, signal) {
+    const connection = room.connection;
+    if (!connection) throw new Error('語音連線已中斷；請重新點歌');
+    if (connection.state.status === libs.VoiceConnectionStatus.Ready) return;
+    try {
+      await musicTask(libs.entersState(connection, libs.VoiceConnectionStatus.Ready, 15000), signal);
+      return;
+    } catch (error) {
+      if (signal?.aborted || room.leaving || connection.state.status === libs.VoiceConnectionStatus.Destroyed) throw error;
+      this.#log('warn', 'music.voice.ready.timeout', error);
+    }
+    try {
+      await this.#recoverVoice(connection, libs, { signal });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      this.#log('warn', 'music.voice.rejoin.failed', error);
+      throw new Error('語音連線中斷，重新連線失敗；請重新點歌');
+    }
   }
   /**
    * The player's 20 ms clock is the last local stage before the UDP socket, and
@@ -413,7 +439,7 @@ export class MusicManager {
           if (id === room.current?.id) void this.#recoverStream(room, id);
         });
       }
-      await musicTask(libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000), track.controller.signal);
+      await this.#ensureVoiceReady(room, libs, track.controller.signal);
       if (track.controller.signal.aborted || room.current !== track || room.leaving) return;
       const transport = await this.#buildTransport(room, track);
       if (track.controller.signal.aborted || room.current !== track || room.leaving) { transport.destroy(); return; }
@@ -582,7 +608,7 @@ export class MusicManager {
     try {
       replacement = await this.#buildTransport(room, track, { offsetSeconds, signal: active });
       const libs = await this.#libs();
-      if (previousState === 'playing') await musicTask(libs.entersState(room.connection, libs.VoiceConnectionStatus.Ready, 15000), active);
+      if (previousState === 'playing') await this.#ensureVoiceReady(room, libs, active);
       active.throwIfAborted();
       if (room.current !== track || room.transport !== previous || room.leaving) throw new Error('歌曲已切換，音訊調整已取消');
       room.player.play(replacement.resource);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { MusicAudioPipeline, musicTools, loudnessStats, youtubeUrl, embeddedUrl, splitShareText, completeDuration, normalizationFilter, loudnessAnalysisFilter, streamHeaders, MUSIC_LOUDNESS, MUSIC_CACHE_VERSION, YOUTUBE_CLIENT_FALLBACK } from '../../src/channels/discord/music-audio.mjs';
-import { runMusicProcess } from '../../src/channels/discord/music-process.mjs';
+import { runMusicProcess, decodeMusicOutput } from '../../src/channels/discord/music-process.mjs';
 import { selectTfidfCandidate, resolutionMatches } from '../../src/channels/shared/music-selection.mjs';
 import { resolvedQuery } from '../../src/channels/discord/music-dsh.mjs';
 
@@ -316,6 +316,122 @@ test('dsh-resolve keeps the original query when the results do not corroborate t
   });
 });
 
+test('dsh-resolve trusts a corroborated memory rewrite without a web search', async () => {
+  await scratch(async dir => {
+    const song = { id: '3Wtx6k2vInU', title: '花譜 #06「糸」【原創MV】', duration: 227 };
+    const modes = [];
+    const searches = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        if (args.at(-1).startsWith('ytsearch')) {
+          searches.push(args.at(-1));
+          return { stdout: JSON.stringify({ entries: [song] }) };
+        }
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(song));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 227 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      resolveQuery: async ({ mode }) => { modes.push(mode); return '花譜 糸'; },
+      selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
+    });
+    try {
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      assert.equal(source.resolvedQuery, '花譜 糸');
+      assert.deepEqual(modes, ['memory'], 'a corroborated memory rewrite skips the web read');
+      assert.deepEqual(searches, ['ytsearch10:花譜 糸']);
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('dsh-resolve keeps going when the verification probe fails', async () => {
+  await scratch(async dir => {
+    const song = { id: '3Wtx6k2vInU', title: '花譜 #06「糸」【原創MV】', duration: 227 };
+    const modes = [];
+    const searches = [];
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        if (args.at(-1).startsWith('ytsearch')) {
+          searches.push(args.at(-1));
+          if (args.at(-1) === 'ytsearch10:花譜 糸') throw Object.assign(new Error('音樂處理逾時，請重試'), { code: 'MUSIC_TIMEOUT' });
+          return { stdout: JSON.stringify({ entries: [song] }) };
+        }
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(song));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 227 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      resolveQuery: async ({ mode }) => { modes.push(mode); return mode === 'memory' ? '花譜 糸' : null; },
+      selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
+    });
+    try {
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      assert.equal(source.resolvedQuery, undefined, 'a failed probe must not fail the request');
+      assert.deepEqual(modes, ['memory', 'web']);
+      // The timed-out probe is retried once before the request falls through.
+      assert.deepEqual(searches, ['ytsearch10:花譜 糸', 'ytsearch10:花譜 糸', 'ytsearch10:kaf 第一首歌']);
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
+test('a timed-out candidate search is retried once', async () => {
+  await scratch(async dir => {
+    const song = { id: '3Wtx6k2vInU', title: '花譜 #06「糸」【原創MV】', duration: 227 };
+    const searches = [];
+    let attempts = 0;
+    const run = async (file, args) => {
+      if (file === 'extractor') {
+        if (args.at(-1).startsWith('ytsearch')) {
+          searches.push(args.at(-1));
+          attempts++;
+          if (attempts === 1) throw Object.assign(new Error('音樂處理逾時，請重試'), { code: 'MUSIC_TIMEOUT' });
+          return { stdout: JSON.stringify({ entries: [song] }) };
+        }
+        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
+        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify(song));
+        return { stdout: '', stderr: '' };
+      }
+      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 227 } }) };
+      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
+      await writeFile(args.at(-1), Buffer.alloc(4096));
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
+    });
+    try {
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh' });
+      assert.equal(source.id, song.id);
+      assert.deepEqual(searches, ['ytsearch10:kaf 第一首歌', 'ytsearch10:kaf 第一首歌']);
+      source.release();
+    } finally {
+      await pipeline.destroy();
+    }
+  });
+});
+
 test('dsh-resolve resolves every request, including an ordinary artist and song one', async () => {
   await scratch(async dir => {
     const song = { id: '3Wtx6k2vInU', title: 'Adele - Hello', duration: 295 };
@@ -344,7 +460,7 @@ test('dsh-resolve resolves every request, including an ordinary artist and song 
     });
     try {
       await pipeline.prepare('Adele Hello', { guildId: 'guild', selectionMethod: 'dsh-resolve' }).then(source => source.release());
-      assert.equal(resolved, 1, 'every request is resolved');
+      assert.equal(resolved, 2, 'memory and web are both consulted when neither rewrites');
       assert.deepEqual(searches, ['ytsearch10:Adele Hello']);
     } finally {
       await pipeline.destroy();
@@ -721,5 +837,21 @@ test('subprocess deadline and cancellation settle promptly and preserve UTF-8 ou
     const controller=new AbortController();const pending=runMusicProcess(process.execPath,['-e','setInterval(()=>{},1000)'],{cwd:dir,signal:controller.signal});
     const cancelledAt=Date.now();controller.abort();assert(Date.now()-cancelledAt<250,'cancellation must not block Discord heartbeats');
     await assert.rejects(pending,{name:'AbortError'});
+  });
+});
+
+test('a cp950 stderr from yt-dlp is decoded instead of becoming replacement characters',async()=>{
+  // yt-dlp is a PyInstaller build: on a zh-TW host it writes the Windows
+  // console code page, so the age-gate message arrives as Big5 bytes. Decoding
+  // those as UTF-8 used to erase "滿限制年齡", which is what music-audio.mjs
+  // matches to skip an age-restricted upload and try the next candidate.
+  const message='ERROR: [youtube] x8VYWazR5mE: 請登入帳戶以確認你已滿限制年齡. 這部影片可能不適合某些使用者觀看。';
+  assert.equal(decodeMusicOutput([Buffer.from(message,'utf8')]),message);
+  // The real bytes are cp950, not UTF-8: 請 is BD D0, 登 is B5 6E.
+  assert.equal(decodeMusicOutput([Buffer.from([0xBD,0xD0,0xB5,0x6E])]),'請登');
+  await scratch(async dir=>{
+    const script="process.stderr.write(Buffer.from([0xBD,0xD0,0xB5,0x6E]))";
+    const result=await runMusicProcess(process.execPath,['-e',script],{cwd:dir});
+    assert.equal(result.stderr,'請登');
   });
 });

@@ -17,7 +17,7 @@ export function serveMusicWorker(port, options, createManager = options => new M
   });
   manager = createManager({ ...options,
     selectCandidate: ({ signal, ...params }) => rpc.request('select', params, { signal }),
-    resolveQuery: ({ query, guildId, signal }) => rpc.request('resolveQuery', { query, guildId }, { signal }),
+    resolveQuery: ({ query, guildId, signal, mode }) => rpc.request('resolveQuery', { query, guildId, mode }, { signal }),
     searchNativeMusic: ({ query, signal }) => rpc.request('searchMusic', { query }, { signal }),
     // Notices never hold up playback or shutdown while the parent is busy.
     notify: async (channelId, message) => post({ event: 'notice', channelId, message }),
