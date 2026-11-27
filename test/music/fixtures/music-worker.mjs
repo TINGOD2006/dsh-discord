@@ -27,7 +27,8 @@ const server = serveMusicWorker(parentPort, workerData, options => {
   const pipeline = {
     prepare: async (query, { signal, guildId }) => {
       if (query.startsWith('select:')) await options.selectCandidate({ query, signal, guildId, candidates: [{ id: 'fixture' }] });
-      const resolved = await options.resolveQuery({ query, guildId, signal, mode: 'memory' });
+      const answer = await options.resolveQuery({ query, guildId, signal, mode: 'memory' });
+      const resolved = typeof answer === 'string' ? answer : answer?.query ?? null;
       signal.throwIfAborted();
       return { input: workerData.input, title: resolved ?? query, selection: 'dsh-resolve',
         release() { parentPort.postMessage({ fixture: 'released', query }); } };

@@ -59,7 +59,7 @@ test('sync posts one card per guild and reuses it', async () => {
     await panel.sync('g1');
     assert.equal(api.created.length, 1);
     assert.equal(api.edits.at(-1).messageId, 'm1');
-    assert.equal(api.edits.at(-1).components.length, 1, 'only the transport row');
+    assert.equal(api.edits.at(-1).components.length, 2, 'transport row plus the tool row');
   } finally { await panel.destroy(); }
 });
 

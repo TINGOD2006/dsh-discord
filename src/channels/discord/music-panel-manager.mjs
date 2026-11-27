@@ -8,16 +8,17 @@ import { renderPanel } from './music-panel.mjs';
  * this class never reads the player directly.
  */
 export class MusicPanelManager {
-  #api; #registry; #intervalMs; #logger; #now; #controlUrlFor;
+  #api; #registry; #intervalMs; #logger; #now; #controlUrlFor; #botName;
   #panels = new Map(); #timers = new Map(); #destroyed = false;
 
-  constructor({ api, registry, intervalMs = 2500, logger = null, now = () => Date.now(), controlUrlFor = null } = {}) {
+  constructor({ api, registry, intervalMs = 2500, logger = null, now = () => Date.now(), controlUrlFor = null, botName = null } = {}) {
     if (!api) throw new TypeError('音樂卡片需要 Discord 訊息 API');
     if (!registry) throw new TypeError('音樂卡片需要播放狀態來源');
     this.#api = api; this.#registry = registry;
     this.#intervalMs = Math.max(1000, Number(intervalMs) || 2500);
     this.#logger = logger; this.#now = now;
     this.#controlUrlFor = typeof controlUrlFor === 'function' ? controlUrlFor : () => null;
+    this.#botName = typeof botName === 'string' && botName ? botName : null;
   }
 
   get size() { return this.#panels.size; }
@@ -35,7 +36,7 @@ export class MusicPanelManager {
   #body(guildId, snapshot) {
     let controlUrl = null;
     try { controlUrl = this.#controlUrlFor(String(guildId)) ?? null; } catch { controlUrl = null; }
-    return renderPanel(snapshot, { guildId, controlUrl });
+    return renderPanel(snapshot, { guildId, controlUrl, botName: snapshot?.botName ?? this.#botName });
   }
 
   #startTimer(guildId) {

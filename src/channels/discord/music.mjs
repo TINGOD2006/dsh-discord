@@ -8,11 +8,15 @@ import { createDshMusicSelector } from './music-dsh.mjs';
 import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate, MUSIC_STREAM_BUFFER } from './music-transport.mjs';
 import { startMusicHealth } from './music-health.mjs';
 import { MusicCommandLane, musicTask } from './music-command-lane.mjs';
-import { clampSeekTarget, formatClock, seekIsMeaningful } from './music-panel.mjs';
-import { MUSIC_SELECTION_METHOD, MUSIC_SELECTION_LABEL } from '../shared/music-selection.mjs';
+import { clampSeekTarget, formatClock, loopLabel, seekIsMeaningful, thumbnailFor } from './music-panel.mjs';
+import { MUSIC_SELECTION_METHOD, MUSIC_SELECTION_LABEL, resolutionFailureText } from '../shared/music-selection.mjs';
 
 export const MUSIC_AUDIO_URL = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|webm)(\?|#|$)/i;
 export const MUSIC_MAX_QUEUE = 25;
+// "上一首" walks back through this many tracks that actually played. A copy of
+// the request is kept, not the resolved source: that one is released when the
+// track leaves the player.
+export const MUSIC_MAX_HISTORY = 25;
 export const MUSIC_DEFAULT_VOLUME = 0.6;
 // How many queued tracks may be resolved, searched and decoded to the cache
 // ahead of time. The pipeline already dedupes and rate-limits the renders, so a
@@ -166,7 +170,7 @@ export class MusicManager {
   #room(id) {
     if (!this.#guilds.has(id)) this.#guilds.set(id, { id, tracks: [], current: null, player: null, connection: null, channelId: null,
       textChannelId: null, resource: null, transport: null, health: null, bitrate: voiceBitrate(), requestedBitrate: MUSIC_PLAYBACK_PROFILE.bitrate, channelBitrate: null, channels: MUSIC_PLAYBACK_PROFILE.channels, bitrateExplicit: false, recoveryController: null,
-      state: 'idle', volume: MUSIC_DEFAULT_VOLUME, leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false, streamRecoveries: 0 });
+      state: 'idle', volume: MUSIC_DEFAULT_VOLUME, loop: 'off', history: [], leaving: false, version: 0, startTask: null, idleTimer: null, recovering: false, streamRecoveries: 0 });
     return this.#guilds.get(id);
   }
   async #context(channelId, senderId, { voice = true, signal } = {}) {
@@ -290,6 +294,22 @@ export class MusicManager {
     } finally { if (room.recoveryController === controller) { room.recoveryController = null; room.recovering = false; } }
   }
   #cancel(track) { if (!track) return; track.controller.abort(); track.source?.release?.(); track.source = null; }
+  /**
+   * A queue entry that re-plays the same request. The resolved source is left
+   * behind on purpose: `#cancel` releases it, and a released source must never
+   * reach a second transport.
+   */
+  #replay(track) {
+    return { id: randomUUID(), query: track.query, title: track.title ?? null, senderId: track.senderId, senderName: track.senderName ?? null,
+      channelId: track.channelId, controller: new AbortController(), source: null, preparation: null };
+  }
+  /** Bounded "previously played" stack for the card's 上一首. */
+  #remember(room, track) {
+    if (!track || !room.history) return;
+    room.history.push({ query: track.query, title: track.title ?? null, senderId: track.senderId,
+      senderName: track.senderName ?? null, channelId: track.channelId });
+    if (room.history.length > MUSIC_MAX_HISTORY) room.history.splice(0, room.history.length - MUSIC_MAX_HISTORY);
+  }
   #clear(room) {
     room.recoveryController?.abort(); room.recoveryController = null; room.recovering = false;
     room.transport?.destroy(); room.transport = null;
@@ -334,7 +354,15 @@ export class MusicManager {
   #finished(room, id) {
     if (room.current?.id !== id) return;
     room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
-    const track = room.current; room.current = null; room.resource = null; room.state = 'idle'; this.#cancel(track); this.#pump(room); this.#changed(room);
+    const track = room.current; room.current = null; room.resource = null; room.state = 'idle'; this.#cancel(track);
+    if (track) {
+      this.#remember(room, track);
+      // The loop decision belongs to the track that just ended and is taken before
+      // the queue is pumped, so "single" replays instead of advancing.
+      if (room.loop === 'single') room.tracks.unshift(this.#replay(track));
+      else if (room.loop === 'all') room.tracks.push(this.#replay(track));
+    }
+    this.#pump(room); this.#changed(room);
   }
   #pump(room) {
     if (room.startTask || room.current || room.leaving || this.#destroyed) return;
@@ -454,7 +482,12 @@ export class MusicManager {
         ? `\n這首 ${formatClock((Number(source.duration) || 0) * 1000)}，超過 ${Math.round((Number(source.limitSec) || 3600) / 60)} 分鐘上限，改用串流播放：不做音量正規化、不進快取，seek 可能較慢。`
         : '';
       const methodNote = source.selection === MUSIC_SELECTION_METHOD ? `\n選歌方法：${MUSIC_SELECTION_LABEL}` : '';
-      void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${streamNote}${methodNote}`);
+      // A rewrite that was not used is the difference between "the bot
+      // misheard you" and "it could not name the song", so say it out loud.
+      const resolutionNote = source.resolvedQuery
+        ? `\n解析：${source.resolvedQuery}`
+        : source.resolutionFailure ? `\n解析：${resolutionFailureText(source.resolutionFailure)}，改用原關鍵詞` : '';
+      void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${streamNote}${resolutionNote}${methodNote}`);
       this.#prefetch(room);
     } catch (error) {
       if (!track.controller.signal.aborted && !room.leaving) { this.#log('warn', 'music.track.failed', error); await this.#say(track.channelId, `無法播放「${track.title ?? track.query}」：${error.message}`); }
@@ -484,6 +517,7 @@ export class MusicManager {
   async next({ channelId, senderId, signal }) {
     const { room } = await this.#context(channelId, senderId, { signal });
     if (!room.current && !room.tracks.length && !room.startTask) return { message: '目前沒有播放中的歌曲' };
+    this.#remember(room, room.current);
     const track = room.current ?? room.tracks.shift(); room.current = null; room.resource = null; room.state = 'idle'; room.version++;
     room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
     this.#cancel(track); room.player?.stop(true); this.#pump(room); this.#changed(room); return { message: '已跳過，正在準備下一首' };
@@ -493,11 +527,19 @@ export class MusicManager {
   async resume({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { signal }); if (room.state !== 'paused') return { message: '目前沒有暫停中的歌曲' }; room.transport?.resetTiming?.(); room.state = 'playing'; room.player?.unpause(); this.#changed(room); return { message: '繼續播放音樂' }; }
   async queue({ channelId, senderId, signal }) {
     const { room } = await this.#context(channelId, senderId, { voice: false, signal });
-    const lines = room.current ? [`${room.state === 'preparing' ? '準備中' : room.state === 'paused' ? '已暫停' : '正在播放'}：${room.current.title ?? room.current.query}`] : [];
+    const state = room.state === 'preparing' ? '準備中' : room.state === 'paused' ? '已暫停' : '正在播放';
+    const resolved = room.current?.source?.resolvedQuery;
+    const lines = room.current ? [`${state}：${room.current.title ?? room.current.query}${resolved ? `（解析：${resolved}）` : ''}`] : [];
     room.tracks.slice(0, 20).forEach((track, index) => lines.push(`${index + 1}. ${track.title ?? track.query}`));
     if (room.tracks.length > 20) lines.push(`另外還有 ${room.tracks.length - 20} 首`); return { message: lines.join('\n') || '音樂佇列目前是空的' };
   }
-  async nowplaying({ channelId, senderId, signal }) { const { room } = await this.#context(channelId, senderId, { voice: false, signal }); return { message: room.current ? `${room.state === 'preparing' ? '準備中' : '目前歌曲'}：${room.current.title ?? room.current.query}\n${room.current.source?.url ?? ''}` : '目前沒有播放中的歌曲' }; }
+  async nowplaying({ channelId, senderId, signal }) {
+    const { room } = await this.#context(channelId, senderId, { voice: false, signal });
+    if (!room.current) return { message: '目前沒有播放中的歌曲' };
+    const resolved = room.current.source?.resolvedQuery;
+    const state = room.state === 'preparing' ? '準備中' : '目前歌曲';
+    return { message: `${state}：${room.current.title ?? room.current.query}\n${room.current.source?.url ?? ''}${resolved ? `\n解析：${resolved}` : ''}` };
+  }
   async status({ channelId, senderId, signal }) {
     const { room } = await this.#context(channelId, senderId, { voice: false, signal });
     let ping; try { ping = room.connection?.ping; } catch {}
@@ -626,23 +668,35 @@ export class MusicManager {
   snapshot(guildId) {
     const room = this.#guilds.get(String(guildId));
     if (!room || (!room.current && !room.tracks.length)) {
-      return { state: 'idle', title: null, url: null, positionMs: 0, durationMs: 0, loop: 'off', volume: Math.round(MUSIC_DEFAULT_VOLUME * 100), queue: [], requester: null, channelId: null };
+      return { state: 'idle', title: null, url: null, kind: null, thumbnail: null, positionMs: 0, durationMs: 0,
+        loop: room?.loop ?? 'off', volume: Math.round(MUSIC_DEFAULT_VOLUME * 100), queue: [], requester: null, channelId: null,
+        canPrev: (room?.history?.length ?? 0) > 0, botName: this.#botName() };
     }
     const track = room.current;
+    const source = track?.source ?? null;
     return {
       state: track ? room.state : 'preparing',
       trackId: track?.id ?? null,
       title: track?.title ?? track?.query ?? null,
-      url: track?.source?.url ?? null,
+      url: source?.url ?? null,
+      kind: source?.kind ?? null,
+      thumbnail: thumbnailFor(source ?? {}),
       positionMs: this.#positionMs(room),
       durationMs: Math.max(0, Math.round((Number(track?.source?.duration) || 0) * 1000)),
       stream: Boolean(track?.source?.stream),
-      loop: 'off',
+      loop: room.loop ?? 'off',
       volume: Math.round((Number(room.volume) || MUSIC_DEFAULT_VOLUME) * 100),
       queue: room.tracks.map((item) => item.title ?? item.query),
       requester: track?.senderName || (track?.senderId ? `<@${track.senderId}>` : null),
       channelId: room.textChannelId ?? track?.channelId ?? null,
+      canPrev: (room.history?.length ?? 0) > 0,
+      botName: this.#botName(),
     };
+  }
+
+  /** The name the card credits; the guild member sees the bot's own username. */
+  #botName() {
+    try { return this.#client?.user?.username ?? null; } catch { return null; }
   }
 
   /**
@@ -740,11 +794,35 @@ export class MusicManager {
     }
     if (action === 'next') {
       if (!room.current && !room.tracks.length && !room.startTask) return { ok: false, message: '目前沒有播放中的歌曲' };
+      this.#remember(room, room.current);
       const track = room.current ?? room.tracks.shift();
       room.current = null; room.resource = null; room.state = 'idle'; room.version++;
       room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
       this.#cancel(track); room.player?.stop(true); this.#pump(room); this.#changed(room);
       return { ok: true, message: '已跳過，正在準備下一首' };
+    }
+    // 上一首 only walks back through tracks that actually left the player; the
+    // interrupted track goes back to the front of the queue so 下一首 undoes it.
+    if (action === 'prev') {
+      const previous = room.history?.pop();
+      if (!previous) return { ok: false, message: '沒有上一首' };
+      // A track still being prepared already owns the queue head: rewinding now
+      // would start it twice.
+      if (room.startTask) return { ok: false, message: '歌曲正在準備，請稍後再試' };
+      const interrupted = room.current;
+      if (interrupted) room.tracks.unshift(this.#replay(interrupted));
+      room.current = null; room.resource = null; room.state = 'idle'; room.version++;
+      room.transport?.destroy(); room.transport = null; room.health?.destroy(); room.health = null;
+      this.#cancel(interrupted); try { room.player?.stop(true); } catch {}
+      room.tracks.unshift({ ...previous, id: randomUUID(), controller: new AbortController(), source: null, preparation: null });
+      this.#pump(room); this.#changed(room);
+      return { ok: true, message: '回到上一首' };
+    }
+    if (action === 'loop') {
+      const order = ['off', 'single', 'all'];
+      const next = order[(order.indexOf(room.loop ?? 'off') + 1) % order.length];
+      room.loop = next; this.#changed(room);
+      return { ok: true, message: `循環：${loopLabel(next)}` };
     }
     if (action === 'seek') return this.#seekRoom(room, positionMs, this.#lifetime.signal);
     return { ok: false, message: '不支援的動作' };

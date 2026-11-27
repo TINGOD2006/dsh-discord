@@ -72,8 +72,13 @@ export function resolvedQuery(answer) {
 
 /**
  * Turn a relational request ("KAF's first song", "track 3 of that album") into
- * keywords YouTube can actually search. Returns null on any failure so the
- * caller keeps the original query instead of failing the request.
+ * keywords YouTube can actually search.
+ *
+ * Returns `{ query, failure }`: `query` is the rewrite (identical to the request
+ * when the model judges it already precise) or null, and `failure` explains the
+ * null. The caller keeps the original query instead of failing the request, and
+ * reports the reason when it has to. Failure codes are plain strings because the
+ * worker RPC drops an Error's `code` when it crosses that boundary.
  */
 export function createDshQueryResolver(harness, { timeoutMs = 30_000, logger, webSearch = null,
   workspace = join(dirname(createRequire(import.meta.url).resolve('dsh-discord/package.json')), '.dsh-im', 'music', 'dsh-workspace') } = {}) {
@@ -81,7 +86,7 @@ export function createDshQueryResolver(harness, { timeoutMs = 30_000, logger, we
   const locks = new Map();
   const uses = new Map();
   return async ({ query, guildId, signal, mode = 'web' }) => {
-    if (!harness?.createSession || !harness?.ask) return null;
+    if (!harness?.createSession || !harness?.ask) return { query: null, failure: 'unavailable' };
     const key = `discord-music-resolve:${guildId}`;
     const prior = locks.get(key) ?? Promise.resolve();
     const run = prior.catch(() => {}).then(async () => {
@@ -89,10 +94,10 @@ export function createDshQueryResolver(harness, { timeoutMs = 30_000, logger, we
       const controller = new AbortController();
       const cancel = () => controller.abort();
       signal?.addEventListener('abort', cancel, { once: true });
-      let timer, sessionId;
+      let timer, sessionId, timedOut = false;
       try {
         const deadline = new Promise((_, reject) => {
-          timer = setTimeout(() => { cancel(); reject(new Error('DSH 查詢解析逾時')); }, timeoutMs);
+          timer = setTimeout(() => { timedOut = true; cancel(); reject(new Error('DSH 查詢解析逾時')); }, timeoutMs);
           controller.signal.addEventListener('abort', () => reject(abortError()), { once: true });
         });
         const operation = (async () => {
@@ -121,29 +126,36 @@ export function createDshQueryResolver(harness, { timeoutMs = 30_000, logger, we
           // `memory` answers from the model's own knowledge; `web` grounds the
           // rewrite in live search results. The caller picks the order and
           // verifies the rewrite against YouTube, so each mode is one ask.
-          const askMemory = () => ask(RESOLVE_PROMPT, { request });
+          const askMemory = async () => {
+            const resolved = await ask(RESOLVE_PROMPT, { request });
+            return resolved ? { query: resolved, failure: null } : { query: null, failure: 'unparsed' };
+          };
           const askWeb = async () => {
             let sources = [];
             if (typeof webSearch === 'function') {
               try { sources = await webSearch({ query, signal: controller.signal }); } catch {}
               if (controller.signal.aborted) throw abortError();
             }
-            if (!sources.length) return null;
-            return ask(RESOLVE_WITH_SOURCES_PROMPT, { request, sources });
+            // No backend, no result and an unusable answer are different problems
+            // for the listener: one is configuration, the others are the request.
+            if (!sources.length) return { query: null, failure: 'no-web' };
+            const resolved = await ask(RESOLVE_WITH_SOURCES_PROMPT, { request, sources });
+            return resolved ? { query: resolved, failure: null } : { query: null, failure: 'unparsed' };
           };
-          const resolved = mode === 'memory'
+          const outcome = mode === 'memory'
             ? await askMemory()
             : await askWeb();
           uses.set(key, (uses.get(key) ?? 0) + 1);
-          return resolved;
+          return outcome;
         })();
         return await Promise.race([operation, deadline]);
       } catch (error) {
         sessions.delete(key);
         uses.delete(key);
         if (signal?.aborted) throw abortError();
-        try { logger?.('info', 'music.dsh.resolve.fallback', `DSH 查詢解析暫不可用（${error?.message ?? error}），改用原始查詢`); } catch {}
-        return null;
+        const failure = timedOut || /逾時/u.test(String(error?.message ?? '')) ? 'timeout' : 'error';
+        try { logger?.('info', 'music.dsh.resolve.fallback', `${failure === 'timeout' ? 'DSH 查詢解析逾時' : 'DSH 查詢解析暫不可用'}（${error?.message ?? error}），改用原始查詢`); } catch {}
+        return { query: null, failure };
       } finally {
         clearTimeout(timer);
         signal?.removeEventListener('abort', cancel);

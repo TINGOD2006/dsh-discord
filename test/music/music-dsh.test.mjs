@@ -15,7 +15,7 @@ test('the memory resolver prompt covers latest releases', async () => {
   const { prompts, harness } = capture();
   const resolve = createDshQueryResolver(harness, { webSearch: null });
   const result = await resolve({ query: 'yoasobi最新作', guildId: 'guild', mode: 'memory' });
-  assert.equal(result, 'unknown');
+  assert.deepEqual(result, { query: 'unknown', failure: null });
   assert.equal(prompts.length, 1);
   assert.match(prompts[0], /最新作/);
   assert.match(prompts[0], /latest release/);
@@ -30,6 +30,39 @@ test('the grounded resolver prompt prefers the newest dated release', async () =
   assert.equal(prompts.length, 1);
   assert.match(prompts[0], /最新作/);
   assert.match(prompts[0], /發行日期最新/);
+});
+
+test('the resolver reports why it could not name a song', async () => {
+  const missingHarness = createDshQueryResolver({}, { webSearch: null });
+  assert.deepEqual(await missingHarness({ query: 'song', guildId: 'guild', mode: 'memory' }),
+    { query: null, failure: 'unavailable' });
+
+  const { harness: unparsed } = capture('沒有任何 JSON');
+  assert.deepEqual(await createDshQueryResolver(unparsed, { webSearch: null })({ query: 'song', guildId: 'guild', mode: 'memory' }),
+    { query: null, failure: 'unparsed' });
+
+  // Web mode without a configured backend is a configuration problem, not a
+  // model problem, and must stay distinguishable.
+  const { harness: noWeb } = capture();
+  assert.deepEqual(await createDshQueryResolver(noWeb, { webSearch: null })({ query: 'song', guildId: 'guild', mode: 'web' }),
+    { query: null, failure: 'no-web' });
+  const emptyWeb = createDshQueryResolver(noWeb, { webSearch: async () => [] });
+  assert.deepEqual(await emptyWeb({ query: 'song', guildId: 'guild', mode: 'web' }),
+    { query: null, failure: 'no-web' });
+});
+
+test('a resolver timeout is reported as a timeout, and cancellation stays an abort', async () => {
+  const stalled = { createSession: async () => 'session', ask: () => new Promise(() => {}) };
+  const resolve = createDshQueryResolver(stalled, { webSearch: null, timeoutMs: 10 });
+  assert.deepEqual(await resolve({ query: 'song', guildId: 'guild', mode: 'memory' }),
+    { query: null, failure: 'timeout' });
+
+  const controller = new AbortController();
+  const pending = createDshQueryResolver(stalled, { webSearch: null, timeoutMs: 60_000 })({
+    query: 'song', guildId: 'guild', mode: 'memory', signal: controller.signal,
+  });
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
 });
 
 test('the selector prompt puts the official channel first', async () => {

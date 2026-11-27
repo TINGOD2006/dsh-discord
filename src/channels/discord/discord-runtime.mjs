@@ -1802,6 +1802,7 @@ export class DiscordRuntime {
         write?.(`[dsh-im:discord] ${event}`, detail);
       },
       controlUrlFor: (guildId) => (this.#musicControlBase ? `${this.#musicControlBase}${encodeURIComponent(guildId)}/` : null),
+      botName: this.#config?.name ?? this.#config?.username ?? null,
     });
     return this.#musicPanel;
   }
@@ -1884,7 +1885,7 @@ export class DiscordRuntime {
         await panel?.refresh(guildId, { force: true });
         return true;
       }
-      if (!['pause', 'resume', 'next'].includes(action)) return false;
+      if (!['pause', 'resume', 'next', 'prev', 'loop'].includes(action)) return false;
       // The card is visible to the whole text channel, so a button press must be
       // held to the same rule as the slash commands: only someone sitting in the
       // bot's voice channel may change playback. Without this, any reader of the

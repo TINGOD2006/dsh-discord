@@ -48,7 +48,7 @@ test('production worker starts without logging in and shuts down cleanly; creati
 test('a worker play request can use the host query resolver', async () => {
   const f = await fixture({ resolveQuery: async ({ query }) => {
     assert.equal(query, 'kaf 第一首歌');
-    return '花譜 糸';
+    return { query: '花譜 糸', failure: null };
   } });
   try {
     await f.command('play', { query: 'kaf 第一首歌' });

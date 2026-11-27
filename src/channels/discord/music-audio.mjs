@@ -6,7 +6,7 @@ import { dirname, extname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { runMusicProcess, abortError } from './music-process.mjs';
-import { MUSIC_SELECTION_METHOD, resolutionMatches } from '../shared/music-selection.mjs';
+import { MUSIC_SELECTION_METHOD, resolutionFailureFrom, resolutionFailureText, resolutionMatches } from '../shared/music-selection.mjs';
 
 const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/package.json'));
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav', '.webm', '.mp4']);
@@ -447,18 +447,23 @@ export class MusicAudioPipeline {
     // selects with the same model. Every request is rewritten: the model returns
     // the query unchanged when it is already precise, and a rewrite the search
     // results do not corroborate is discarded, so a wrong guess costs the
-    // original query instead of playing the wrong song.
+    // original query instead of playing the wrong song. The reason a rewrite was
+    // not used is kept so a failed request can say which step gave up.
     let searchTerm = search;
     let snapshot = null;
+    let resolutionFailure = null;
     if (typeof this.#resolveQuery === 'function') {
-      // Memory first: a rewrite the model already knows costs no search, but it
-      // is only trusted when YouTube corroborates it. An uncorroborated guess
-      // falls through to the grounded web read instead of costing the request.
+      const failures = [];
       const probes = new Map();
       const attempt = async (mode) => {
-        const resolved = await this.#resolveQuery({ query: search, guildId, signal, mode });
+        const answer = await this.#resolveQuery({ query: search, guildId, signal, mode });
         signal.throwIfAborted();
-        if (!resolved || resolved === search) return;
+        const resolved = typeof answer === 'string' ? answer : answer?.query ?? null;
+        if (!resolved || resolved === search) {
+          const failure = typeof answer === 'string' ? null : answer?.failure;
+          if (failure) failures.push(failure);
+          return;
+        }
         let probe = probes.get(resolved);
         if (!probe) {
           try { probe = await this.#youtubeCandidates(resolved, guildId, signal); }
@@ -466,20 +471,32 @@ export class MusicAudioPipeline {
             if (signal.aborted) throw error;
             // A probe that cannot finish must not fail the request: fall through
             // to the next resolution path and let the final search decide.
+            failures.push('unverified');
             return;
           }
           probes.set(resolved, probe);
         }
-        if (resolutionMatches(resolved, probe.candidates)) { searchTerm = resolved; snapshot = probe; }
+        if (resolutionMatches(resolved, probe.candidates)) { searchTerm = resolved; snapshot = probe; return; }
+        failures.push('unverified');
       };
       await attempt('memory');
       if (!snapshot) await attempt('web');
+      if (!snapshot) resolutionFailure = resolutionFailureFrom(failures);
     }
-    snapshot ??= await this.#youtubeCandidates(searchTerm, guildId, signal);
+    if (!snapshot) {
+      try { snapshot = await this.#youtubeCandidates(searchTerm, guildId, signal); }
+      catch (error) {
+        if (!resolutionFailure || signal?.aborted) throw error;
+        // "We could not name the song" and "the song does not exist" are
+        // different problems for the listener.
+        throw new Error(`${error.message}（${resolutionFailureText(resolutionFailure)}，已改用原關鍵詞）`);
+      }
+    }
     const candidate = await this.#selectYoutubeCandidate({ query, candidates: snapshot.candidates, guildId, signal });
     if (!candidate) throw new Error('選歌結果不在已驗證的 YouTube 候選中');
     return { ...candidate, kind: 'youtube', selection: MUSIC_SELECTION_METHOD,
-      ...(searchTerm !== search ? { resolvedQuery: searchTerm } : {}), snapshot };
+      ...(searchTerm !== search ? { resolvedQuery: searchTerm } : {}),
+      ...(resolutionFailure ? { resolutionFailure } : {}), snapshot };
   }
 
   async #probe(input, dir, signal) {
@@ -675,19 +692,22 @@ export class MusicAudioPipeline {
         // before failing the track, so one bad pick does not lose the request.
         const otherCandidates = (source.snapshot?.candidates ?? []).filter(candidate => candidate.id !== source.id);
         const alternatives = [source, ...prioritizeOfficialAudio(otherCandidates, source.resolvedQuery ?? query, query)];
+        // The resolved job is the authority on how the request was interpreted,
+        // even when a fallback candidate is the one that actually plays.
+        const interpretation = {
+          selection: source.selection,
+          ...(source.resolvedQuery ? { resolvedQuery: source.resolvedQuery } : {}),
+          ...(source.resolutionFailure ? { resolutionFailure: source.resolutionFailure } : {}),
+        };
         let lastError = null;
         for (const candidate of alternatives) {
           const key = hash(JSON.stringify([MUSIC_CACHE_VERSION, candidate.kind, candidate.id, MUSIC_LOUDNESS]));
           const cached = await this.#cached(key);
-          if (cached) return { ...cached, selection: source.selection, ...(source.resolvedQuery ? { resolvedQuery: source.resolvedQuery } : {}) };
+          if (cached) return { ...cached, ...interpretation };
           try {
             const duration = await this.#durationOf(candidate, { dir, signal: jobSignal });
             if (duration > this.#maxSeconds) {
-              return {
-                ...this.#streamSource(candidate, duration),
-                selection: source.selection,
-                ...(source.resolvedQuery ? { resolvedQuery: source.resolvedQuery } : {}),
-              };
+              return { ...this.#streamSource(candidate, duration), ...interpretation };
             }
             const rendered = await this.#shared(this.#audioJobs, key, jobSignal, async renderSignal => {
               await this.#slot(renderSignal);
@@ -699,7 +719,7 @@ export class MusicAudioPipeline {
                 return existing ?? await this.#render(candidate, { signal: renderSignal, dir: renderDir, key });
               } finally { this.#releaseSlot(); if (renderDir) await rm(renderDir, { recursive: true, force: true }).catch(() => {}); }
             });
-            return { ...rendered, selection: source.selection, ...(source.resolvedQuery ? { resolvedQuery: source.resolvedQuery } : {}) };
+            return { ...rendered, ...interpretation };
           } catch (error) {
             if (jobSignal.aborted) throw error;
             if (!isUnplayableVideo(error)) throw error;

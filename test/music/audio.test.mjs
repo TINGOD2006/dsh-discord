@@ -104,7 +104,7 @@ test('dsh-resolve rewrites a relational request before retrieval and still selec
     const pipeline = new MusicAudioPipeline({
       cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
       run,
-      resolveQuery: async ({ query }) => { assert.equal(query, 'kaf 第一首歌'); return '花譜 糸'; },
+      resolveQuery: async ({ query }) => { assert.equal(query, 'kaf 第一首歌'); return { query: '花譜 糸', failure: null }; },
       selectCandidate: async ({ query, candidates }) => {
         selections.push({ query, ids: candidates.map(candidate => candidate.id) });
         return { candidate: candidates.find(candidate => candidate.id === ito.id), selection: 'dsh' };
@@ -130,6 +130,45 @@ test('a rewrite is used only when the search results corroborate it', () => {
   assert.equal(resolutionMatches('花譜 糸', titles), true);
   assert.equal(resolutionMatches('花譜 不存在的歌', titles), false);
   assert.equal(resolutionMatches('', titles), false);
+  assert.equal(resolutionMatches('花譜 糸', []), false);
+  // Width, case and punctuation differ between a rewrite and a title.
+  assert.equal(resolutionMatches('ＹＯＡＳＯＢＩ 「夜に駆ける」',
+    [{ title: 'YOASOBI - 夜に駆ける (Official Music Video)' }]), true);
+  // The uploader's channel name is evidence too.
+  assert.equal(resolutionMatches('花譜 糸', [{ title: '糸', artist: '花譜 Official' }]), true);
+  // A different song by the same artist is not corroboration.
+  assert.equal(resolutionMatches('花譜 糸', [{ title: '花譜「ありふれてたい」', artist: '花譜' }]), false);
+  // A model that glues an artist to a CJK song name has no separator; a CJK
+  // tail is the only evidence available.
+  assert.equal(resolutionMatches('周杰倫晴天', [{ title: '周杰倫 - 晴天 (Official MV)' }]), true);
+  // The same glue in Latin text is not evidence: two characters match anything.
+  assert.equal(resolutionMatches('adelehello', [{ title: 'Adele - Hello' }]), false);
+  // Only the first five results corroborate; a late match is a weaker guess.
+  const late = Array.from({ length: 5 }, (_, index) => ({ title: `unrelated ${index}` }));
+  late.push({ title: '花譜 糸' });
+  assert.equal(resolutionMatches('花譜 糸', late), false);
+});
+
+test('a resolution that cannot name the song says which step gave up', async () => {
+  await scratch(async dir => {
+    const run = async (file, args) => {
+      if (file === 'extractor') throw new Error('音訊工具沒有回應');
+      return { stdout: '', stderr: '' };
+    };
+    const pipeline = new MusicAudioPipeline({
+      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
+      run,
+      resolveQuery: async ({ mode }) => mode === 'memory'
+        ? { query: null, failure: 'timeout' }
+        : { query: null, failure: 'no-web' },
+    });
+    try {
+      await assert.rejects(pipeline.prepare('kaf 第一首歌', { guildId: 'guild' }),
+        /歌名解析逾時，已改用原關鍵詞/);
+    } finally {
+      await pipeline.destroy();
+    }
+  });
 });
 
 test('dsh-resolve keeps the original query when the results do not corroborate the rewrite', async () => {
@@ -154,12 +193,13 @@ test('dsh-resolve keeps the original query when the results do not corroborate t
     const pipeline = new MusicAudioPipeline({
       cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
       run,
-      resolveQuery: async () => '花譜 不存在的歌',
+      resolveQuery: async () => ({ query: '花譜 不存在的歌', failure: null }),
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
       const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild' });
       assert.equal(source.resolvedQuery, undefined, 'an uncorroborated rewrite must not be used');
+      assert.equal(source.resolutionFailure, 'unverified', 'the caller can say why the rewrite was dropped');
       assert.deepEqual(searches, ['ytsearch10:花譜 不存在的歌', 'ytsearch10:kaf 第一首歌']);
       source.release();
     } finally {
@@ -191,7 +231,7 @@ test('dsh-resolve trusts a corroborated memory rewrite without a web search', as
     const pipeline = new MusicAudioPipeline({
       cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
       run,
-      resolveQuery: async ({ mode }) => { modes.push(mode); return '花譜 糸'; },
+      resolveQuery: async ({ mode }) => { modes.push(mode); return { query: '花譜 糸', failure: null }; },
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
@@ -230,7 +270,10 @@ test('dsh-resolve keeps going when the verification probe fails', async () => {
     const pipeline = new MusicAudioPipeline({
       cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
       run,
-      resolveQuery: async ({ mode }) => { modes.push(mode); return mode === 'memory' ? '花譜 糸' : null; },
+      resolveQuery: async ({ mode }) => {
+        modes.push(mode);
+        return mode === 'memory' ? { query: '花譜 糸', failure: null } : { query: null, failure: 'no-web' };
+      },
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
@@ -307,7 +350,7 @@ test('dsh-resolve resolves every request, including an ordinary artist and song 
     const pipeline = new MusicAudioPipeline({
       cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
       run,
-      resolveQuery: async () => { resolved++; return 'Adele Hello'; },
+      resolveQuery: async () => { resolved++; return { query: 'Adele Hello', failure: null }; },
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
@@ -387,7 +430,7 @@ test('dsh-resolve prefers verified audio for the requested song after its select
     const pipeline = new MusicAudioPipeline({
       cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
       run,
-      resolveQuery: async () => rewritten,
+      resolveQuery: async () => ({ query: rewritten, failure: null }),
       selectCandidate: async ({ query: received, candidates }) => {
         assert.equal(received, query);
         return { candidate: candidates[0], selection: 'dsh' };

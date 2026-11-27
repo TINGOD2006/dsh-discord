@@ -26,18 +26,34 @@ function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverV
   return {manager,request,played,connections,notices,released,guild,transports};
 }
 
-test('play reports the query-resolution method it used', async () => {
+test('play reports the query-resolution method and the rewrite it used', async () => {
   const selections = [];
   const f = fixture({ prepare: async (query, options) => {
     selections.push({ query, options });
-    return { input: 'song.flac', title: 'Chosen song', selection: 'dsh-resolve' };
+    return { input: 'song.flac', title: 'Chosen song', selection: 'dsh-resolve', resolvedQuery: '花譜 糸' };
   } });
   try {
     await f.manager.execute('play', { ...f.request, guildId: 'guild', query: 'song' });
     await until(() => f.notices.some(([, message]) => message.includes('選歌方法：DSH（查詢解析）')));
+    assert(f.notices.some(([, message]) => message.includes('解析：花譜 糸')), 'the rewrite is visible to the listener');
     assert.equal(selections.length, 1);
     assert.equal(selections[0].query, 'song');
     assert.equal('selectionMethod' in selections[0].options, false, 'the pipeline no longer takes a method');
+    assert.equal(f.played.length, 1);
+    assert.match((await f.manager.nowplaying(f.request)).message, /解析：花譜 糸/);
+    assert.match((await f.manager.queue(f.request)).message, /（解析：花譜 糸）/);
+  } finally {
+    await f.manager.destroy();
+  }
+});
+
+test('a failed resolution is named in the notice instead of being silent', async () => {
+  const f = fixture({ prepare: async () => ({
+    input: 'song.flac', title: 'Chosen song', selection: 'dsh-resolve', resolutionFailure: 'timeout',
+  }) });
+  try {
+    await f.manager.execute('play', { ...f.request, guildId: 'guild', query: 'kaf 第一首歌' });
+    await until(() => f.notices.some(([, message]) => message.includes('解析：歌名解析逾時，改用原關鍵詞')));
     assert.equal(f.played.length, 1);
   } finally {
     await f.manager.destroy();
@@ -738,4 +754,35 @@ test('a voice error with an empty message still logs something actionable',()=>{
     'outer cause: Error closeCode=4014');
   assert.equal(describeError('plain text'),'plain text');
   assert.equal(describeError(undefined),'');
+});
+
+test('循環單曲 replays the finished track and 全部 keeps the queue turning',async()=>{
+  const f=fixture();try{
+    await f.manager.play({...f.request,query:'song'});await until(()=>f.played.length===1);
+    assert.equal((await f.manager.snapshot('guild')).loop,'off');
+    assert.equal((await f.manager.control('guild','loop')).message,'循環：單曲');
+    // The card is told the mode before the replay is prepared.
+    assert.equal((await f.manager.snapshot('guild')).loop,'single');
+    f.connections[0].subscribed.stop();await until(()=>f.played.length===2);
+    assert.match((await f.manager.nowplaying(f.request)).message,/song/);
+    assert.equal((await f.manager.control('guild','loop')).message,'循環：全部');
+    assert.equal((await f.manager.control('guild','loop')).message,'循環：關閉');
+    assert.equal((await f.manager.snapshot('guild')).loop,'off');
+  }finally{await f.manager.destroy();}
+});
+
+test('上一首 walks back to the track that actually played',async()=>{
+  const f=fixture();try{
+    await f.manager.play({...f.request,query:'first'});await until(()=>f.played.length===1);
+    // Nothing has left the player yet, so there is nothing to go back to.
+    assert.equal((await f.manager.snapshot('guild')).canPrev,false);
+    assert.equal((await f.manager.control('guild','prev')).ok,false);
+    await f.manager.play({...f.request,query:'second'});await until(()=>f.played.length===1);
+    f.connections[0].subscribed.stop();await until(()=>f.played.length===2);
+    assert.equal((await f.manager.snapshot('guild')).canPrev,true);
+    await f.manager.control('guild','prev');await until(()=>f.played.length===3);
+    assert.match((await f.manager.nowplaying(f.request)).message,/first/);
+    // The interrupted track goes back to the front of the queue, so 下一首 undoes 上一首.
+    assert.match((await f.manager.queue(f.request)).message,/second/);
+  }finally{await f.manager.destroy();}
 });
