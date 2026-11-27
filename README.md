@@ -110,7 +110,6 @@ $env:DSK_DISCORD_NODE = 'D:\MediaTools\node.exe'
 | 指令 | 用途 |
 | --- | --- |
 | `/play query:歌曲關鍵詞或YouTube網址` | 搜尋或直接點歌，加入佇列 |
-| `/music play query:歌曲關鍵詞或網址` | 音樂命名空間中的點歌指令 |
 | `/music skip` | 跳過目前歌曲，也可取消準備中的歌曲 |
 | `/music stop` | 停止音樂、取消預處理並清空佇列 |
 | `/music pause`、`/music resume` | 暫停、繼續 |
