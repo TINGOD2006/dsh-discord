@@ -126,7 +126,7 @@ Discord 的 Gateway 對同一個 token 只維持一條 session。第二台連上
 | Bot 上線但不回話 | Developer Portal 的 Message Content Intent 沒開。 |
 | `/play` 說找不到工具 | 音訊工具路徑沒設，也不在 PATH。 |
 | 語音連上但沒聲音 | 檢查 View Channel／Connect／Speak 權限、UDP 是否被封、碼率是否超過頻道。 |
-| `dsh-web` 選歌失敗 | Harness 沒設定可用的網頁搜尋後端（設定 → 網頁搜尋與擷取）。 |
+| 點播抓不到要的歌 | 改寫詞要通過 YouTube 前三名標題佐證才採用；Harness 沒設定網頁搜尋後端時只有模型記憶可用（設定 → 網頁搜尋與擷取可補上佐證來源）。 |
 | 年齡限制影片下載失敗 | 需要已驗證帳號匯出的 `cookies.txt`，路徑設到 `DSK_DISCORD_YTDLP_COOKIES`。 |
 
 ## 改過程式碼才需要建置

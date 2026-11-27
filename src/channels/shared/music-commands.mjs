@@ -1,5 +1,4 @@
 import { t } from './i18n.mjs';
-import { DEFAULT_MUSIC_SELECTION_METHOD, MUSIC_SELECTION_METHODS, isMusicSelectionMethod } from './music-selection.mjs';
 
 /**
  * Voice-channel music commands, shared by every text bridge.
@@ -9,24 +8,9 @@ import { DEFAULT_MUSIC_SELECTION_METHOD, MUSIC_SELECTION_METHODS, isMusicSelecti
  * methods take the channel id and answer with `{ message }`.
  */
 
-export const MUSIC_COMMAND_NAMES = Object.freeze(['play', 'playmethod', 'music']);
+export const MUSIC_COMMAND_NAMES = Object.freeze(['play', 'music']);
 
-const MUSIC_COMMAND = /^\/(playmethod|play|music)(?=$|\s)/iu;
-const PLAY_METHOD = /^--method(?:=|\s+|$)(\S*)/iu;
-
-// Spoken spellings people actually type for the four methods. The canonical
-// value is what reaches the pipeline; these only make /playmethod forgiving.
-const METHOD_ALIASES = Object.freeze({
-  youtubefirst: 'youtube', 'youtube-first': 'youtube', first: 'youtube',
-  'tf-idf': 'tfidf', cosine: 'tfidf',
-  llm: 'dsh',
-  dshweb: 'dsh-web', 'dsh_web': 'dsh-web', web: 'dsh-web',
-});
-
-function normalizeMethod(value) {
-  const key = String(value ?? '').trim().toLowerCase();
-  return Object.hasOwn(METHOD_ALIASES, key) ? METHOD_ALIASES[key] : key;
-}
+const MUSIC_COMMAND = /^\/(play|music)(?=$|\s)/iu;
 
 // Shortcut spellings that used to exist as top-level commands. They now resolve
 // to `/music <name>`: one surface per action, and the retired spelling answers
@@ -64,14 +48,6 @@ export function parseMusicCommand(text) {
     argument = argument.slice(command[0].length).trim();
     if (name === 'skip') name = 'next';
   }
-  if (name === 'play') {
-    const method = PLAY_METHOD.exec(argument);
-    if (method) return {
-      name,
-      argument: argument.slice(method[0].length).trim(),
-      selectionMethod: method[1].toLowerCase(),
-    };
-  }
   return { name, argument };
 }
 
@@ -103,10 +79,7 @@ export async function runMusicCommand(
   if (parsed.name === 'help' && /^play(?=$|\s)/i.test(parsed.argument)) {
     return { message: '點歌請直接用 /play <網址或關鍵詞>。' };
   }
-  if (parsed.selectionMethod !== undefined && !Object.hasOwn(MUSIC_SELECTION_METHODS, parsed.selectionMethod)) {
-    return { message: '請指定有效選歌方法：youtube、tfidf、dsh 或 dsh-web。' };
-  }
-  if (parsed.argument && !['play', 'playmethod', 'volume', 'bitrate', 'channels', 'help'].includes(parsed.name)) {
+  if (parsed.argument && !['play', 'volume', 'bitrate', 'channels', 'help'].includes(parsed.name)) {
     return { message: '這個音樂控制指令不接受額外文字；請單獨使用 /music stop、/music skip 等指令。' };
   }
   if (!music) return { message: t('音乐功能没开嘛。') };
@@ -120,35 +93,9 @@ export async function runMusicCommand(
     : Promise.resolve(ready).then(() => music[name](args));
   try {
     switch (parsed.name) {
-      case 'play': {
-        // An explicit --method wins; otherwise the operator's saved default. With
-        // neither, the pipeline keeps its own default, so an unset store changes
-        // nothing. A stale saved value is ignored, not fatal.
-        const saved = typeof state?.musicDefaultMethod === 'function' ? state.musicDefaultMethod() : null;
-        const selectionMethod = parsed.selectionMethod
-          ?? (isMusicSelectionMethod(saved) ? saved : undefined);
+      case 'play':
         // `/play` is the only way in for a fresh request; `/music play` stays gone.
-        return await invoke('play', { ...request, query: parsed.argument,
-          ...(selectionMethod ? { selectionMethod } : {}) });
-      }
-      case 'playmethod': {
-        const requested = normalizeMethod(parsed.argument);
-        const saved = typeof state?.musicDefaultMethod === 'function' ? state.musicDefaultMethod() : null;
-        const current = isMusicSelectionMethod(saved) ? saved : DEFAULT_MUSIC_SELECTION_METHOD;
-        const menu = Object.entries(MUSIC_SELECTION_METHODS)
-          .map(([value, name]) => `${value}（${name}）`).join('、');
-        if (!requested) {
-          return { message: `目前預設選歌方法：${current}（${MUSIC_SELECTION_METHODS[current]}）\n可選：${menu}\n用法：/playmethod <方法>` };
-        }
-        if (!isMusicSelectionMethod(requested)) {
-          return { message: `沒有這個選歌方法：${requested}\n可選：${menu}` };
-        }
-        if (typeof state?.setMusicDefaultMethod !== 'function') {
-          return { message: '這個頻道不支援儲存預設選歌方法。' };
-        }
-        await state.setMusicDefaultMethod(requested);
-        return { message: `已把預設選歌方法改為 ${requested}（${MUSIC_SELECTION_METHODS[requested]}）。之後的 /play 都用它，單次可用 --method 覆寫。` };
-      }
+        return await invoke('play', { ...request, query: parsed.argument });
       case 'join':
         return await invoke('join');
       case 'next':
@@ -174,7 +121,7 @@ export async function runMusicCommand(
       case 'leave':
         return await invoke('leave');
       case 'help':
-        return { message: '/play 網址或關鍵詞\n/play --method=youtube|tfidf|dsh|dsh-web 關鍵詞（單次指定）\n/playmethod [youtube|tfidf|dsh|dsh-web]：查看或設定全域預設選歌方法\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/music bitrate [16–384]：查看或設定 kbps（預設 192；頻道設定不限制輸出，只受聲道上限約束）\n/music channels [1|2]：單聲道／雙聲道（預設 2）；320 kbps 請選 2\n也可在聊天中 @機器人，明確要求點歌或控制音樂。\n/stop 與 /skip 仍然控制 AI 任務。' };
+        return { message: '/play 網址或關鍵詞\n/music skip、/music stop、/music pause、/music resume\n/music queue、/music nowplaying、/music status、/music volume 0–100、/music leave\n/music bitrate [16–384]：查看或設定 kbps（預設 192；頻道設定不限制輸出，只受聲道上限約束）\n/music channels [1|2]：單聲道／雙聲道（預設 2）；320 kbps 請選 2\n也可在聊天中 @機器人，明確要求點歌或控制音樂。\n/stop 與 /skip 仍然控制 AI 任務。' };
       default:
         return null;
     }

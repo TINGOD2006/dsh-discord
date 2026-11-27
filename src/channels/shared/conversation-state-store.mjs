@@ -10,7 +10,6 @@ const EXTENSION_KEYS = Object.freeze([
   'emailBindings', 'mailCursor', 'pendingAuth', 'threadIds', 'rootAnchors',
   'whatsappBotMessageIds',
   'discordThreadAutoReplies',
-  'musicDefaultMethod',
 ]);
 
 const PENDING_MESSAGE_LIMIT = 200;
@@ -379,31 +378,6 @@ export class ConversationStateStore {
   /** Flush the current state to disk after an extension write. */
   persist() {
     return this.#persist();
-  }
-
-  /**
-   * Bot-wide default song selection method, or null when the operator never set
-   * one. The caller validates the value against the methods this build runs; a
-   * hand-edited unknown string is reported as null instead of breaking /play.
-   */
-  musicDefaultMethod() {
-    const value = this.#state.musicDefaultMethod;
-    return typeof value === 'string' && value ? value : null;
-  }
-
-  async setMusicDefaultMethod(method) {
-    if (typeof method !== 'string' || !method) throw new TypeError('Invalid music selection method');
-    const previous = this.#state.musicDefaultMethod;
-    this.#state.musicDefaultMethod = method;
-    try {
-      await this.#persist();
-    } catch (error) {
-      if (this.#state.musicDefaultMethod === method) {
-        if (previous === undefined) delete this.#state.musicDefaultMethod;
-        else this.#state.musicDefaultMethod = previous;
-      }
-      throw error;
-    }
   }
 
   async remove() {

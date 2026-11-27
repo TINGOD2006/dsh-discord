@@ -9,7 +9,7 @@ import { createBufferedMusicResource, recoverMusicVoice, voiceBitrate, MUSIC_STR
 import { startMusicHealth } from './music-health.mjs';
 import { MusicCommandLane, musicTask } from './music-command-lane.mjs';
 import { clampSeekTarget, formatClock, seekIsMeaningful } from './music-panel.mjs';
-import { MUSIC_SELECTION_METHODS } from '../shared/music-selection.mjs';
+import { MUSIC_SELECTION_METHOD, MUSIC_SELECTION_LABEL } from '../shared/music-selection.mjs';
 
 export const MUSIC_AUDIO_URL = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|webm)(\?|#|$)/i;
 export const MUSIC_MAX_QUEUE = 25;
@@ -79,7 +79,7 @@ export class MusicManager {
   #commands = new MusicCommandLane();
   #lifetime = new AbortController();
   constructor({ token, logger = null, runtime = null, ytDlpPath = null, pipeline = null, harness = null, notify = null, idleMs = 180000, cooldownMs = 3000, loginTimeoutMs = 20000,
-    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate, searchNativeMusic, resolveQuery, allowLocalFileFor = null,
+    bufferedFactory = createBufferedMusicResource, recoverVoice = recoverMusicVoice, healthIntervalMs = 10000, selectCandidate, resolveQuery, allowLocalFileFor = null,
     privilegedIds = [], onPlaybackChange = null } = {}) {
     this.#token = token; this.#logger = logger; this.#runtime = runtime; this.#notify = notify;
     this.#idleMs = idleMs; this.#cooldownMs = cooldownMs;
@@ -95,7 +95,7 @@ export class MusicManager {
       : (senderId) => privileged.has(String(senderId ?? ''));
     const tools = musicTools(); if (ytDlpPath) tools.ytDlp = ytDlpPath;
     this.#pipeline = pipeline ?? new MusicAudioPipeline({
-      tools, logger, searchNativeMusic, resolveQuery, selectCandidate: selectCandidate ?? createDshMusicSelector(harness, { logger }),
+      tools, logger, resolveQuery, selectCandidate: selectCandidate ?? createDshMusicSelector(harness, { logger }),
     });
   }
   get available() { return !this.#destroyed && typeof this.#token === 'string' && this.#token.length > 0; }
@@ -313,7 +313,6 @@ export class MusicManager {
       const preparation = this.#pipeline.prepare(track.query, {
         signal: track.controller.signal,
         guildId: room.id,
-        selectionMethod: track.selectionMethod,
         allowLocalFile: this.#allowLocalFileFor(track.senderId) === true,
       }).then(source => {
         if (track.controller.signal.aborted || room.leaving) { source.release?.(); throw new Error('歌曲準備已取消'); }
@@ -454,11 +453,7 @@ export class MusicManager {
       const streamNote = source.stream
         ? `\n這首 ${formatClock((Number(source.duration) || 0) * 1000)}，超過 ${Math.round((Number(source.limitSec) || 3600) / 60)} 分鐘上限，改用串流播放：不做音量正規化、不進快取，seek 可能較慢。`
         : '';
-      const methodNote = source.selection === 'search-fallback'
-        ? '\nDSH 選歌暫不可用，使用搜尋首選。'
-        : Object.hasOwn(MUSIC_SELECTION_METHODS, source.selection)
-          ? `\n選歌方法：${MUSIC_SELECTION_METHODS[source.selection]}`
-          : '';
+      const methodNote = source.selection === MUSIC_SELECTION_METHOD ? `\n選歌方法：${MUSIC_SELECTION_LABEL}` : '';
       void this.#say(track.channelId, `正在播放：${source.title}\n${source.url || ''}${streamNote}${methodNote}`);
       this.#prefetch(room);
     } catch (error) {
@@ -466,7 +461,7 @@ export class MusicManager {
       if (room.current === track) this.#finished(room, track.id);
     }
   }
-  async play({ channelId, senderId, query, selectionMethod, senderName = null, signal }) {
+  async play({ channelId, senderId, query, senderName = null, signal }) {
     query = String(query ?? '').trim(); if (!query || query.length > 500) return { message: '請提供歌曲關鍵詞或網址（最多 500 字）' };
     const key = `${channelId}:${senderId}`, now = Date.now();
     if (now - (this.#cooldowns.get(key) ?? 0) < this.#cooldownMs) return { message: '點歌太快，請稍等 3 秒' };
@@ -481,7 +476,7 @@ export class MusicManager {
     // the queue and the notices do not echo the whole link.
     const { title } = splitShareText(query);
     const label = title || query;
-    room.tracks.push({ id: randomUUID(), query, selectionMethod, title: title || null, senderId, senderName: typeof senderName === 'string' ? senderName : null, channelId, controller: new AbortController(), source: null });
+    room.tracks.push({ id: randomUUID(), query, title: title || null, senderId, senderName: typeof senderName === 'string' ? senderName : null, channelId, controller: new AbortController(), source: null });
     this.#pump(room); this.#prefetch(room);
     return { message: occupied ? `已加入音樂佇列：${label}` : `正在準備歌曲並統一音量：${label}` };
   }

@@ -1033,7 +1033,6 @@ export class DiscordRuntime {
   #createApi;
   #createWebSocket;
   #createMusicManager;
-  #searchNativeMusic;
   #webSearch;
   #random;
   #status = createDiscordRuntimeStatus();
@@ -1103,7 +1102,6 @@ export class DiscordRuntime {
     createApi = (options) => new DiscordApi(options),
     createWebSocket = (url) => new WebSocket(url),
     createMusicManager = (options) => new MusicWorkerManager(options),
-    searchNativeMusic = null,
     webSearch = null,
     random = Math.random,
     // A burst of same-author messages is read as one turn in every mode: the
@@ -1133,7 +1131,6 @@ export class DiscordRuntime {
     this.#createApi = createApi;
     this.#createWebSocket = createWebSocket;
     this.#createMusicManager = createMusicManager;
-    this.#searchNativeMusic = searchNativeMusic;
     this.#webSearch = webSearch;
     this.#random = random;
   }
@@ -1481,7 +1478,6 @@ export class DiscordRuntime {
         this.#music = this.#createMusicManager({
           token: this.#token,
           harness: this.#harness,
-          searchNativeMusic: this.#searchNativeMusic,
           webSearch: this.#webSearch,
           // Read at worker start, so a whitelist change applies to the next track
           // without rebuilding the manager.

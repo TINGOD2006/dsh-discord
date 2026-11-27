@@ -3,45 +3,6 @@ import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
-const WEB_SOURCE_LIMIT = 8;
-
-/** Use the Harness web service from the host, with no chat Session or shell tools. */
-export function createDshWebMusicSearch(ctx, { timeoutMs = 30_000 } = {}) {
-  return async ({ query, signal }) => {
-    signal?.throwIfAborted();
-    let web;
-    try { web = typeof ctx?.get === 'function' ? ctx.get('web') : ctx?.web; } catch {}
-    if (typeof web?.search !== 'function') throw new Error('DSH 原生網搜未啟用，請檢查 Harness 的網頁搜尋設定');
-    const deadline = AbortSignal.timeout(timeoutMs);
-    const lookupSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    const lookupQuery = [
-      'Find a directly playable YouTube music video matching the listener request.',
-      'Resolve clues such as an album track number before choosing. Prefer the official or original recording unless the request specifies a version.',
-      'Listener request: ' + JSON.stringify(query),
-    ].join('\n');
-    try {
-      const result = await web.search({
-        query: lookupQuery,
-        maxResults: WEB_SOURCE_LIMIT,
-        // The configured search provider takes precedence. On Auto this hints
-        // that the search should prefer DeepSeek's server-side search.
-        llmProvider: 'deepseek-official',
-      }, lookupSignal);
-      lookupSignal.throwIfAborted();
-      const sources = Array.isArray(result?.sources) ? result.sources : [];
-      return sources.slice(0, WEB_SOURCE_LIMIT)
-        .flatMap(source => typeof source?.url === 'string' && source.url.length <= 2048 ? [source.url] : []);
-    } catch (error) {
-      signal?.throwIfAborted();
-      if (deadline.aborted) throw new Error('DSH 原生網搜逾時');
-      if (['WEB_PROVIDER_UNAVAILABLE', 'WEB_PROVIDER_AMBIGUOUS', 'WEB_PROVIDER_CREDENTIAL_MISSING'].includes(error?.code)) {
-        throw new Error('DSH 原生網搜不可用，請在 Harness 設定可用的搜尋後端');
-      }
-      throw new Error('DSH 原生網搜失敗，請稍後再試');
-    }
-  };
-}
-
 const RESOLVE_PROMPT = [
   '你是音樂搜尋查詢解析器。回答前先想清楚三件事：',
   '1. 這位歌手是誰？國籍與主要語言是什麼？',
@@ -119,7 +80,7 @@ export function createDshQueryResolver(harness, { timeoutMs = 30_000, logger, we
   const sessions = new Map();
   const locks = new Map();
   const uses = new Map();
-  return async ({ query, guildId, signal, mode = 'auto' }) => {
+  return async ({ query, guildId, signal, mode = 'web' }) => {
     if (!harness?.createSession || !harness?.ask) return null;
     const key = `discord-music-resolve:${guildId}`;
     const prior = locks.get(key) ?? Promise.resolve();
@@ -170,16 +131,9 @@ export function createDshQueryResolver(harness, { timeoutMs = 30_000, logger, we
             if (!sources.length) return null;
             return ask(RESOLVE_WITH_SOURCES_PROMPT, { request, sources });
           };
-          let resolved = null;
-          if (mode === 'memory') resolved = await askMemory();
-          else if (mode === 'web') resolved = await askWeb();
-          else {
-            // Default: ground first, then fall back to memory. A grounded read
-            // that changes nothing (the backend returned unrelated pages) falls
-            // back to the memory prompt, so a bad search never costs the rewrite.
-            resolved = await askWeb();
-            if (!resolved || resolved === query) resolved = await askMemory();
-          }
+          const resolved = mode === 'memory'
+            ? await askMemory()
+            : await askWeb();
           uses.set(key, (uses.get(key) ?? 0) + 1);
           return resolved;
         })();

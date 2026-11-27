@@ -6,14 +6,13 @@ import { dirname, extname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { runMusicProcess, abortError } from './music-process.mjs';
-import { DEFAULT_MUSIC_SELECTION_METHOD, MUSIC_SELECTION_METHODS, selectTfidfCandidate, resolutionMatches } from '../shared/music-selection.mjs';
+import { MUSIC_SELECTION_METHOD, resolutionMatches } from '../shared/music-selection.mjs';
 
 const pluginRoot = dirname(createRequire(import.meta.url).resolve('dsh-discord/package.json'));
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav', '.webm', '.mp4']);
 const MAX_REMOTE_AUDIO_BYTES = 64 * 1024 * 1024;
 const MUSIC_RESOLUTION_TTL_MS = 10 * 60_000;
 const MUSIC_MAX_RESOLUTIONS = 128;
-const NATIVE_WEB_VIDEO_CHECKS = 5;
 /** How many YouTube search results one keyword request may choose from. */
 const MUSIC_CANDIDATE_LIMIT = 10;
 /**
@@ -232,15 +231,14 @@ function streamPlaybackUrl(info) {
 }
 
 export class MusicAudioPipeline {
-  #root; #tools; #run; #select; #searchNativeMusic; #resolveQuery; #log; #jobs = new Map(); #audioJobs = new Map(); #resolved = new Map(); #pins = new Map(); #cookieFile = null; #youtubeCookies = null;
+  #root; #tools; #run; #select; #resolveQuery; #log; #jobs = new Map(); #audioJobs = new Map(); #resolved = new Map(); #pins = new Map(); #cookieFile = null; #youtubeCookies = null;
   #candidateJobs = new Map(); #candidateLists = new Map();
   #busy = 0; #waiting = []; #limit; #maxSeconds; #maxBytes; #maxEntries;
   // `maxDurationSec` is the cache/normalize threshold, not a hard cap: a longer
   // track is streamed from the source instead of being downloaded and cached.
   constructor({ cacheDir = join(pluginRoot, '.dsh-im', 'music'), tools = musicTools(), run = runMusicProcess,
-    selectCandidate = null, searchNativeMusic = null, resolveQuery = null, logger = null, concurrency = 2, maxDurationSec = 3600, maxCacheBytes = 512 * 1024 * 1024, maxCacheEntries = 64 } = {}) {
+    selectCandidate = null, resolveQuery = null, logger = null, concurrency = 2, maxDurationSec = 3600, maxCacheBytes = 512 * 1024 * 1024, maxCacheEntries = 64 } = {}) {
     this.#root = resolve(cacheDir); this.#tools = tools; this.#run = run; this.#select = selectCandidate; this.#log = logger;
-    this.#searchNativeMusic = searchNativeMusic;
     this.#resolveQuery = resolveQuery;
     // Age-gated YouTube videos need a signed-in cookie jar. Point this at a
     // Netscape cookies.txt exported from a verified account to play them.
@@ -383,70 +381,13 @@ export class MusicAudioPipeline {
     });
   }
 
-  async #selectYoutubeCandidate(method, { query, candidates, guildId, signal }) {
-    if (method === 'youtube') return { candidate: candidates[0], selection: 'youtube' };
-    if (method === 'tfidf') return { candidate: selectTfidfCandidate(query, candidates), selection: 'tfidf' };
-    return this.#select
-      ? this.#select({ query, candidates, guildId, signal })
-      : { candidate: candidates[0], selection: 'search-fallback' };
+  async #selectYoutubeCandidate({ query, candidates, guildId, signal }) {
+    if (typeof this.#select !== 'function') return candidates[0];
+    const selected = await this.#select({ query, candidates, guildId, signal });
+    return candidates.find(item => item.id === selected?.candidate?.id) ?? null;
   }
 
-  async #resolveNativeMusic(query, dir, signal, guildId) {
-    if (typeof this.#searchNativeMusic !== 'function') throw new Error('DSH 原生網搜未啟用');
-    const sources = await this.#searchNativeMusic({ query, signal });
-    signal.throwIfAborted();
-    const urls = new Set();
-    for (const source of Array.isArray(sources) ? sources : []) {
-      const url = typeof source === 'string' ? youtubeUrl(source) : null;
-      if (url) urls.add(url);
-      if (urls.size === NATIVE_WEB_VIDEO_CHECKS) break;
-    }
-    const verifySignal = AbortSignal.any([signal, AbortSignal.timeout(25_000)]);
-    // Every verified video is playable, so the model can choose on relevance
-    // alone instead of the search backend's source order deciding for it.
-    const verified = [];
-    for (const url of urls) {
-      const id = new URL(url).searchParams.get('v');
-      let info;
-      try { info = await this.#streamInfo(url, dir, verifySignal); } catch {
-        signal.throwIfAborted();
-        if (verifySignal.aborted) break;
-        continue;
-      }
-      if (verifySignal.aborted) break;
-      if (info?.id !== id || info.is_live || info.live_status === 'is_upcoming') continue;
-      const duration = Number(info.duration);
-      const streamUrl = streamPlaybackUrl(info);
-      if (!Number.isFinite(duration) || duration <= 0 || !streamUrl) continue;
-      verified.push({ id, url, title: String(info.title ?? query).slice(0, 300),
-        artist: String(info.uploader ?? info.channel ?? '').slice(0, 120),
-        duration, streamUrl, headers: streamHeaders(info.http_headers) });
-    }
-    signal.throwIfAborted();
-    if (!verified.length) {
-      if (verifySignal.aborted) throw new Error('DSH 原生網搜的影片驗證逾時');
-      throw new Error('DSH 原生網搜沒有找到可播放的 YouTube 單曲');
-    }
-    let chosen = verified[0];
-    if (this.#select && verified.length > 1) {
-      try {
-        const selected = await this.#select({
-          query,
-          candidates: verified.map(({ id, title, artist, duration }) => ({ id, title, artist, duration })),
-          guildId, signal,
-        });
-        const match = verified.find(item => item.id === selected?.candidate?.id);
-        if (match) chosen = match;
-      } catch (error) {
-        // A selector failure must not lose a video that already passed playback
-        // verification; the first verified one is still a valid answer.
-        if (signal?.aborted) throw error;
-      }
-    }
-    return { ...chosen, kind: 'youtube', selection: 'dsh-web' };
-  }
-
-  async #resolve(query, { dir, signal, guildId, selectionMethod, allowLocalFile = false }) {
+  async #resolve(query, { dir, signal, guildId, allowLocalFile = false }) {
     if (existsSync(query)) {
       // `/play <path>` reads a file from the bot host. The music lane is open to
       // every member by design, so without this check anyone could make the bot
@@ -502,15 +443,14 @@ export class MusicAudioPipeline {
       if (!title) throw new Error('網頁沒有可辨識的歌曲名稱，請改用關鍵詞');
       search = title.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').slice(0, 300);
     }
-    if (selectionMethod === 'dsh-web') return this.#resolveNativeMusic(search, dir, signal, guildId);
-    // `dsh-resolve` rewrites the request into searchable keywords before
-    // retrieval, then selects with the same model. Every request is rewritten:
-    // the model returns the query unchanged when it is already precise, and a
-    // rewrite the search results do not corroborate is discarded, so a wrong
-    // guess costs the original query instead of playing the wrong song.
+    // DSH rewrites the request into searchable keywords before retrieval, then
+    // selects with the same model. Every request is rewritten: the model returns
+    // the query unchanged when it is already precise, and a rewrite the search
+    // results do not corroborate is discarded, so a wrong guess costs the
+    // original query instead of playing the wrong song.
     let searchTerm = search;
     let snapshot = null;
-    if (selectionMethod === 'dsh-resolve' && typeof this.#resolveQuery === 'function') {
+    if (typeof this.#resolveQuery === 'function') {
       // Memory first: a rewrite the model already knows costs no search, but it
       // is only trusted when YouTube corroborates it. An uncorroborated guess
       // falls through to the grounded web read instead of costing the request.
@@ -536,13 +476,9 @@ export class MusicAudioPipeline {
       if (!snapshot) await attempt('web');
     }
     snapshot ??= await this.#youtubeCandidates(searchTerm, guildId, signal);
-    const { candidates } = snapshot;
-    const selector = selectionMethod === 'dsh-resolve' ? 'dsh' : selectionMethod;
-    const selected = await this.#selectYoutubeCandidate(selector, { query, candidates, guildId, signal });
-    const candidate = candidates.find(item => item.id === selected?.candidate?.id);
+    const candidate = await this.#selectYoutubeCandidate({ query, candidates: snapshot.candidates, guildId, signal });
     if (!candidate) throw new Error('選歌結果不在已驗證的 YouTube 候選中');
-    return { ...candidate, kind: 'youtube',
-      selection: selectionMethod === 'dsh-resolve' ? 'dsh-resolve' : selected.selection,
+    return { ...candidate, kind: 'youtube', selection: MUSIC_SELECTION_METHOD,
       ...(searchTerm !== search ? { resolvedQuery: searchTerm } : {}), snapshot };
   }
 
@@ -716,13 +652,12 @@ export class MusicAudioPipeline {
     }
   }
 
-  async prepare(query, { signal, guildId = 'local', selectionMethod = DEFAULT_MUSIC_SELECTION_METHOD, allowLocalFile = false } = {}) {
+  async prepare(query, { signal, guildId = 'local', allowLocalFile = false } = {}) {
     query = String(query ?? '').trim();
     if (!query || query.length > 500) throw new Error('請提供 500 字以內的歌曲關鍵詞或連結');
-    if (!Object.hasOwn(MUSIC_SELECTION_METHODS, selectionMethod)) throw new Error('無效的選歌方法');
-    // The winning video depends on the method. Local file access also depends
-    // on the caller, so both are part of the resolved job's identity.
-    const queryKey = JSON.stringify([guildId, query, selectionMethod, allowLocalFile]);
+    // Local file access depends on the caller, so it is part of the resolved
+    // job's identity along with the guild and the request.
+    const queryKey = JSON.stringify([guildId, query, allowLocalFile]);
     const item = await this.#shared(this.#jobs, queryKey, signal, async jobSignal => {
       await mkdir(join(this.#root, 'work'), { recursive: true });
       const dir = await mkdtemp(join(this.#root, 'work', 'song-'));
@@ -730,7 +665,7 @@ export class MusicAudioPipeline {
         let source = this.#resolved.get(queryKey);
         if (!source || source.expires <= Date.now() || source.kind === 'file'
           || (source.snapshot && this.#candidateLists.get(source.snapshot.key) !== source.snapshot)) {
-          source = await this.#resolve(query, { dir, signal: jobSignal, guildId, selectionMethod, allowLocalFile });
+          source = await this.#resolve(query, { dir, signal: jobSignal, guildId, allowLocalFile });
           source.expires = source.snapshot?.expires ?? Date.now() + MUSIC_RESOLUTION_TTL_MS;
           this.#resolved.set(queryKey, source);
           if (this.#resolved.size > MUSIC_MAX_RESOLUTIONS) this.#resolved.delete(this.#resolved.keys().next().value);
@@ -739,10 +674,7 @@ export class MusicAudioPipeline {
         // removed after the search snapshot. Try the other eligible candidates
         // before failing the track, so one bad pick does not lose the request.
         const otherCandidates = (source.snapshot?.candidates ?? []).filter(candidate => candidate.id !== source.id);
-        const fallbacks = selectionMethod === 'dsh-resolve'
-          ? prioritizeOfficialAudio(otherCandidates, source.resolvedQuery ?? query, query)
-          : otherCandidates;
-        const alternatives = [source, ...fallbacks];
+        const alternatives = [source, ...prioritizeOfficialAudio(otherCandidates, source.resolvedQuery ?? query, query)];
         let lastError = null;
         for (const candidate of alternatives) {
           const key = hash(JSON.stringify([MUSIC_CACHE_VERSION, candidate.kind, candidate.id, MUSIC_LOUDNESS]));

@@ -4,159 +4,13 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { resolve, join } from 'node:path';
 import { MusicAudioPipeline, musicTools, loudnessStats, youtubeUrl, embeddedUrl, splitShareText, completeDuration, normalizationFilter, loudnessAnalysisFilter, streamHeaders, MUSIC_LOUDNESS, MUSIC_CACHE_VERSION, YOUTUBE_CLIENT_FALLBACK } from '../../src/channels/discord/music-audio.mjs';
 import { runMusicProcess, decodeMusicOutput } from '../../src/channels/discord/music-process.mjs';
-import { selectTfidfCandidate, resolutionMatches } from '../../src/channels/shared/music-selection.mjs';
+import { resolutionMatches } from '../../src/channels/shared/music-selection.mjs';
 import { resolvedQuery } from '../../src/channels/discord/music-dsh.mjs';
 
 const work=resolve('work/test-music');
 async function scratch(fn){await mkdir(work,{recursive:true});const dir=await mkdtemp(join(work,'case-'));try{await fn(dir);}finally{assert(resolve(dir).startsWith(work+'\\')||resolve(dir).startsWith(work+'/'));await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:50});}}
 
-test('TF-IDF handles mixed-script text and preserves search order at zero overlap', () => {
-  const first = { title: 'First result', artist: '' };
-  const second = { title: 'Ｓ１５ 主題曲', artist: 'Music' };
-  assert.equal(selectTfidfCandidate('s15主題曲', [first, second]), second);
-  assert.equal(selectTfidfCandidate('♫', [first, second]), first);
-});
-
-test('DSH native keyword playback verifies web-source links and never searches another way on a miss', async () => {
-  await scratch(async dir => {
-    const official = 'https://www.youtube.com/watch?v=pzt6SmvGpXk';
-    const liveId = 'liveonly123', live = 'https://www.youtube.com/watch?v=' + liveId;
-    const checked = [], downloaded = [];
-    let lookups = 0;
-    const run = async (file, args) => {
-      if (file === 'extractor') {
-        const target = args.at(-1);
-        if (args.includes('--dump-single-json')) {
-          checked.push(target);
-          if (target === live) return { stdout: JSON.stringify({ id: liveId, is_live: true }) };
-          assert.equal(target, official);
-          return { stdout: JSON.stringify({ id: 'pzt6SmvGpXk', title: 'Verified anthem', duration: 5, url: 'https://media.example/audio' }) };
-        }
-        downloaded.push(target);
-        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
-        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify({ title: 'Verified anthem', duration: 5 }));
-        return { stdout: '', stderr: '' };
-      }
-      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 5 } }) };
-      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
-      await writeFile(args.at(-1), Buffer.alloc(4096));
-      return { stdout: '', stderr: '' };
-    };
-    const pipeline = new MusicAudioPipeline({
-      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
-      run,
-      selectCandidate: async () => assert.fail('native mode must not call the five-candidate selector'),
-      searchNativeMusic: async ({ query }) => {
-        lookups++;
-        if (query === 'missing') return ['https://example.invalid/album'];
-        assert.equal(query, 'LOL s15主題曲');
-        return ['https://youtube.com.example.invalid/watch?v=pzt6SmvGpXk', live, 'https://youtu.be/' + liveId, official];
-      },
-    });
-    try {
-      const options = { guildId: 'guild', selectionMethod: 'dsh-web' };
-      const source = await pipeline.prepare('LOL s15主題曲', options);
-      assert.equal(source.url, official);
-      assert.equal(source.selection, 'dsh-web');
-      assert.equal(source.title, 'Verified anthem');
-      source.release();
-      const cached = await pipeline.prepare('LOL s15主題曲', options);
-      assert.equal(cached.cacheHit, true);
-      cached.release();
-      assert.equal(lookups, 1);
-      await assert.rejects(pipeline.prepare('missing', options), /沒有找到可播放的 YouTube 單曲/);
-      assert.deepEqual(checked, [live, official]);
-      assert.deepEqual(downloaded, [official]);
-    } finally {
-      await pipeline.destroy();
-    }
-  });
-});
-
-test('DSH native mode hands the verified videos to the model instead of taking the first', async () => {
-  await scratch(async dir => {
-    const first = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
-    const second = 'https://www.youtube.com/watch?v=bbbbbbbbbbb';
-    const checked = [];
-    const run = async (file, args) => {
-      if (file === 'extractor') {
-        const target = args.at(-1);
-        if (args.includes('--dump-single-json')) {
-          checked.push(target);
-          const id = target === first ? 'aaaaaaaaaaa' : 'bbbbbbbbbbb';
-          const title = target === first ? 'Commentary about the song' : 'Official music video';
-          return { stdout: JSON.stringify({ id, title, duration: 200, url: 'https://media.example/audio' }) };
-        }
-        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
-        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify({ title: 'Official music video', duration: 200 }));
-        return { stdout: '', stderr: '' };
-      }
-      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 200 } }) };
-      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
-      await writeFile(args.at(-1), Buffer.alloc(4096));
-      return { stdout: '', stderr: '' };
-    };
-    let seen = null;
-    const pipeline = new MusicAudioPipeline({
-      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
-      run,
-      searchNativeMusic: async () => [first, second],
-      selectCandidate: async ({ query, candidates }) => {
-        seen = { query, ids: candidates.map(candidate => candidate.id) };
-        return { candidate: candidates.find(candidate => candidate.id === 'bbbbbbbbbbb'), selection: 'dsh' };
-      },
-    });
-    try {
-      const source = await pipeline.prepare('some song', { guildId: 'guild', selectionMethod: 'dsh-web' });
-      assert.equal(source.id, 'bbbbbbbbbbb', 'the model choice wins over source order');
-      assert.equal(source.selection, 'dsh-web');
-      assert.deepEqual(checked, [first, second]);
-      assert.equal(seen.query, 'some song');
-      assert.deepEqual(seen.ids, ['aaaaaaaaaaa', 'bbbbbbbbbbb']);
-      source.release();
-    } finally {
-      await pipeline.destroy();
-    }
-  });
-});
-
-test('DSH native mode keeps the first verified video when the selector fails', async () => {
-  await scratch(async dir => {
-    const first = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
-    const second = 'https://www.youtube.com/watch?v=bbbbbbbbbbb';
-    const run = async (file, args) => {
-      if (file === 'extractor') {
-        const target = args.at(-1);
-        if (args.includes('--dump-single-json')) {
-          const id = target === first ? 'aaaaaaaaaaa' : 'bbbbbbbbbbb';
-          return { stdout: JSON.stringify({ id, title: 'Song', duration: 200, url: 'https://media.example/audio' }) };
-        }
-        await writeFile(args[args.indexOf('-o') + 1].replace('%(ext)s', 'm4a'), Buffer.alloc(4096));
-        await writeFile(args[args.indexOf('--print-to-file') + 2], JSON.stringify({ title: 'Song', duration: 200 }));
-        return { stdout: '', stderr: '' };
-      }
-      if (file === 'probe') return { stdout: JSON.stringify({ streams: [{ codec_type: 'audio' }], format: { duration: 200 } }) };
-      if (args.includes('null')) return { stderr: '{"input_i":"-20","input_tp":"-10","input_lra":"0","input_thresh":"-30","target_offset":"0"}' };
-      await writeFile(args.at(-1), Buffer.alloc(4096));
-      return { stdout: '', stderr: '' };
-    };
-    const pipeline = new MusicAudioPipeline({
-      cacheDir: join(dir, 'cache'), tools: { ytDlp: 'extractor', ffmpeg: 'ffmpeg', ffprobe: 'probe', node: process.execPath },
-      run,
-      searchNativeMusic: async () => [first, second],
-      selectCandidate: async () => { throw new Error('selector unavailable'); },
-    });
-    try {
-      const source = await pipeline.prepare('some song', { guildId: 'guild', selectionMethod: 'dsh-web' });
-      assert.equal(source.id, 'aaaaaaaaaaa', 'a selector failure must not lose a verified video');
-      source.release();
-    } finally {
-      await pipeline.destroy();
-    }
-  });
-});
-
-test('keyword playback keeps method-specific winners from one filtered YouTube snapshot', async () => {
+test('keyword playback selects with the model from one filtered YouTube snapshot', async () => {
   await scratch(async dir => {
     const anthem = { id: 'pzt6SmvGpXk', title: 'Sacrifice ft. G.E.M. Worlds 2025 Anthem', duration: 252 };
     const commentary = { id: '1vRpKlZSkOI', title: 'S15 主題曲評論', duration: 1235 };
@@ -199,16 +53,14 @@ test('keyword playback keeps method-specific winners from one filtered YouTube s
       },
     });
     try {
-      const prepare = selectionMethod => pipeline.prepare('LOL s15主題曲', { guildId: 'guild', selectionMethod });
-      const sources = await Promise.all([prepare('youtube'), prepare('tfidf'), prepare()]);
-      assert.deepEqual(sources.map(({ id, selection }) => [id, selection]), [
-        [anthem.id, 'youtube'], [commentary.id, 'tfidf'], [anthem.id, 'dsh'],
-      ]);
-      const repeated = await prepare('tfidf');
-      assert.equal(repeated.id, commentary.id);
+      const prepare = () => pipeline.prepare('LOL s15主題曲', { guildId: 'guild' });
+      const source = await prepare();
+      assert.deepEqual([source.id, source.selection], [anthem.id, 'dsh-resolve']);
+      const repeated = await prepare();
+      assert.equal(repeated.id, anthem.id);
       assert.equal(searches, 1);
       assert.equal(modelCalls, 1);
-      for (const source of [...sources, repeated]) source.release();
+      for (const item of [source, repeated]) item.release();
     } finally {
       await pipeline.destroy();
     }
@@ -259,7 +111,7 @@ test('dsh-resolve rewrites a relational request before retrieval and still selec
       },
     });
     try {
-      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild' });
       assert.equal(source.id, ito.id);
       assert.equal(source.selection, 'dsh-resolve');
       assert.equal(source.resolvedQuery, '花譜 糸');
@@ -306,7 +158,7 @@ test('dsh-resolve keeps the original query when the results do not corroborate t
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
-      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild' });
       assert.equal(source.resolvedQuery, undefined, 'an uncorroborated rewrite must not be used');
       assert.deepEqual(searches, ['ytsearch10:花譜 不存在的歌', 'ytsearch10:kaf 第一首歌']);
       source.release();
@@ -343,7 +195,7 @@ test('dsh-resolve trusts a corroborated memory rewrite without a web search', as
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
-      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild' });
       assert.equal(source.resolvedQuery, '花譜 糸');
       assert.deepEqual(modes, ['memory'], 'a corroborated memory rewrite skips the web read');
       assert.deepEqual(searches, ['ytsearch10:花譜 糸']);
@@ -382,7 +234,7 @@ test('dsh-resolve keeps going when the verification probe fails', async () => {
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
-      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild' });
       assert.equal(source.resolvedQuery, undefined, 'a failed probe must not fail the request');
       assert.deepEqual(modes, ['memory', 'web']);
       // The timed-out probe is retried once before the request falls through.
@@ -422,7 +274,7 @@ test('a timed-out candidate search is retried once', async () => {
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
-      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild', selectionMethod: 'dsh' });
+      const source = await pipeline.prepare('kaf 第一首歌', { guildId: 'guild' });
       assert.equal(source.id, song.id);
       assert.deepEqual(searches, ['ytsearch10:kaf 第一首歌', 'ytsearch10:kaf 第一首歌']);
       source.release();
@@ -459,7 +311,7 @@ test('dsh-resolve resolves every request, including an ordinary artist and song 
       selectCandidate: async ({ candidates }) => ({ candidate: candidates[0], selection: 'dsh' }),
     });
     try {
-      await pipeline.prepare('Adele Hello', { guildId: 'guild', selectionMethod: 'dsh-resolve' }).then(source => source.release());
+      await pipeline.prepare('Adele Hello', { guildId: 'guild' }).then(source => source.release());
       assert.equal(resolved, 2, 'memory and web are both consulted when neither rewrites');
       assert.deepEqual(searches, ['ytsearch10:Adele Hello']);
     } finally {
@@ -542,7 +394,7 @@ test('dsh-resolve prefers verified audio for the requested song after its select
       },
     });
     try {
-      const source = await pipeline.prepare(query, { guildId: 'guild', selectionMethod: 'dsh-resolve' });
+      const source = await pipeline.prepare(query, { guildId: 'guild' });
       assert.equal(source.id, audio.id);
       assert.equal(source.selection, 'dsh-resolve');
       assert.equal(source.resolvedQuery, rewritten);

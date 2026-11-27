@@ -10,15 +10,14 @@ export const musicWorkerEntry = join(dirname(createRequire(import.meta.url).reso
 
 /** Lazy worker facade: only commands, selection and notifications touch the host. */
 export class MusicWorkerManager {
-  #options; #factory; #worker; #rpc; #notify; #logger; #select; #searchNativeMusic; #resolveQuery; #privilegedIds; #destroyed = false; #destroyTask; #onPlaybackChange;
+  #options; #factory; #worker; #rpc; #notify; #logger; #select; #resolveQuery; #privilegedIds; #destroyed = false; #destroyTask; #onPlaybackChange;
   constructor({ token, harness, logger, notify, ytDlpPath, idleMs, cooldownMs, loginTimeoutMs, healthIntervalMs,
-    workerFactory = (file, options) => new Worker(file, options), selectCandidate, searchNativeMusic, resolveQuery, webSearch, privilegedIds = null, onPlaybackChange = null } = {}) {
+    workerFactory = (file, options) => new Worker(file, options), selectCandidate, resolveQuery, webSearch, privilegedIds = null, onPlaybackChange = null } = {}) {
     this.#options = { token, ytDlpPath, idleMs, cooldownMs, loginTimeoutMs, healthIntervalMs };
     this.#privilegedIds = typeof privilegedIds === 'function' ? privilegedIds : () => [];
     this.#factory = workerFactory; this.#logger = logger; this.#notify = notify;
     this.#onPlaybackChange = typeof onPlaybackChange === 'function' ? onPlaybackChange : null;
     this.#select = selectCandidate ?? createDshMusicSelector(harness, { logger });
-    this.#searchNativeMusic = searchNativeMusic;
     this.#resolveQuery = resolveQuery ?? createDshQueryResolver(harness, { logger, webSearch });
   }
   get available() { return !this.#destroyed && typeof this.#options.token === 'string' && this.#options.token.length > 0; }
@@ -33,10 +32,6 @@ export class MusicWorkerManager {
     const rpc = new MusicWorkerRpc(worker, (method, params, { signal }) => {
       if (method === 'select') return this.#select({ ...params, signal });
       if (method === 'resolveQuery') return this.#resolveQuery({ ...params, signal });
-      if (method === 'searchMusic') {
-        if (typeof this.#searchNativeMusic !== 'function') throw new Error('DSH 原生網搜未啟用');
-        return this.#searchNativeMusic({ query: params.query, signal });
-      }
       throw new Error('未知音樂 worker 請求');
     });
     this.#worker = worker; this.#rpc = rpc;

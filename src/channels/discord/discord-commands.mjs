@@ -9,7 +9,6 @@
 import { COMMAND_PERMISSION_DENIED_MESSAGE, evaluateInboundAccess } from '../shared/inbound-access.mjs';
 import { t } from '../shared/i18n.mjs';
 import { isMusicCommand } from '../shared/music-commands.mjs';
-import { MUSIC_SELECTION_METHODS } from '../shared/music-selection.mjs';
 
 const APPLICATION_COMMAND = 1;
 const STRING_OPTION = 3;
@@ -92,15 +91,6 @@ const QUERY_OPTION = Object.freeze({
   required: true,
   min_length: 1,
   max_length: 500,
-});
-
-const PLAY_METHOD_OPTION = Object.freeze({
-  type: STRING_OPTION,
-  name: 'method',
-  description: 'How keyword-search candidates are selected (default: DSH LLM)',
-  description_localizations: zh('如何从关键词搜索结果中选歌（默认 DSH LLM）'),
-  required: false,
-  choices: Object.entries(MUSIC_SELECTION_METHODS).map(([value, name]) => ({ name, value })),
 });
 
 /**
@@ -206,22 +196,7 @@ export const DISCORD_APP_COMMANDS = Object.freeze([
     name_localizations: zh('播放'),
     description: 'Join your voice channel and play a song URL or search result',
     description_localizations: zh('加入你的语音频道，播放歌曲链接或搜索结果'),
-    options: [QUERY_OPTION, PLAY_METHOD_OPTION],
-  },
-  {
-    type: APPLICATION_COMMAND,
-    name: 'playmethod',
-    name_localizations: zh('選歌方法'),
-    description: 'Show or set the default song selection method used by /play',
-    description_localizations: zh('查看或設定 /play 的預設選歌方法'),
-    options: [{
-      type: STRING_OPTION,
-      name: 'method',
-      description: 'Default selection method; omit to show the current one',
-      description_localizations: zh('預設選歌方法；省略則顯示目前設定'),
-      required: false,
-      choices: Object.entries(MUSIC_SELECTION_METHODS).map(([value, name]) => ({ name, value })),
-    }],
+    options: [QUERY_OPTION],
   },
   {
     type: APPLICATION_COMMAND,
@@ -274,11 +249,8 @@ export function commandTextFromInteraction(interaction) {
     return ['/music', sub.name, ...values].join(' ');
   }
   if (data.name === 'play') {
-    const method = options.find(option => option?.name === 'method')?.value;
-    if (typeof method === 'string') {
-      const query = options.find(option => option?.name === 'query')?.value;
-      return ['/play', '--method=' + method, typeof query === 'string' ? query.trim() : ''].join(' ').trimEnd();
-    }
+    const query = options.find(option => option?.name === 'query')?.value;
+    if (typeof query === 'string' && query.trim()) return '/play ' + query.trim();
   }
   const values = [];
   for (const option of options) {

@@ -26,16 +26,18 @@ function fixture({prepare,ready,login,loginTimeoutMs=20000,idleMs=10000,recoverV
   return {manager,request,played,connections,notices,released,guild,transports};
 }
 
-test('play keeps the chosen method through the queue and reports the effective selector', async () => {
+test('play reports the query-resolution method it used', async () => {
   const selections = [];
-  const f = fixture({ prepare: async (query, { selectionMethod }) => {
-    selections.push({ query, selectionMethod });
-    return { input: 'song.flac', title: 'Chosen song', selection: 'tfidf' };
+  const f = fixture({ prepare: async (query, options) => {
+    selections.push({ query, options });
+    return { input: 'song.flac', title: 'Chosen song', selection: 'dsh-resolve' };
   } });
   try {
-    await f.manager.execute('play', { ...f.request, guildId: 'guild', query: 'song', selectionMethod: 'tfidf' });
-    await until(() => f.notices.some(([, message]) => message.includes('選歌方法：TF-IDF＋餘弦相似度')));
-    assert.deepEqual(selections, [{ query: 'song', selectionMethod: 'tfidf' }]);
+    await f.manager.execute('play', { ...f.request, guildId: 'guild', query: 'song' });
+    await until(() => f.notices.some(([, message]) => message.includes('選歌方法：DSH（查詢解析）')));
+    assert.equal(selections.length, 1);
+    assert.equal(selections[0].query, 'song');
+    assert.equal('selectionMethod' in selections[0].options, false, 'the pipeline no longer takes a method');
     assert.equal(f.played.length, 1);
   } finally {
     await f.manager.destroy();
